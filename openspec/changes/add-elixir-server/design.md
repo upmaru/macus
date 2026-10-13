@@ -2,7 +2,7 @@
 
 ## Context
 
-See [proposal.md](proposal.md) for motivation and scope. The original baseline was `develop` at `0c3eec77b020a174f66e691579d5ceba601cd158`. The current `feature/elixir-server` checkout has a Phoenix/Cowboy scaffold, boundary stubs, pinned Incus reference fixtures and the fixture-only transport trial, with seven original tasks completed. This revision preserves that evidence and assigns the first library/client milestone to Opsmaru's [add-embedded-incus-foundation](https://github.com/upmaru/opsmaru/blob/feature/phoenix-bootstrap-and-remote-access/openspec/changes/add-embedded-incus-foundation/design.md) and later MCP/task/connector implementation to [add-compute-substrate](https://github.com/upmaru/opsmaru/blob/feature/phoenix-bootstrap-and-remote-access/openspec/changes/add-compute-substrate/design.md). Opsmaru now has a published Phoenix scaffold and central/connector planning; no implemented immutable compute/connector dependency is available yet. The seven original Macus tasks record local scaffold/reference/transport evidence; this plan publication does not include the still-uncommitted server implementation.
+See [proposal.md](proposal.md) for motivation and scope. **Revision 2026-10-13:** the Incus client moved to the pure `:opsmaru_incus` library in `upmaru/opsmaru-incus`, together with the native gateway mechanics and shared Incus tools; `:opsmaru` is now the central service only and Macus no longer depends on it. Durable MCP tasks are deferred and central registration moved to `add-central-registration`. Earlier context below is kept for history. The original baseline was `develop` at `0c3eec77b020a174f66e691579d5ceba601cd158`. The current `feature/elixir-server` checkout has a Phoenix/Cowboy scaffold, boundary stubs, pinned Incus reference fixtures and the fixture-only transport trial, with seven original tasks completed. This revision preserves that evidence and assigns the first library/client milestone to Opsmaru's [add-embedded-incus-foundation](https://github.com/upmaru/opsmaru/blob/feature/phoenix-bootstrap-and-remote-access/openspec/changes/add-embedded-incus-foundation/design.md) and later MCP/task/connector implementation to [add-compute-substrate](https://github.com/upmaru/opsmaru/blob/feature/phoenix-bootstrap-and-remote-access/openspec/changes/add-compute-substrate/design.md). Opsmaru now has a published Phoenix scaffold and central/connector planning; no implemented immutable compute/connector dependency is available yet. The seven original Macus tasks record local scaffold/reference/transport evidence; this plan publication does not include the still-uncommitted server implementation.
 
 Observed integration points:
 
@@ -21,51 +21,48 @@ Main specs still describe direct Unix client access; root context/docs were upda
 - Make the installed Phoenix server the normal connection boundary for local CLI, standard Incus clients and MCP clients.
 - Keep the VM, Incus workloads and client operations independent of the language used for the public server.
 - Support operator-configured remote HTTPS with explicit identity and scope enforcement before privileged backend access.
-- Consume the shared Opsmaru client/tools/tasks with upstream method evidence and independent Macus bridge/identity/recovery acceptance; keep one public endpoint and one shared service tree.
+- Consume the shared `:opsmaru_incus` client, gateway mechanics and Incus tools with upstream method evidence and independent Macus bridge/identity acceptance; keep one public endpoint.
 - Reuse existing startup safety, budgets and machine-output contracts across the two-service installation.
-- Keep standalone local access while optionally enrolling one Macus target with central Opsmaru using an outbound connector in the existing server.
+- Operate fully standalone; central registration is the later `add-central-registration` change.
 
 **Non-Goals:**
 
 - Moving VZ objects, disks or workload state into BEAM; invoking another host VM runtime; adding a GUI or cross-platform packaging requirement.
-- A duplicate shared client/task implementation, separate Opsmaru endpoint/job, Linux packaging inside Macus, environment/workspace/skill workflows, multi-host scheduling, Docker/Compose translation or automatic guest/network migration.
+- Durable MCP tasks (deferred) and central registration (later change).
+- A duplicate shared client or proxy implementation, separate Opsmaru endpoint/job, Linux packaging inside Macus, environment/workspace/skill workflows, multi-host scheduling, Docker/Compose translation or automatic guest/network migration.
 - An Incus namespace patch, `/incus` compatibility aliases, a Go/Rust sidecar, Burrito or a host Erlang prerequisite for prebuilt installs.
-- Local OAuth/OIDC issuer, provider account/consent UI or federation server, and MCP features absent from the pinned library. Browser-assisted external-provider authentication is used only for explicit central enrollment; local gateway bearer authentication remains independent.
+- Local OAuth/OIDC issuer, provider account/consent UI or federation server, and MCP features absent from the pinned library.
 - Finishing Git Flow branches, publishing packages or accepting hardware behavior as part of planning.
 
 ## Decisions
 
-### 1. Macus gateway embeds the single Opsmaru Phoenix application
+### 1. Macus gateway uses the shared `:opsmaru_incus` library
 
-Keep the headless `:macus` Phoenix/Cowboy application in `server/`. It owns the public listener, gateway credentials, native Incus proxy, private Swift runtime adapter and Macus-specific MCP tools. Add an immutable dependency on `git@github.com:upmaru/opsmaru.git` after add-embedded-incus-foundation has an implemented verified reference, or use a released package when available. Do not invent an unpublished version.
+Keep the headless `:macus` Phoenix/Cowboy application in `server/`. It owns the public listener, gateway credentials and trust, host policy, the private Swift runtime adapter and Macus-specific MCP tools. Add an immutable dependency on `upmaru/opsmaru-incus` once the needed revision is implemented and verified, or a released package when available. Do not invent an unpublished version.
 
-Opsmaru is one root Phoenix application `:opsmaru` with `Opsmaru`/`OpsmaruWeb` namespaces, a public library surface and mode-aware supervision. In embedded mode it starts configured shared compute workers but does not start `OpsmaruWeb.Endpoint` or a listener. Its central Linux release explicitly starts that endpoint to manage registered targets; connector-only Linux starts no endpoint. Macus may enable its shared connector worker subtree after explicit enrollment. Macus sets embedded mode before dependency startup and mounts shared tools on its own endpoint in the same BEAM; there is no third service, extra port, second task tree or Opsmaru launchd job.
+`:opsmaru_incus` is a pure library with no application callback: depending on it starts no endpoint, listener or process. Macus uses three parts of it: the `Opsmaru.Incus` client over `incus.sock`, the `Opsmaru.Incus.Gateway` relay mounted on the Macus endpoint with Macus host policy, and the shared Incus operation/MCP tool modules composed into the Macus TamaMCP server. Macus does not depend on the `:opsmaru` central service.
 
 ```text
 server/lib/macus/
-  application.ex       gateway supervision + dependency configuration
+  application.ex       gateway supervision + library configuration
   runtime/             private Swift API client and Macus runtime tools
   host/                Macus capability/path adapter
-  connection/          owner-local central enrollment/configuration adapter
-  proxy/               native streaming gateway and identity mediation
+  proxy/               gateway mount and Macus host policy/trust mediation
   auth/                gateway trust, bearer verification and administration
-  mcp/                 composed catalogue and host authorization adapters
+  mcp/                 composed catalogue and host binding/authorization
 server/lib/macus_web/  one public Phoenix endpoint
 
-Opsmaru dependency
-  Opsmaru.Incus        shared portable client over configured incus.sock
-  Opsmaru.MCP          shared tool modules and cache integration
-  Opsmaru.Tasks        shared durable store/runner in Macus-selected state
-  Opsmaru.Host         host/caller contracts
-  Opsmaru.Connector    optional enrolled outbound session and receipts
-  OpsmaruWeb.Endpoint  absent in embedded supervision
+opsmaru_incus dependency
+  Opsmaru.Incus           portable client over configured incus.sock
+  Opsmaru.Incus.Gateway   native HTTP/WebSocket/raw-upgrade relay mechanics
+  Opsmaru.Incus.MCP       shared Incus tool modules (synchronous)
 ```
 
-Resolve compatible locked Phoenix/Cowboy dependencies for the first library/client integration; add/resolve TamaMCP and tool/task adapter support when the later milestone is implemented. The initial library/client can be adopted without waiting for central features or those later services. The existing Macus lockfile and reference fixtures are integration inputs, not proof that Opsmaru is implemented. Local editable paths may be used deliberately during development, but CI/source installs and packaging must resolve a pinned Git revision or released package without an absolute sibling checkout.
+Resolve compatible locked Phoenix/Cowboy/TamaMCP dependencies against the library's ranged requirements. Local editable paths may be used deliberately during development, but CI/source installs and packaging must resolve a pinned Git revision or released package without an absolute sibling checkout.
 
-Retain the Cowboy2 adapter established by the successful native SFTP/NBD fixture trial. No HTTP adapter or raw-proxy implementation moves in this planning revision. The initial Bandit choice failed the native upgrade requirement; the documented Cowboy switch-protocol design and response-header guard remain unchanged.
+Retain the Cowboy2 adapter established by the successful native SFTP/NBD fixture trial. The initial Bandit choice failed the native upgrade requirement; the documented Cowboy switch-protocol design and response-header guard remain unchanged.
 
-Alternative: completing the shared client/tool/task code in Macus and extracting it later creates a duplicate implementation boundary. The pending work instead lands in Opsmaru, while Macus implements its consumer integration. Linux packaging and the Opsmaru standalone endpoint are not part of this change.
+Alternative: implementing the client, proxy or tools in Macus duplicates what central Opsmaru also needs. The shared library holds them; Macus implements host integration.
 
 ### 2. One public server, existing private bridges
 
@@ -95,9 +92,9 @@ Public routing:
 | --- | --- |
 | `/runtime` and `/runtime/*` | Allowlisted control methods mapped to `/v1/runtime` and its private routes |
 | `/`, `/1.0`, `/1.0/*` | Native Incus discovery/API, identity/trust mediation, HTTP bodies and upgrade streams |
-| `/mcp` | Maintained TamaMCP transport; composed Opsmaru shared tools plus Macus runtime tools, host auth and shared execution adapters |
+| `/mcp` | Maintained TamaMCP transport; composed `:opsmaru_incus` Incus tools plus Macus runtime tools, host auth and the library host binding |
 
-Opsmaru runs inside this same BEAM in embedded mode, with no Opsmaru endpoint process/listener. Shared tools use the public library client configured against incus.sock; Macus runtime tools use runtime.sock. Macus's local endpoint still serves one configured local target; central Opsmaru's separate MCP/REST endpoint can select multiple registered targets. Local Macus never accepts arbitrary independent target addresses.
+The `:opsmaru_incus` library runs inside this BEAM without its own endpoint, listener or process. Shared Incus tools use its client configured against incus.sock; Macus runtime tools use runtime.sock. Macus's local endpoint still serves one configured local target; central Opsmaru's separate MCP/REST endpoint can select multiple registered targets. Local Macus never accepts arbitrary independent target addresses.
 
 Public runtime inspection has no version in the path. Keep private Swift routes and snake_case models/version fields; preserve method, conflict and budget behavior. Public status projects connection metadata to `server_endpoint`/`incus_endpoint` and separate server/runtime readiness, omitting internal socket paths and secrets. This is an explicit public response change, not an undocumented alteration of private Swift status.
 
@@ -127,7 +124,7 @@ Alternatives: unauthenticated loopback does not satisfy the selected remote scop
 
 ### 4. Preserve native streaming and isolate each connection
 
-`Macus.Proxy` forwards native routes through `incus.sock`. Ordinary JSON requests, streaming images/files/backups, WebSocket exec/console/events and non-WebSocket native upgrade channels need distinct framing paths. Relay upgrades using native bytes/frames and backpressure, not Phoenix Channels. Do not buffer full uploads or terminal sessions.
+`Macus.Proxy` mounts the shared `Opsmaru.Incus.Gateway` relay (`add-embeddable-incus-gateway`) and supplies Macus host policy; native routes reach `incus.sock` through it. Ordinary JSON requests, streaming images/files/backups, WebSocket exec/console/events and non-WebSocket native upgrade channels need distinct framing paths. Relay upgrades using native bytes/frames and backpressure, not Phoenix Channels. Do not buffer full uploads or terminal sessions.
 
 Use Cowboy custom dispatch handlers on the same HTTPS listener for native Incus upgrades and streaming, with Phoenix/Plug handling runtime and MCP routes. Authorize the presented identity before opening any backend socket. Native SFTP/NBD handlers validate the backend's HTTP 101 response before requesting Cowboy's documented `switch_protocol` handoff; the connection process then relays opaque bytes without implementing either guest protocol. Transfer backend socket ownership before the request worker exits and retain already-read bytes from both handshakes. Bound active reads, writes, shutdown/drain intervals and connection counts. Preserve applicable half-close and cleanup semantics. HTTP/2 cannot perform these HTTP/1.1 Upgrade handshakes; clients use their native HTTP/1.1 path.
 
@@ -143,41 +140,39 @@ Alternatives: routing every operation through typed models would narrow the nati
 
 ### 5. Consume and independently verify the shared Incus client
 
-The independent add-embedded-incus-foundation change is the first implementation prerequisite for this section. It needs no central server, OIDC, registry, connector, MCP catalogue or durable task runner. Macus may proceed with its local gateway/runtime/native proxy and this client integration once that library revision is verified. Sections 6 and 9 separately depend on the later tools/tasks and connector milestones and must not gate first library/client acceptance.
+The add-embedded-incus-foundation change in `upmaru/opsmaru-incus` is the first implementation prerequisite for this section. It needs no central server, OIDC, registry, connector, MCP catalogue or durable task runner. Macus may proceed with its local gateway/runtime/native proxy and this client integration once that library revision is verified. Section 6 depends on `add-incus-operations` and must not gate first library/client acceptance.
 
-Opsmaru owns the portable `Opsmaru.Incus` implementation, pinned upstream source inventory, notices, differential fixtures and full client coverage. Macus supplies its private relay connection through the library's configured backend contract. Gateway native proxying remains separate from this typed client path; shared tools and Macus integration code use the same client implementation.
+opsmaru-incus owns the portable `Opsmaru.Incus` implementation, pinned upstream source inventory, notices, differential fixtures and full client coverage. Macus supplies its private relay connection through the library's configured backend contract. Gateway native proxying remains separate from this typed client path; shared tools and Macus integration code use the same client implementation.
 
-The existing Macus inventory and differential fixtures remain recorded as completed reference-foundation work. Transfer reusable inputs to Opsmaru with provenance during its implementation; retain Macus-specific relay/gateway consumer fixtures. Any temporary `Macus.Incus` compatibility module can only delegate to the dependency, never duplicate request codecs, retries or protocol behavior.
+The existing Macus inventory and differential fixtures remain recorded as completed reference-foundation work. Reusable inputs were transferred to the shared library with provenance; retain Macus-specific relay/gateway consumer fixtures. Any temporary `Macus.Incus` compatibility module can only delegate to the dependency, never duplicate request codecs, retries or protocol behavior.
 
 The full required client surface remains discovery/models/extensions; native project/member targeting; instances/snapshots; images; profiles/access; networks/clusters; storage; files/backups/native upgrades; operations/events; exec/console; and migration/copy. Required method/type evidence is checked at the pinned dependency revision. A missing library entry blocks a complete client claim rather than being filled by a second Macus implementation or disguised by raw-proxy success.
 
-Macus acceptance proves its configured bridge, verified identity/owner context, deadlines, error propagation and native stream integration. Opsmaru fixture/coverage results are linked separately; real Macus guest evidence remains mandatory for hardware acceptance. Updates to the dependency/upstream reference require an inventory diff and affected consumer reruns.
+Macus acceptance proves its configured bridge, verified identity/owner context, deadlines, error propagation and native stream integration. opsmaru-incus fixture/coverage results are linked separately; real Macus guest evidence remains mandatory for hardware acceptance. Updates to the dependency/upstream reference require an inventory diff and affected consumer reruns.
 
 Alternative: implementing a few Macus-only REST calls would both duplicate the shared backend and fail the original complete-port contract. The shared library preserves that contract; this change verifies and consumes it.
 
 ### 6. Compose shared and Macus tools at one MCP endpoint
 
-Opsmaru uses maintained TamaMCP for protocol validation, tool compilation, transport, authorization decisions and task contracts. It supplies shared native Incus tool modules and cache/store/runner services. Macus assembles a compile-time catalogue with those modules plus Macus's private-runtime tools and mounts the maintained Streamable HTTP Plug at `/mcp` on its existing endpoint. Duplicate names fail compilation; no dynamic plugin loader or second MCP service is introduced.
+`:opsmaru_incus` (`add-incus-operations`) supplies the shared Incus operation descriptors and their TamaMCP tool modules. Macus assembles a compile-time catalogue with those modules plus Macus's private-runtime tools in its own TamaMCP server and mounts the maintained Streamable HTTP Plug at `/mcp` on its existing endpoint. Duplicate names fail compilation; no dynamic plugin loader or second MCP service is introduced.
 
 | Tool family | Owner / scope / delegation |
 | --- | --- |
 | Runtime status/config/progress/health/capabilities | Macus; `runtime.read`; Swift runtime adapter |
 | Runtime create/start/stop/restart/config replacement | Macus; `runtime.write`; existing lifecycle API |
 | Runtime deletion/forced stop | Macus; explicit destructive inputs and runtime permission |
-| Incus inspection | Opsmaru; `incus.read`; shared client through configured incus.sock |
-| Instance/state/image/snapshot mutation | Opsmaru; `incus.write`; same shared client |
-| Bounded guest exec | Opsmaru; `incus.exec`; explicitly selected instance |
-| Workload deletion/destructive restore | Opsmaru; `incus.delete`; explicit destructive inputs |
+| Incus inspection | opsmaru-incus; `incus.read`; shared client through configured incus.sock |
+| Instance/state/image/snapshot mutation | opsmaru-incus; `incus.write`; same shared client |
+| Bounded guest exec | opsmaru-incus; `incus.exec`; explicitly selected instance |
+| Workload deletion/destructive restore | opsmaru-incus; `incus.delete`; explicit destructive inputs |
 
-Macus's authorization adapter verifies its own bearer credentials and normalizes principal, stable owner identity, scopes, expiry and registered host binding. Those values survive asynchronous handoff; request fields cannot substitute another owner, backend URL or arbitrary host path. Shared execution/recovery waits for the configured host identity/provider integration to become ready; dependency startup order must not bypass gateway policy before the Macus authentication tree is available. Shared tool contracts are identical on direct and connected targets, including optional target_id. Local calls may omit target_id for the configured local target; an explicit different target fails. Central dispatch always names this enrolled target/generation and does not grant Macus a multi-target controller. Macus-specific tools retain the stopped-state/configuration and explicit confirmation rules of the Swift runtime.
+Macus's authorization adapter verifies its own bearer credentials and normalizes principal, scopes and expiry. Macus implements the library's host binding: for an authenticated caller it returns the local `incus.sock` connection and context and authorizes the operation. Request fields cannot substitute another owner, backend URL or host path. Tool execution waits for host identity readiness; dependency load order cannot bypass gateway policy. Schemas carry no target ID; Macus has one local target. Macus-specific tools retain the stopped-state/configuration and explicit confirmation rules of the Swift runtime.
 
-Register a Macus host adapter for passive Swift/runtime capabilities and directory-share prerequisites. The current Swift configuration update requires a stopped VM; unresolved new shares report that prerequisite rather than causing an implicit restart. This foundation does not provision worktrees, install skills or create environment images.
+Register a Macus host adapter for passive Swift/runtime capabilities and directory-share prerequisites. The current Swift configuration update requires a stopped VM; unresolved new shares report that prerequisite rather than causing an implicit restart. This milestone does not provision worktrees, install skills or create environment images.
 
-Use Opsmaru's shared versioned append-only journal, serialized transitions and durable execution intents in a Macus-selected owner-private path under `<state-dir>/server/`. Flush task plus intent before returning a durable handle. Use the same store/runner for registered Macus runtime tools, with stable allowlisted tool/provider descriptors and owner binding rather than closures or bearer tokens. Configure that tree once; neither Macus nor the dependency starts a duplicate runner.
+Tools execute synchronously. Incus mutations return the native operation identity and completed/running/failed/uncertain status after a bounded wait; runtime lifecycle tools report the Swift runtime's progress and readiness the same way. Callers poll operation and runtime status tools for later state. No durable MCP task store, runner, journal or task handles are introduced; possibly accepted mutations are never retried automatically. A durable task layer can be added later around the same tools.
 
-Verify native operation-ID reconciliation, uncertain mutation outcomes without replay, cooperative cancellation, deadlines, bounded output, post-commit subscriptions, revocation and authoritative polling through consumer tests. A library fixture pass does not complete Macus task/identity integration or hardware gates. Advertise durable tasks only when complete shared adapters and consumer recovery checks pass; otherwise explicitly identify native acceptance and do not return in-memory handles as durable tasks.
-
-No generic host-shell tool, arbitrary HTTP tool, unsupported MCP resources/stdin transport, external database or clustered scheduler is introduced. Macus's raw authenticated Incus proxy retains its native API independently of the selected MCP catalogue.
+No generic host-shell tool, arbitrary HTTP tool, unsupported MCP resources/stdin transport, external database or clustered scheduler is introduced. Macus's authenticated Incus gateway retains its native API independently of the selected MCP catalogue.
 
 ### 7. Combined package, separate processes and startup ownership
 
@@ -190,7 +185,7 @@ Install one matched package at distinct paths:
   lib/, releases/, erts-*/
 ```
 
-Both carry matched immutable Macus source revision/package version metadata. The server release also records its distinct pinned Opsmaru dependency revision/version and backend-reference provenance; it does not compare two different repositories' commits for equality. Include the complete dependency in the existing Macus release, configured embedded before startup. Build the release with bundled ERTS for the supported macOS ARM64 baseline and test that no installed Elixir/Erlang or sibling Opsmaru checkout is needed. Source builds document Swift plus pinned Elixir/OTP build prerequisites. The Homebrew bottle includes the complete release; startup does not fetch a separately versioned server payload. Keep signatures, real hashes and build-platform provenance; development artifacts retain their honest ad-hoc status.
+Both carry matched immutable Macus source revision/package version metadata. The server release also records its distinct pinned `:opsmaru_incus` dependency revision/version and backend-reference provenance; it does not compare two different repositories' commits for equality. Include the library in the existing Macus release. Build the release with bundled ERTS for the supported macOS ARM64 baseline and test that no installed Elixir/Erlang or sibling opsmaru-incus checkout is needed. Source builds document Swift plus pinned Elixir/OTP build prerequisites. The Homebrew bottle includes the complete release; startup does not fetch a separately versioned server payload. Keep signatures, real hashes and build-platform provenance; development artifacts retain their honest ad-hoc status.
 
 The Swift job keeps `com.upmaru.macus`; the Elixir job uses `com.upmaru.macus.server`. Nondefault states receive matched state-hash suffixes, isolated listeners/logs and no automatic login registration. Launch the Elixir release with `bin/macus start` in the foreground, with release distribution disabled unless explicitly needed; launchd supervises the OS process and OTP supervises internal workers. Elixir shutdown is independent of guest shutdown. Retain stable Homebrew opt paths for both jobs and verify their actual executables, full arguments, selected state and package metadata before reuse/kickstart.
 
@@ -210,37 +205,17 @@ Alternatives: making Swift supervise BEAM would couple server crashes to VM life
 
 ### 8. Verification and integration with existing delivery work
 
-Extend the root canonical check script to run strict Swift checks, Mix formatting/compilation/tests, proxy/auth/composed-MCP conformance fixtures and an embedded release smoke check. Link pinned Opsmaru client/tool/task evidence independently and test its consumer bindings; do not rerun a Macus-owned duplicate implementation or count library evidence as real guest acceptance. Commit locks and required notices; ignore `server/_build`, `server/deps`, package outputs and `.integration`. Pin tools in mise and use the existing macOS CI boundary; no cross-platform host support is added.
+Extend the root canonical check script to run strict Swift checks, Mix formatting/compilation/tests, proxy/auth/composed-MCP conformance fixtures and a release smoke check. Link pinned opsmaru-incus client/gateway/tool evidence independently and test its consumer bindings; do not rerun a Macus-owned duplicate implementation or count library evidence as real guest acceptance. Commit locks and required notices; ignore `server/_build`, `server/deps`, package outputs and `.integration`. Pin tools in mise and use the existing macOS CI boundary; no cross-platform host support is added.
 
-Tests use fake Unix backends and actual TLS/HTTP clients to prove authorization-before-connect, route mapping, ETags/query preservation, body bounds, binary uploads, upgrades, half-close, event overflow, task recovery and service identity conflicts without VZ boot. Include standard Incus client interactions against an Incus-shaped fixture endpoint; library tests alone do not establish CLI compatibility.
+Tests use fake Unix backends and actual TLS/HTTP clients to prove authorization-before-connect, route mapping, ETags/query preservation, body bounds, binary uploads, upgrades, half-close, event overflow, truthful tool results and service identity conflicts without VZ boot. Include standard Incus client interactions against an Incus-shaped fixture endpoint; library tests alone do not establish CLI compatibility.
 
 Installed package checks verify both component revisions, full ERTS payload, passive installation, server startup in an isolated configuration and absence of host toolchain dependency. Real hardware acceptance must separately use the installed package and explicit opt-in, isolated state and `INCUS_CONF`, and prove Linux/Incus boot, actual system-container and OCI-container boot/readiness through the gateway, nested VM boot/readiness where supported or an explicit documented unsupported skip, native HTTP/exec/console/events, MCP inspection/mutations, repeated startup, server-only restart with a retained workload marker, runtime restart persistence, package upgrade/removal and a genuinely separate authenticated LAN/remote client. HTTP/MCP responses and capability reports cannot replace actual workload boot evidence. A loopback test is not remote-client evidence. Failures preserve owned runtime disks, workloads and diagnostics; no reset is used as a recovery shortcut.
 
 The upstream reference and protocol documentation inform the port and native authentication behavior: [Incus client interfaces](https://github.com/lxc/incus/blob/main/client/interfaces.go), [Incus authentication](https://linuxcontainers.org/incus/docs/main/authentication/), [Phoenix headless generator](https://phoenix.hexdocs.pm/Mix.Tasks.Phx.New.html), [Mix release delivery](https://mix.hexdocs.pm/Mix.Tasks.Release.html). Pin exact source/package references for implementation; these moving documentation links are not build inputs.
 
-### 9. Optional central registration and outbound connection
+### 9. Central registration (moved)
 
-`macus connect [url]` enrolls only the selected Macus state/installation. First use requires an explicit canonical HTTPS Opsmaru base URL; subsequent use may omit it to resume the saved registration. Reject malformed URLs, userinfo, query/fragment secrets, untrusted TLS identity and unapproved redirects before credential/state changes. Repeating the same URL and active target/device registration is idempotent. A different service requires explicit disconnect before enrollment; never silently transfer keys, owner grants or pending tasks to it.
-
-The Swift executable performs argument/output/deadline handling and invokes owner-authenticated Macus connection administration; the Elixir server uses shared Opsmaru/OAuth primitives for enrollment and connection work. Explicit connect may validate and activate/recover only the installed matching Elixir job through existing launchd identity/state checks. It must not fetch software, activate Swift/VZ, boot/provision an appliance, change shares, enroll a native Incus CLI remote or open an inbound port. Local connection configuration sits below `<state-dir>/server/connection/` with 0700 directory/0600 private files and safe ownership/ancestry. The same two service labels are retained; no connector daemon/job is installed.
-
-Read trusted central protected-resource/enrollment metadata and perform the pre-registered public CLI Device Authorization Grant with the external provider. Display the verification URI/user code and open the system browser only for this explicit command; user code display is deliberate enrollment UI, while device/API tokens and secrets stay out of logs/normal output. The Elixir server bounds polling, denial, expiry and one overall monotonic connect deadline using the designated TamaOAuth primitives. Keycloak is the first acceptance profile; missing library/provider support is resolved upstream or reported as unsupported, with no password collection or insecure TLS/auth fallback. Initial central registration requires the user's target-enrollment scope and policy, never just a successful provider login.
-
-Generate the installation's device certificate/private key locally, prove possession against central's one-use challenge and explicitly approve the target's project/operation limits. Retain the private key here; central receives its public certificate/fingerprint only. Persist pending enrollment identity/challenge receipt safely before completion so a lost response can recover the same committed target/generation without duplicating registration. On denial/cancellation, disable any incomplete connector activation and report pending remote outcome truthfully without changing workloads; never adopt an unverified target identity. User API/refresh tokens are transient setup material and are not retained for reconnect.
-
-After verified enrollment, atomically persist the canonical central URL/trust, target/generation, private device credential reference and maximum approved capability/project policy, then enable shared outbound TLS/WebSocket workers inside Macus's existing Elixir server. A saved active registration reconnects automatically on server restart with device trust; it never needs a stored user password or OAuth refresh token. The local HTTPS listener stays loopback unless separately configured, with no firewall/NAT changes. Connector heartbeat reports transport reachability separately from guest readiness; an absent/stopped guest can be registered for explicitly permitted runtime actions without automatically starting it.
-
-Macus verifies central service identity, session/generation, negotiated operation descriptor and locally approved permissions before every delegated dispatch. Central supplies a verified external principal/owner context over the authenticated session; it is namespaced by central service and subject and cannot become the local owner or access local standalone tasks. The descriptor routes native Incus calls through the same incus.sock client and Macus runtime calls through the same Swift adapter, preserving stopped-state/share prerequisites, force/confirmation flags and bounded budgets. No unrestricted host command, target URL, remote module loading, key/trust administration or path override is accepted.
-
-Central keeps its user task in SQL; Macus commits the linked dispatch ID/input digest and execution receipt in its existing shared journal before acknowledgement. Repeated dispatch reconciles that receipt, not another runner or local user task. Persist native operation IDs and observed runtime outcomes; possible acceptance with no durable outcome remains uncertain. Status/result/cancel/stream messages are versioned, correlated and bounded; lost replies/reconnect do not replay mutations. Per-capability native binary/control/half-close evidence is mandatory before advertising connector stream support.
-
-`macus connection status [--json]` is passive. It reports configured/enrolled/transport-connected/backend-ready state, central URL, target/generation, sanitized last contact/error and revocation-pending status, without credentials. Missing registration succeeds with an explicitly disconnected state and creates no files or services. Central outage marks connection unavailable while local runtime/native Incus/MCP and normal `macus start` remain usable; it cannot force-start or stop the VM.
-
-`macus disconnect` first durably disables local reconnect, closes its outbound session/streams and blocks new central dispatch. It then attempts central device revocation within a bound. If central is unavailable, report local disconnection plus remote-revocation-pending instead of claiming remote revocation; preserve the pending identity/receipt needed for later explicit reconciliation. Repeating disconnect is idempotent. Accepted backend work, local gateway trust, native CLI remotes, VM disks/workloads, local tasks and linked receipts remain intact. Re-enrollment after confirmed revocation requires a new approved generation and never reassigns old accepted work. Central device revocation similarly closes remote delivery within the shared 30-second maximum; local gateway revocation keeps its existing 5-second bound.
-
-The owner can narrow or disable enrolled capabilities independently of central grants. Unknown/incompatible operation versions fail explicitly; connector failure is isolated from the public gateway and Swift runtime. Packaging is passive and starts no connection; `macus start` may resume an already enrolled connector asynchronously but never enrolls one or waits for central readiness as a local-success prerequisite.
-
-Alternative: forwarding all central calls through a local owner-admin HTTP token would erase external caller/target restrictions. The enrolled connector carries constrained operation context and uses the existing shared runner/adapters instead.
+Central registration, `macus connect`/`connection status`/`disconnect`, the outbound connector and delegated execution moved to the later `add-central-registration` change on 2026-10-13. This change delivers a standalone Macus with no central dependency.
 
 ## Risks / Trade-offs
 
@@ -248,26 +223,22 @@ Alternative: forwarding all central calls through a local owner-admin HTTP token
 - Native certificate/address metadata describes the guest rather than the TLS gateway -> explicitly mediate transport identity/trust, preserve workload payloads and validate actual standard-client enrollment and migrations.
 - SDK port breadth could be mistaken for raw proxy breadth -> separate coverage manifests and completion gates; do not declare parity from a subset.
 - BEAM mailboxes or HTTP middleware can consume unbounded data -> bounded per-stream workers, route-specific body handling and saturation tests.
-- Crashes can leave a remote mutation outcome unknown -> durable intents and known operation IDs; explicit uncertainty instead of automatic mutation replay.
+- Crashes can leave a mutation outcome unknown -> native operation IDs in tool results and explicit uncertainty instead of automatic replay; durable tasks are deferred.
 - Two runtime processes and shared package upgrades add lifecycle coordination -> separate jobs, matching revision checks, stable paths and preserve-data rollback.
 - Bearer credentials and TLS identity make LAN access a host trust boundary -> explicit configuration, private storage, scopes, revocation/expiry and separate remote-client evidence.
-- Connector outage/re-enrollment repeats a mutation -> durable dispatch receipts, target generation fencing and uncertainty before any retry.
-- Central identity becomes local owner authority -> separate delegated owner namespace, approved project/operation limits and local schema/lifecycle checks.
-- Offline disconnect is reported as globally revoked -> immediate durable local disable plus explicit pending central revocation and retained reconciliation identity.
 - Existing Homebrew work overlaps packaging requirements -> reconcile its final integrated contract during apply; do not rewrite another change or claim its incomplete acceptance here.
 
 ## Migration Plan
 
-1. Implement Opsmaru add-embedded-incus-foundation first, obtain an actual immutable library/client reference, then integrate it on `feature/elixir-server` for safe embedding and local typed-client/native gateway work without central setup. Adopt later shared tools/tasks from add-compute-substrate only when their contracts pass, and optional central connectivity after its separate acceptance. Macus gateway/runtime/proxy work may proceed independently after this revised plan is validated. Preserve the seven completed original tasks; new dependency/ownership tasks remain unchecked. Pass canonical consumer checks and installed-package evidence before deployment claims.
+1. Implement the needed `upmaru/opsmaru-incus` revisions (client first; gateway and Incus operations as their changes land), obtain actual immutable references, then integrate them on `feature/elixir-server`. Macus gateway/runtime work may proceed independently against the client alone. Preserve completed tasks; new dependency/ownership tasks remain unchecked. Pass canonical consumer checks and installed-package evidence before deployment claims.
 2. Keep existing VM state and Swift internal APIs. Install a complete matching package passively; do not create credentials or activate services during package installation.
-3. Before replacing an existing installed version, stop the runtime explicitly and unload both owned services that exist. Retain disks, logs, gateway credentials and durable task state. Do not auto-unload foreign or legacy registrations.
+3. Before replacing an existing installed version, stop the runtime explicitly and unload both owned services that exist. Retain disks, logs and gateway credentials. Do not auto-unload foreign or legacy registrations.
 4. On explicit `macus start`, initialize gateway state only if absent, activate both verified jobs and connect through the public server. An existing named `unix:` remote remains a conflict: present an explicit owner-controlled transition or select a different remote name. Do not hand-edit or silently overwrite Incus client configuration.
 5. Configure and verify remote HTTPS identity/enrollment only when remote exposure is requested. Retain loopback access for the local CLI and use the same authorized server routes for remote clients.
-6. Keep existing local Macus fully usable before enrollment. Enable the connector only through explicit connect; retain local disable/pending revocation and receipt state during upgrades. Central registration does not migrate native remotes, task owners or runtime data.
-7. On failure, retain state and provide stage-specific guidance. Rollback stops/unloads the owned services and reinstalls the retained prior complete package. It must not downgrade/migrate guest disks or delete task/credential state. Document that the prior Swift-only package uses explicit legacy socket remotes rather than claiming it supports the new gateway.
+6. On failure, retain state and provide stage-specific guidance. Rollback stops/unloads the owned services and reinstalls the retained prior complete package. It must not downgrade/migrate guest disks or delete credential state. Document that the prior Swift-only package uses explicit legacy socket remotes rather than claiming it supports the new gateway.
 
 ## Open Questions
 
 - The exact first deployment's LAN hostname, operator-supplied certificate and advertised address are configuration inputs, not fixed product requirements.
-- Resolve a real immutable Opsmaru implementation revision and compatible lockfile during dependency integration. The upstream reference inventory and public embedding/coverage obligations remain fixed; no absent release or placeholder revision is assumed.
+- Resolve a real immutable opsmaru-incus revision and compatible lockfile during dependency integration. The upstream reference inventory and public embedding/coverage obligations remain fixed; no absent release or placeholder revision is assumed.
 - Cross-machine LAN acceptance requires an owner-supplied isolated remote test client. Until that evidence is available, mark that acceptance task incomplete rather than infer it from loopback success.

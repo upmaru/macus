@@ -11,21 +11,20 @@ context: |
   routes, streaming and upgrade protocols; gateway trust is distinct from
   guest trust. Typed clients and named MCP tools delegate workload behavior
   to Incus. No external host VM runtime, SSH, GUI or workload orchestration.
-  First adopt add-embedded-incus-foundation for safe library embedding and
-  the native Incus client. Shared tools/tasks and optional central connectivity
-  follow later Opsmaru milestones and cannot gate initial local client integration.
-  Central Opsmaru manages multiple registered Incus/Macus targets; Macus
-  remains one local target and independently usable. Explicit macus connect
-  [url] enrolls a private device identity and enables an outbound connector
-  inside the existing Elixir service, without a third job/listener/database.
-  Central OIDC users, connector devices and native Incus trust stay separate.
-  Disconnect disables remote dispatch while preserving local runtime/data.
-  Use maintained TamaMCP contracts, explicit scopes, bounded streams and
-  durable task adapters; do not claim unsupported protocol features or parity.
+  Macus depends on the pure :opsmaru_incus library (upmaru/opsmaru-incus)
+  for the Incus client, native gateway mechanics and shared Incus MCP tools;
+  it does not depend on the :opsmaru central service. The first milestone is
+  a standalone Macus with synchronous MCP tools and no durable MCP tasks.
+  Central registration (macus connect, outbound connector) is the later
+  add-central-registration change; Macus remains one local target and
+  independently usable, and native Incus trust stays separate from any
+  central identity.
+  Use maintained TamaMCP contracts, explicit scopes and bounded streams; do
+  not claim unsupported protocol features or parity.
   Pin toolchains in mise and dependencies in SwiftPM/Mix lockfiles. Deliver
   the Swift executable and bundled-ERTS Mix release as one matching package,
   with independent per-user launchd jobs. Installation is passive; explicit
-  macus start owns activation. Preserve runtime, credential and task state.
+  macus start owns activation. Preserve runtime and credential state.
   Existing Homebrew candidate generation and real measured-checksum evidence
   remain the delivery baseline. No fake hashes or publication claims.
   Use Git Flow feature branches from develop. Validate planning before code.

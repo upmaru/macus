@@ -81,7 +81,7 @@ New startup-managed registrations SHALL use the com.upmaru.macus namespace and b
 #### Scenario: Isolated service pair
 
 - **WHEN** start targets a nondefault state directory
-- **THEN** both jobs, public endpoint, credentials, task state and logs are isolated from the default installation and neither job is registered for future logins
+- **THEN** both jobs, public endpoint, credentials and logs are isolated from the default installation and neither job is registered for future logins
 
 ### Requirement: Acceptance evidence
 
@@ -106,7 +106,7 @@ Native and Elixir unit/protocol checks SHALL run without booting a VM. Package e
 
 ### Requirement: Versioned combined release
 
-Swift and the Macus release SHALL share immutable Macus package/source identity. The release SHALL record its distinct pinned shared dependency identity, include ERTS and run foreground under launchd. Upgrades/removal SHALL preserve runtime, credential and task state. Missing/mismatched payloads MUST fail without fetching a startup replacement.
+Swift and the Macus release SHALL share immutable Macus package/source identity. The release SHALL record its distinct pinned shared dependency identity, include ERTS and run foreground under launchd. Upgrades/removal SHALL preserve runtime and credential state. Missing/mismatched payloads MUST fail without fetching a startup replacement.
 
 #### Scenario: Combined prebuilt installation
 
@@ -118,25 +118,16 @@ Swift and the Macus release SHALL share immutable Macus package/source identity.
 - **WHEN** server and Swift component metadata identify different source revisions
 - **THEN** startup rejects the mismatch before guest mutation and reports package recovery guidance
 
-### Requirement: Embedded dependency payload and provenance
+### Requirement: Shared library payload and provenance
 
-The complete pinned shared application SHALL ship inside the existing Macus release in embedded mode. Its source identity SHALL be recorded separately from the matched Macus components. A sibling checkout or standalone shared-service installation MUST NOT be required at build or runtime.
+The pinned `:opsmaru_incus` library SHALL ship inside the existing Macus release. Its source identity SHALL be recorded separately from the matched Macus components. A sibling checkout or a separate Opsmaru service installation MUST NOT be required at build or runtime.
 
-#### Scenario: Installed embedded payload
+#### Scenario: Installed library payload
 
-- **WHEN** the verified package starts on a Mac without Elixir/Erlang or an Opsmaru checkout
-- **THEN** shared compute services run inside the existing Macus server without another endpoint or launchd job
+- **WHEN** the verified package starts on a Mac without Elixir/Erlang or an opsmaru-incus checkout
+- **THEN** the shared library runs inside the existing Macus server without another endpoint or launchd job
 
 #### Scenario: Missing shared payload
 
 - **WHEN** the installed shared dependency is absent or conflicts with recorded build identity
 - **THEN** startup fails before guest mutation without downloading a replacement
-
-### Requirement: Embedded connector delivery and preservation
-
-The existing Macus release SHALL include the pinned shared connector without another daemon/job or database requirement. Installation SHALL not enroll or start it. Upgrades/removal SHALL preserve selected-state device identity, disabled/pending revocation state and receipts; incompatible recovery MUST NOT reset or replay execution.
-
-#### Scenario: Package upgraded after disconnect
-
-- **WHEN** an installation with a disabled connector is upgraded
-- **THEN** the connector remains disabled and its receipt/revocation state survives without reconnecting or changing workloads

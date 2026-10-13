@@ -8,7 +8,7 @@ Gives local and remote Macus clients one authenticated public connection boundar
 
 ### Requirement: Public route contract
 
-Macus SHALL expose /runtime, native discovery and /1.0/*, and one composed /mcp endpoint on its authenticated gateway. Shared compute code SHALL run embedded without its own endpoint or listener. The gateway MUST NOT require /incus aliases or modified clients; unknown paths SHALL return bounded failures.
+Macus SHALL expose /runtime, native discovery and /1.0/*, and one composed /mcp endpoint on its authenticated gateway. The shared `:opsmaru_incus` library SHALL run inside the server without its own endpoint or listener. The gateway MUST NOT require /incus aliases or modified clients; unknown paths SHALL return bounded failures.
 
 #### Scenario: Native Incus paths
 
@@ -141,13 +141,13 @@ The published client contract SHALL identify the gateway as the normal connectio
 - **WHEN** a client reads public runtime status
 - **THEN** it receives public connection information and independently reported server/runtime readiness without backend credentials or socket paths
 
-### Requirement: Listener-free shared service embedding
+### Requirement: Listener-free shared library use
 
-The gateway SHALL embed the shared compute application in its existing server process with that dependency's endpoint supervision disabled. Ambient PHX_SERVER or PORT settings MUST NOT enable another listener. Public routing and gateway identity SHALL remain Macus-owned.
+The gateway SHALL use the pure `:opsmaru_incus` library inside its existing server process. The dependency SHALL start no process, endpoint or listener of its own, and ambient PHX_SERVER or PORT settings MUST NOT enable another listener. Native relay mechanics MAY come from the shared gateway component; public routing, host policy, trust state and gateway identity SHALL remain Macus-owned.
 
-#### Scenario: Embedded application startup
+#### Scenario: Library loaded at startup
 
-- **WHEN** Macus starts with configured shared workers and ambient server environment variables
+- **WHEN** Macus starts with the shared library loaded and ambient server environment variables present
 - **THEN** only the Macus public endpoint starts and no dependency-owned endpoint process or port is opened
 
 ### Requirement: One configured local target per Macus endpoint
@@ -156,23 +156,5 @@ The composed endpoint SHALL use Macus's registered runtime and Incus backend. Ar
 
 #### Scenario: Shared worker recovery
 
-- **WHEN** embedded shared workers restart while Swift owns a ready VM
+- **WHEN** host-supervised client workers restart while Swift owns a ready VM
 - **THEN** the same VM and workload state remain available through the existing private transports
-
-### Requirement: Optional outbound central connector
-
-Macus SHALL run an explicitly enrolled connector in its existing Elixir service, with no extra endpoint, inbound port, repository or launchd job. Device and central identities SHALL be verified before dispatch. Central outages MUST NOT prevent standalone local runtime, native Incus or MCP access.
-
-#### Scenario: Central connection unavailable
-
-- **WHEN** the enrolled connector cannot reach central
-- **THEN** the gateway reports disconnected status while local services and Swift-owned workloads remain available
-
-### Requirement: Constrained delegated execution
-
-Connected dispatch SHALL match active target/generation, known operation version and approved local scopes/projects. External owner context SHALL remain distinct from local owner authority. Arbitrary commands, destinations, modules and credential administration MUST NOT be accepted through the connector.
-
-#### Scenario: Local permission denied
-
-- **WHEN** central requests an operation outside the installation's approved capabilities
-- **THEN** Macus rejects it before private socket or host runtime access even if the central user otherwise has a grant

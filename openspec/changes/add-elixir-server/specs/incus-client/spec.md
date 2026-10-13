@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Provides Macus consumers with the shared portable Opsmaru Incus client through the existing native bridge, preserving upstream-traceable behavior and independent consumer acceptance.
+Provides Macus consumers with the shared portable `:opsmaru_incus` Incus client through the existing native bridge, preserving upstream-traceable behavior and independent consumer acceptance.
 
 ## ADDED Requirements
 

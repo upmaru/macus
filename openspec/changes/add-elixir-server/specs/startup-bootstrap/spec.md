@@ -94,20 +94,11 @@ Existing `serve`, `runtime`, `doctor`, and `client setup` commands SHALL remain 
 
 ## ADDED Requirements
 
-### Requirement: Embedded compute preflight
+### Requirement: Shared library preflight
 
-Startup SHALL validate the bundled shared dependency, embedded mode and selected backend/state before activating the server. Shared workers SHALL remain inside the existing Elixir service; no third job, public listener or separate dependency activation SHALL be introduced.
+Startup SHALL validate the bundled `:opsmaru_incus` dependency and selected backend/state before activating the server. The library SHALL run inside the existing Elixir service; no third job, public listener or separate dependency activation SHALL be introduced.
 
-#### Scenario: Invalid dependency mode
+#### Scenario: Invalid dependency payload
 
-- **WHEN** Macus startup detects standalone shared-service configuration or a missing pinned payload
+- **WHEN** Macus startup detects a missing or mismatched pinned library payload
 - **THEN** it fails preflight without starting another endpoint or mutating the guest
-
-### Requirement: Central-independent local startup
-
-Local startup SHALL not require central enrollment, external user login or central availability. An already enrolled connector SHALL reconnect independently after server activation, without extending local readiness requirements or provisioning a registration. Connector failures MUST NOT restart or stop a healthy VM.
-
-#### Scenario: Start while central offline
-
-- **WHEN** an enrolled installation starts locally while central is unreachable
-- **THEN** normal local startup can succeed and connection status reports central unavailability separately
