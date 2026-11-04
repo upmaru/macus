@@ -33,10 +33,21 @@ start with `TAMA_ZFS_QUALIFIED_REVISION_UNAVAILABLE`. The pin, catalog
 2.4.4-r0. On 2026-11-04 the live v3.24 aarch64 APKINDEX listed exactly these
 revisions, with Incus 7.0.1-r2.
 
-Hardware status for 6.18.60-r0: **not yet qualified on hardware.** No VM has booted
-this pair for this record. The 2026-10-05 and 2026-10-06 results below were measured
-on 6.18.55-r0 and are not rewritten. Already-completed appliances keep their
-recorded kernel and are not reprovisioned by this change.
+A production-seed boot on disposable state ([evidence](testing/zfs-requalification-6.18.60.json)),
+on the same Mac16,5 / macOS 27.0.1 host with 4096 MiB RAM and a 32 GiB data disk,
+upgraded `linux-lts` 6.18.52-r0 to 6.18.60-r0 and installed `zfs-lts` 6.18.60-r0
+with ZFS 2.4.4-r0. It then logged `TAMA_ZFS_KERNEL_REBOOT_REQUIRED`. The daemon used
+its single reboot allowance and the start returned ready. Incus 7.0.1 reported kernel
+`6.18.60-0-lts`, storage `zfs` 2.4.4-1, and a `default` pool on `tama-data/workloads`
+with `volume.zfs.reserve_space=true`. The default profile had a 2 GiB root on that pool.
+A graceful stop returned `stopped`.
+
+**This is boot-level evidence only.** The run did not repeat the `run-zfs.py` storage
+suite: lifecycle, snapshots, quotas, growth, nested VMs and space exhaustion. It
+launched no workload, did not restart to re-import the pool, and did not check
+`TAMA_ZFS_EXPORT_OK`. The 2026-10-05 and 2026-10-06 results below were measured on
+6.18.55-r0 and are not rewritten. Already-completed appliances keep their recorded
+kernel and are not reprovisioned by this change.
 
 ## Hardware and package provenance
 
