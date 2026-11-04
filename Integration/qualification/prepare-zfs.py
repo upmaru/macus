@@ -14,8 +14,8 @@ parser.add_argument('--output', type=Path, required=True)
 parser.add_argument('--memory-mib', type=int, default=4096)
 parser.add_argument('--data-disk-gib', type=int, default=32)
 INSTALL_LINE = (
-    '    linux-lts=6.18.55-r0 zfs=2.4.4-r0 zfs-libs=2.4.4-r0 '
-    'zfs-lts=6.18.55-r0 zfs-openrc=2.4.4-r0; then'
+    '    linux-lts=6.18.60-r0 zfs=2.4.4-r0 zfs-libs=2.4.4-r0 '
+    'zfs-lts=6.18.60-r0 zfs-openrc=2.4.4-r0; then'
 )
 REBOOT_LINE = '    echo TAMA_ZFS_KERNEL_REBOOT_REQUIRED'
 

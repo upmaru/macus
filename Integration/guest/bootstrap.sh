@@ -80,9 +80,9 @@ apk --timeout 30 add --no-cache \
 # The cloud image EFI partition needs the unused DTB tree removed before this kernel update.
 if [ -d "$boot/boot/dtbs-lts" ]; then rm -rf "$boot/boot/dtbs-lts"; fi
 if ! apk --timeout 30 add --no-cache \
-    linux-lts=6.18.55-r0 zfs=2.4.4-r0 zfs-libs=2.4.4-r0 zfs-lts=6.18.55-r0 zfs-openrc=2.4.4-r0; then
+    linux-lts=6.18.60-r0 zfs=2.4.4-r0 zfs-libs=2.4.4-r0 zfs-lts=6.18.60-r0 zfs-openrc=2.4.4-r0; then
     echo 'MACUS_OBSERVATION v1 stage=failed code=qualified_revision_unavailable' >&2
-    echo 'TAMA_ZFS_QUALIFIED_REVISION_UNAVAILABLE: Alpine v3.24 no longer provides linux-lts=6.18.55-r0 zfs=2.4.4-r0; refusing to substitute' >&2
+    echo 'TAMA_ZFS_QUALIFIED_REVISION_UNAVAILABLE: Alpine v3.24 no longer provides linux-lts=6.18.60-r0 zfs=2.4.4-r0; refusing to substitute' >&2
     exit 1
 fi
 apk info -v | grep '^linux-lts-' | sed 's/^linux-lts-//;s/-r/-/;s/$/-lts/' > "$boot/etc/tama-zfs-qualified-kernel"

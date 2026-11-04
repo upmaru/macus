@@ -23,6 +23,21 @@ disk/config change was requested. The intended stopped state is restored and no
 restoration question remains. The earlier cleanup deviation remains recorded;
 this does not establish historical disk-hash preservation for a15.
 
+## Package requalification, 2026-11-04
+
+Alpine published `linux-lts` and `zfs-lts` 6.18.60-r0 on 2026-11-01 and removed
+6.18.55-r0 from v3.24 `main/aarch64`. The pinned bootstrap then refused every fresh
+start with `TAMA_ZFS_QUALIFIED_REVISION_UNAVAILABLE`. The pin, catalog
+`qualified_packages`, embedded guest payload and its catalog revision now name
+`linux-lts`/`zfs-lts` 6.18.60-r0. `zfs`, `zfs-libs` and `zfs-openrc` stay at
+2.4.4-r0. On 2026-11-04 the live v3.24 aarch64 APKINDEX listed exactly these
+revisions, with Incus 7.0.1-r2.
+
+Hardware status for 6.18.60-r0: **not yet qualified on hardware.** No VM has booted
+this pair for this record. The 2026-10-05 and 2026-10-06 results below were measured
+on 6.18.55-r0 and are not rewritten. Already-completed appliances keep their
+recorded kernel and are not reprovisioned by this change.
+
 ## Hardware and package provenance
 
 Historical 2026-10-05 prototype record. It is not the current production-task status.
