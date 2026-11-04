@@ -140,9 +140,17 @@ private func observation(
     write: capture.streams.writeError)
   sink.startRefreshing()
   sink.emit(observation())
-  try await Task.sleep(for: .milliseconds(150))
+  // Poll with a deadline: fixed sleeps raced the 100 ms refresh loop on slow CI runners.
+  let drawn = ContinuousClock.now.advanced(by: .seconds(5))
+  while !capture.error.contains("\u{1B}[?25l"), ContinuousClock.now < drawn {
+    try await Task.sleep(for: .milliseconds(20))
+  }
+  #expect(capture.error.contains("\u{1B}[?25l"))
   columns.set(12)
-  try await Task.sleep(for: .milliseconds(150))
+  let fallback = ContinuousClock.now.advanced(by: .seconds(5))
+  while !capture.error.contains("\u{1B}[?25h"), ContinuousClock.now < fallback {
+    try await Task.sleep(for: .milliseconds(20))
+  }
   #expect(capture.error.contains("\u{1B}[?25h"))
   let offset = capture.error.count
   sink.emit(observation(detail: "new detail"))
