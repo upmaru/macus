@@ -45,10 +45,10 @@ struct ApplianceCatalogEntry: Sendable, Equatable {
     helperVersion: 1,
     qualifiedPackages: [
       "incus": ">=7.0.1",
-      "linux-lts": "6.18.55-r0",
+      "linux-lts": "6.18.60-r0",
       "zfs": "2.4.4-r0",
       "zfs-libs": "2.4.4-r0",
-      "zfs-lts": "6.18.55-r0",
+      "zfs-lts": "6.18.60-r0",
       "zfs-openrc": "2.4.4-r0",
     ],
     guestPayloadRevision: EmbeddedGuestPayload.revision)

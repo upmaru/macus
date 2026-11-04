@@ -13,13 +13,13 @@ import unittest
 RUNNER = Path(__file__).resolve().parents[1] / 'qualification/run-zfs.py'
 PREPARE = Path(__file__).resolve().parents[1] / 'qualification/prepare-zfs.py'
 INSTALL_LINE = (
-    '    linux-lts=6.18.55-r0 zfs=2.4.4-r0 zfs-libs=2.4.4-r0 '
-    'zfs-lts=6.18.55-r0 zfs-openrc=2.4.4-r0; then'
+    '    linux-lts=6.18.60-r0 zfs=2.4.4-r0 zfs-libs=2.4.4-r0 '
+    'zfs-lts=6.18.60-r0 zfs-openrc=2.4.4-r0; then'
 )
 REBOOT_LINE = '    echo TAMA_ZFS_KERNEL_REBOOT_REQUIRED'
 DIAGNOSTIC = (
     "    echo 'TAMA_ZFS_QUALIFIED_REVISION_UNAVAILABLE: Alpine v3.24 no longer provides "
-    "linux-lts=6.18.55-r0 zfs=2.4.4-r0; refusing to substitute' >&2"
+    "linux-lts=6.18.60-r0 zfs=2.4.4-r0; refusing to substitute' >&2"
 )
 
 
@@ -47,7 +47,7 @@ class ZFSQualificationTests(unittest.TestCase):
         spec.loader.exec_module(prepare_zfs)
         text = '\n'.join([INSTALL_LINE, DIAGNOSTIC, REBOOT_LINE, DIAGNOSTIC])
         self.assertTrue(prepare_zfs.qualification_bootstrap_ok(text))
-        self.assertGreater(text.count('linux-lts=6.18.55-r0'), 1)
+        self.assertGreater(text.count('linux-lts=6.18.60-r0'), 1)
         self.assertFalse(prepare_zfs.qualification_bootstrap_ok(DIAGNOSTIC + '\n' + REBOOT_LINE))
 
     def test_qualification_seed_keeps_commands_top_level(self):
@@ -81,7 +81,7 @@ class ZFSQualificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             bootstrap = root / 'bootstrap.sh'
-            bootstrap.write_text(DIAGNOSTIC + '\n' + 'linux-lts=6.18.55-r0\n' + REBOOT_LINE + '\n')
+            bootstrap.write_text(DIAGNOSTIC + '\n' + 'linux-lts=6.18.60-r0\n' + REBOOT_LINE + '\n')
             output = Path(__file__).resolve().parents[2] / '.integration' / 'z-guard-no-output'
             output.rmdir() if output.exists() and not any(output.iterdir()) else None
             if output.exists():

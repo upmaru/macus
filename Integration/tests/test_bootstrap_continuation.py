@@ -28,7 +28,7 @@ class BootstrapContinuationTests(unittest.TestCase):
         write_stub(bin_dir, 'rc-update', f'printf "rc-update %s\\n" "$*" >> "{calls}"\n')
         write_stub(bin_dir, 'apk', f'''
 printf "apk %s\\n" "$*" >> "{calls}"
-if [ "$1" = info ]; then printf '%s\\n' 'linux-lts-6.18.55-r0'; fi
+if [ "$1" = info ]; then printf '%s\\n' 'linux-lts-6.18.60-r0'; fi
 ''')
         write_stub(bin_dir, 'seq', 'printf "1\\n"\n')
         write_stub(root / 'bin', 'storage', f'printf "storage %s\\n" "$*" >> "{calls}"\n')
@@ -73,8 +73,8 @@ if [ "$1" = info ]; then printf '%s\\n' 'linux-lts-6.18.55-r0'; fi
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.prepare(root)
-            (root / 'etc/tama-zfs-qualified-kernel').write_text('6.18.55-0-lts\n')
-            result, calls = self.run_boot(root, '6.18.55-0-lts')
+            (root / 'etc/tama-zfs-qualified-kernel').write_text('6.18.60-0-lts\n')
+            result, calls = self.run_boot(root, '6.18.60-0-lts')
             output = result.stdout + result.stderr
             recorded = calls.read_text()
             self.assertEqual(result.returncode, 0, output + recorded)
@@ -88,7 +88,7 @@ if [ "$1" = info ]; then printf '%s\\n' 'linux-lts-6.18.55-r0'; fi
             self.assertIn('rc-update add incusd', recorded)
             self.assertIn('rc-update del tama-bootstrap', recorded)
             self.assertTrue((root / 'var/lib/tama-bootstrap-complete').is_file())
-            second, second_calls = self.run_boot(root, '6.18.55-0-lts')
+            second, second_calls = self.run_boot(root, '6.18.60-0-lts')
             self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
             self.assertIn('TAMA_BOOTSTRAP_ALREADY_COMPLETE', second.stdout)
             self.assertNotIn('poweroff', second_calls.read_text() if second_calls.exists() else '')
@@ -101,7 +101,7 @@ if [ "$1" = info ]; then printf '%s\\n' 'linux-lts-6.18.55-r0'; fi
                 (root / 'var/lib/tama-bootstrap-complete').write_text('complete\n')
                 if record is not None:
                     (root / 'etc/tama-zfs-qualified-kernel').write_text(record)
-                result, calls = self.run_boot(root, '6.18.55-0-lts')
+                result, calls = self.run_boot(root, '6.18.60-0-lts')
                 recorded = calls.read_text() if calls.exists() else ''
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn('MACUS_OBSERVATION v1 stage=failed code=kernel_record_missing', result.stderr)
@@ -116,7 +116,7 @@ if [ "$1" = info ]; then printf '%s\\n' 'linux-lts-6.18.55-r0'; fi
             root = Path(directory)
             self.prepare(root)
             (root / 'var/lib/tama-bootstrap-complete').write_text('complete\n')
-            (root / 'etc/tama-zfs-qualified-kernel').write_text('6.18.55-0-lts\n')
+            (root / 'etc/tama-zfs-qualified-kernel').write_text('6.18.60-0-lts\n')
             result, calls = self.run_boot(root, '6.18.52-0-lts')
             recorded = calls.read_text()
             output = result.stdout + result.stderr
