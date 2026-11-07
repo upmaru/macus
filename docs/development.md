@@ -134,14 +134,18 @@ python3 Integration/scripts/acceptance.py \
   --report .integration/zfs-acceptance.json
 ```
 
-The opt-in idle-stream regression holds 80 incomplete Incus requests open while probing control status, guest health and normal Incus API requests. Run it against an already ready isolated runtime before workload acceptance:
+The opt-in relay regression first holds 80 incomplete Incus requests open while probing control status, guest health and normal Incus API requests. It then leaves one stream of 400 pipelined `/1.0` responses unread for 10 seconds. During that time, new and existing Incus connections, runtime status and guest health must each answer within 1 second, and the stalled stream must then drain completely. Pass `--export-image FINGERPRINT` to also record export throughput for a local image. Run it against an already ready isolated runtime before workload acceptance. An appliance without the flow relay is expected to fail the stalled-reader check, and its health probes may mark that isolated runtime failed:
 
 ```sh
 python3 Integration/scripts/relay-stress.py \
   --state-dir "$PWD/.integration/state" --report .integration/relay-stress.json
 ```
 
-Host relays use nonblocking readiness notifications with at most 64 KiB buffered per direction. A fatal listener failure exits the entire guest helper so OpenRC can restart it; transient accept failures retry. Guest health becomes available only after the relay listener starts.
+Host relays use nonblocking readiness notifications. Virtualization.framework services the whole virtio-vsock device on one serial queue, and that queue blocks while writing guest bytes into any host connection descriptor that is full. A host relay that stops reading one guest connection therefore stalls every vsock connection, including new connection requests and health probes.
+
+Appliances provisioned with the current guest payload serve a flow-controlled relay on vsock port 8445, and their health reports `flow_relay_version: 1`. Each connection carries DATA, CREDIT and END frames. Each direction has a fixed 256 KiB window, and credit is granted only after bytes reach the local peer. As a result, the host drains every guest descriptor while buffering at most one window per direction. Older appliances omit the health field and keep the unframed relay on port 8443, which buffers at most 64 KiB per direction. They keep that behavior until they are recreated, because Macus does not patch an existing appliance.
+
+A fatal listener failure exits the entire guest helper so OpenRC can restart it; transient accept failures retry. Guest health becomes available only after both relay listeners start.
 
 Swift tests run with explicit `--no-parallel` so unrelated subprocess fixture startup does not consume another test's short deadline on CI. Concurrency and cancellation tests still launch their own concurrent work and keep their original timing assertions.
 

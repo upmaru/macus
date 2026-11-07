@@ -20,9 +20,13 @@ public final class APIServer {
     do {
       incus = try UnixListener(path: paths.incusSocket) { socket in
         do {
-          let stream = try await service.openIncusStream()
-          await SocketRelay.relay(socket, stream.socket)
-          await stream.release()
+          let incus = try await service.openIncusStream()
+          switch incus.mode {
+          case .raw: await SocketRelay.relay(socket, incus.stream.socket)
+          case .flowControlled:
+            await FlowControlledRelay.relay(client: socket, guest: incus.stream.socket)
+          }
+          await incus.stream.release()
         } catch { socket.shutdown() }
       }
     } catch {

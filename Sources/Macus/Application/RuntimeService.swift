@@ -151,9 +151,14 @@ public actor RuntimeService {
     startedAt = nil
     return snapshot()
   }
-  public func openIncusStream() async throws -> GuestStream {
+  public func openIncusStream() async throws -> IncusStream {
     guard state == .ready else { throw RuntimeError(.unavailable, "Incus is not ready") }
-    return try await driver.openStream(port: 8443)
+    // Only appliances whose live helper advertises the flow relay receive framed streams.
+    if guestHealth?.flowRelayVersion == FlowRelayProtocol.version {
+      return IncusStream(
+        stream: try await driver.openStream(port: FlowRelayProtocol.port), mode: .flowControlled)
+    }
+    return IncusStream(stream: try await driver.openStream(port: 8443), mode: .raw)
   }
 
   private func beginMutation() throws {
