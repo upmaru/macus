@@ -33,11 +33,17 @@ public struct GuestHealth: Codable, Sendable, Equatable {
   public let incusVersion: String
   public let apiExtensions: [String]
   public let kvm: Bool
-  public init(protocolVersion: Int = 1, incusVersion: String, apiExtensions: [String], kvm: Bool) {
+  /// Present only when the guest serves the flow-controlled Incus relay.
+  public let flowRelayVersion: Int?
+  public init(
+    protocolVersion: Int = 1, incusVersion: String, apiExtensions: [String], kvm: Bool,
+    flowRelayVersion: Int? = nil
+  ) {
     self.protocolVersion = protocolVersion
     self.incusVersion = incusVersion
     self.apiExtensions = apiExtensions
     self.kvm = kvm
+    self.flowRelayVersion = flowRelayVersion
   }
 }
 
