@@ -151,3 +151,13 @@ The startup screen checker requires all nine resolved rows exactly once, includi
 the five skipped-resource labels and each native elapsed-time suffix. Negative
 regressions remove, duplicate, clip, mislabel or remove timing from every skipped
 row, ensuring a `9/9` footer alone cannot satisfy presentation acceptance.
+
+## Flow-controlled relay — 2026-11-08 UTC
+
+The flow-controlled Incus relay passed [opt-in hardware acceptance](testing/flow-relay-acceptance.json) on an isolated appliance booted by a release build of Macus `1085025` on a Mac16,5 with macOS 27.0.1. The guest reported `flow_relay_version` 1.
+
+- **Idle streams:** 80 open Incus streams; all 60 control, health and Incus probes succeeded, with a maximum of 13 ms.
+- **Stalled reader:** 400 pipelined `/1.0` responses were left unread for 10 seconds. All 144 probes on new and existing Incus connections, runtime status and guest health answered, with a maximum of 62 ms, and the stream then drained all 400 responses.
+- **Bidirectional relay:** a 1.04 GiB image export was streamed directly into an image import on a second connection in 5.35 s, about 194 MiB/s with both directions crossing the vsock device at once. The import succeeded with the same fingerprint, and 24 concurrent new-connection probes answered within 6 ms.
+
+**Deviation:** Alpine v3.24 no longer serves the committed `linux-lts`/`zfs-lts` 6.18.60-r0 pair, so this run used an uncommitted payload pinned to 6.18.62-r0. The relay does not depend on the kernel version, but that kernel/ZFS pair is unqualified and this run is not ZFS evidence. A relay-mode `incus copy` between two remote names for the same socket completed server-side and is not counted.
