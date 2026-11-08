@@ -14,14 +14,13 @@ import threading
 
 INCUS_SOCKET = '/var/lib/incus/unix.socket'
 relay_ready = threading.Event()
-flow_ready = threading.Event()
 
-# Flow-controlled relay (vsock port 8445). Virtualization.framework services every vsock
-# connection on one serial queue that blocks writing into a full host descriptor, so the
-# host must always drain each connection. Credit bounds what either side may have in
+# Incus relay on vsock port 8443, always flow-controlled. Virtualization.framework
+# services every vsock connection on one serial queue that blocks writing into a full
+# host descriptor, so the host must always drain each connection. Credit bounds what either side may have in
 # flight: a sender has at most WINDOW unacknowledged payload bytes, and a receiver grants
 # credit only after writing bytes to its local peer.
-FLOW_PORT = 8445
+RELAY_PORT = 8443
 FLOW_VERSION = 1
 WINDOW = 262144
 MAX_PAYLOAD = 65536
@@ -58,30 +57,6 @@ def incus_health():
         }
     finally:
         connection.close()
-
-
-def relay(client):
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as incus:
-        incus.connect(INCUS_SOCKET)
-        # Each direction handles partial writes/backpressure in sendall; no HTTP parsing.
-        def pump(source, target):
-            try:
-                while True:
-                    data = source.recv(65536)
-                    if not data:
-                        target.shutdown(socket.SHUT_WR)
-                        return
-                    target.sendall(data)
-            except OSError:
-                for stream in (source, target):
-                    try:
-                        stream.shutdown(socket.SHUT_RDWR)
-                    except OSError:
-                        pass
-        thread = threading.Thread(target=pump, args=(client, incus))
-        thread.start()
-        pump(incus, client)
-        thread.join()
 
 
 class ProtocolError(Exception):
@@ -265,7 +240,7 @@ def health(client):
         code, result = '404 Not Found', {'error': 'unknown health route'}
     else:
         try:
-            if not relay_ready.is_set() or not flow_ready.is_set():
+            if not relay_ready.is_set():
                 raise RuntimeError('Incus relay listener is unavailable')
             result = incus_health()
             result['flow_relay_version'] = FLOW_VERSION
@@ -331,7 +306,6 @@ def run_or_exit(port, handler, ready=None):
 
 
 if __name__ == '__main__':
-    threading.Thread(target=run_or_exit, args=(8443, relay, relay_ready), daemon=True).start()
-    threading.Thread(target=run_or_exit, args=(FLOW_PORT, flow_relay, flow_ready),
+    threading.Thread(target=run_or_exit, args=(RELAY_PORT, flow_relay, relay_ready),
                      daemon=True).start()
     run_or_exit(8444, health)

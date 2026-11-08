@@ -15,10 +15,10 @@ Copying bytes faster cannot fix this. The host must keep every guest descriptor 
 
 ## What Changes
 
-- Add a flow-controlled Incus relay protocol on a new guest vsock port, 8445. Each direction carries typed frames (data, credit, end of stream) with a fixed per-connection window of 256 KiB. A sender never has more than one window of unacknowledged data in flight. A receiver grants credit only after delivering bytes to its local peer.
+- Replace the unframed Incus relay on guest vsock port 8443 with a flow-controlled protocol on the same port. Each direction carries typed frames (data, credit, end of stream) with a fixed per-connection window of 256 KiB. A sender never has more than one window of unacknowledged data in flight. A receiver grants credit only after delivering bytes to its local peer.
 - The host relay always reads guest descriptors, holds at most one window of client-bound data per connection and enforces the protocol. Malformed frames, window violations and data after end of stream abort only that connection.
 - The guest bridge serves the framed protocol. For each connection it reads vsock eagerly into bounded buffers, writes to the Incus socket from a separate worker and returns credit after each write. It preserves byte transparency, WebSocket upgrades and half-close.
-- Guest health adds `flow_relay_version: 1`. `incus.sock` uses the framed port only when live health advertises version 1. Older appliances keep the existing raw relay on port 8443 unchanged.
+- Guest health adds `flow_relay_version: 1`. The runtime becomes ready only when live health advertises version 1. **BREAKING**: appliances provisioned with an older payload fail readiness with an instruction to recreate them; their runtime data is not deleted.
 - New appliances embed the updated guest payload, which gives it a new payload revision. Existing appliances are not patched in place.
 - Add hardware acceptance for a stalled reader: new and existing connections, control requests and health probes must keep completing while one stream is unread.
 
@@ -36,10 +36,10 @@ None.
 
 Affected files:
 
-- `Sources/Macus/Support/SocketRelay.swift`, plus a new framed relay.
+- `Sources/Macus/Support/SocketRelay.swift` (removed) and the new framed relay.
 - `Sources/Macus/API/APIServer.swift`.
 - `Sources/Macus/Application/RuntimeService.swift` and `RuntimeState.swift` (the health field).
 - `Integration/guest/bridge.py` and the regenerated `EmbeddedGuestPayload.swift`.
 - Swift and Python transport tests, `Integration/scripts/relay-stress.py`, and documentation.
 
-There are no changes to the Incus API, workloads, storage or control routes. The raw relay remains for appliances without the new payload. Hardware acceptance stays opt-in, uses isolated state directories and is recorded separately from unit test success.
+There are no changes to the Incus API, workloads, storage or control routes. Existing appliances must be recreated to use this Macus version. Hardware acceptance stays opt-in, uses isolated state directories and is recorded separately from unit test success.

@@ -33,11 +33,11 @@ public struct GuestHealth: Codable, Sendable, Equatable {
   public let incusVersion: String
   public let apiExtensions: [String]
   public let kvm: Bool
-  /// Present only when the guest serves the flow-controlled Incus relay.
+  /// Absent from guest bridges that predate the flow-controlled Incus relay.
   public let flowRelayVersion: Int?
   public init(
     protocolVersion: Int = 1, incusVersion: String, apiExtensions: [String], kvm: Bool,
-    flowRelayVersion: Int? = nil
+    flowRelayVersion: Int? = FlowRelayProtocol.version
   ) {
     self.protocolVersion = protocolVersion
     self.incusVersion = incusVersion
@@ -45,6 +45,8 @@ public struct GuestHealth: Codable, Sendable, Equatable {
     self.kvm = kvm
     self.flowRelayVersion = flowRelayVersion
   }
+  /// Whether the guest relays Incus with the protocol this host speaks.
+  public var servesFlowRelay: Bool { flowRelayVersion == FlowRelayProtocol.version }
 }
 
 public struct HostCapabilities: Codable, Sendable {

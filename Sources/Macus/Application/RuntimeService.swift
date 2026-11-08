@@ -151,15 +151,15 @@ public actor RuntimeService {
     startedAt = nil
     return snapshot()
   }
-  public func openIncusStream() async throws -> IncusStream {
+  public func openIncusStream() async throws -> GuestStream {
     guard state == .ready else { throw RuntimeError(.unavailable, "Incus is not ready") }
-    // Only appliances whose live helper advertises the flow relay receive framed streams.
-    if guestHealth?.flowRelayVersion == FlowRelayProtocol.version {
-      return IncusStream(
-        stream: try await driver.openStream(port: FlowRelayProtocol.port), mode: .flowControlled)
-    }
-    return IncusStream(stream: try await driver.openStream(port: 8443), mode: .raw)
+    return try await driver.openStream(port: FlowRelayProtocol.port)
   }
+
+  /// Guest bridges are installed once at first boot, so an older appliance keeps serving
+  /// unframed bytes on the relay port and cannot be upgraded in place.
+  static let legacyGuestBridge =
+    "The appliance guest bridge predates the flow-controlled Incus relay this Macus requires. Recreate the appliance to continue; runtime data was not deleted."
 
   private func beginMutation() throws {
     guard !mutationActive else {
@@ -186,14 +186,17 @@ public actor RuntimeService {
     // This operation owns the mutation gate, so refresh() intentionally cannot run here.
     if state == .ready {
       if await driver.isRunning() {
-        if let live = try? await driver.health(), live.protocolVersion == 1 {
+        let live = try? await driver.health()
+        if let live, live.protocolVersion == 1, live.servesFlowRelay {
           try Task.checkCancellation()
           guestHealth = live
           return snapshot()
         }
         state = .failed
         guestHealth = nil
-        lastError = "Guest health unavailable; stop/start to recover"
+        lastError =
+          live?.protocolVersion == 1
+          ? Self.legacyGuestBridge : "Guest health unavailable; stop/start to recover"
       } else {
         state = .failed
         guestHealth = nil
@@ -301,6 +304,9 @@ public actor RuntimeService {
         if let health = try? await driver.health(), health.protocolVersion == 1 {
           try Task.checkCancellation()
           guard generation == operationGeneration else { throw CancellationError() }
+          guard health.servesFlowRelay else {
+            throw RuntimeError(.unavailable, Self.legacyGuestBridge)
+          }
           guestHealth = health
           state = .ready
           bootPhase = "ready"
@@ -362,12 +368,14 @@ public actor RuntimeService {
     } else {
       let live = try? await driver.health()
       guard state == .ready, !mutationActive, generation == observedGeneration else { return }
-      if let live, live.protocolVersion == 1 {
+      if let live, live.protocolVersion == 1, live.servesFlowRelay {
         guestHealth = live
       } else {
         state = .failed
         guestHealth = nil
-        lastError = "Guest health unavailable; stop/start to recover"
+        lastError =
+          live?.protocolVersion == 1
+          ? Self.legacyGuestBridge : "Guest health unavailable; stop/start to recover"
       }
     }
   }

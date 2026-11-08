@@ -4,21 +4,21 @@
 
 ### Requirement: Transparent proxy
 
-Incus transport SHALL relay bytes bidirectionally over vsock to the guest Incus Unix socket without rewriting URLs, JSON, headers or WebSocket frames. Streaming and half-close SHALL be supported. When live guest health advertises flow relay version 1, the vsock hop SHALL carry the stream in per-connection flow-controlled frames whose payloads reproduce the original byte stream exactly; otherwise the unframed relay SHALL be used.
+Incus transport SHALL relay bytes bidirectionally over vsock to the guest Incus Unix socket without rewriting URLs, JSON, headers or WebSocket frames. Streaming and half-close SHALL be supported. The vsock hop SHALL carry each stream in per-connection flow-controlled frames whose payloads reproduce the original byte stream exactly. The runtime SHALL become ready only when live guest health advertises flow relay version 1.
 
 #### Scenario: Streaming exec
 
 - **WHEN** Incus upgrades an exec or event connection to WebSocket
 - **THEN** frames and connection lifetime are preserved across the bridge
 
-#### Scenario: Flow relay selection
+#### Scenario: Guest without the flow relay
 
-- **WHEN** the runtime is ready and guest health reports `flow_relay_version` 1
-- **THEN** new Incus connections use the flow-controlled guest port, and appliances whose health omits the field keep the unframed relay
+- **WHEN** live guest health omits `flow_relay_version` or reports a version other than 1
+- **THEN** the runtime fails readiness with an instruction to recreate the appliance, opens no Incus stream to the guest and deletes no runtime data
 
 ### Requirement: Host-only helper
 
-Guest helper SHALL accept only host vsock CID 2 and expose the Incus Unix socket through an unframed and a flow-controlled relay, plus a read-only health endpoint, on distinct fixed ports. No helper endpoint SHALL accept guest shell commands.
+Guest helper SHALL accept only host vsock CID 2 and expose the Incus Unix socket through the flow-controlled relay and a read-only health endpoint on distinct fixed ports. No helper endpoint SHALL accept guest shell commands.
 
 #### Scenario: Guest peer denied
 
@@ -27,7 +27,7 @@ Guest helper SHALL accept only host vsock CID 2 and expose the Incus Unix socket
 
 ### Requirement: Relay availability
 
-Host relay I/O SHALL use bounded buffers and nonblocking readiness notifications so idle streams cannot exhaust workers needed for control requests or health probes. The flow-controlled relay SHALL keep every guest vsock descriptor drained regardless of client backpressure, bound each direction to a fixed per-connection window, grant credit only after delivery to the local peer, and abort only the offending connection on a protocol violation. Fatal failure of any guest listener SHALL terminate the helper for supervisor restart; transient accept errors SHALL be retried. Guest health SHALL require the Incus relay listeners to have started and SHALL advertise the flow relay only after its listener has started.
+Host relay I/O SHALL use bounded buffers and nonblocking readiness notifications so idle streams cannot exhaust workers needed for control requests or health probes. The flow-controlled relay SHALL keep every guest vsock descriptor drained regardless of client backpressure, bound each direction to a fixed per-connection window, grant credit only after delivery to the local peer, and abort only the offending connection on a protocol violation. Fatal failure of either guest listener SHALL terminate the helper for supervisor restart; transient accept errors SHALL be retried. Guest health SHALL require the Incus relay listener to have started and SHALL advertise the flow relay version.
 
 #### Scenario: Idle streams
 

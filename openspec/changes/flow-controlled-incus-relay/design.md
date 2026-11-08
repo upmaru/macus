@@ -18,21 +18,23 @@ See `proposal.md` for the observed failure and the delta spec for the contract.
 - No single Incus stream can stall the vsock device.
 - Memory per connection stays bounded.
 - Byte transparency, WebSocket/upgrade lifetimes and half-close keep working.
-- Existing appliances keep working, and new appliances get the fix through their embedded payload.
+- New appliances get the fix through their embedded payload. Existing appliances fail readiness with an explicit instruction to recreate them instead of misreading frames as Incus bytes.
 
 **Non-Goals:**
 - No TCP or virtio-net listener.
 - No Incus HTTP parsing or URL rewriting.
 - No multiplexing several clients over one vsock connection.
 - No in-place patching of an existing appliance's root disk.
-- No change to the raw protocol on port 8443.
+- No unframed fallback relay or second relay port.
 - No new Incus or runtime control routes.
 
 ## Decisions
 
-### 1. Per-connection credit protocol on a new port
+### 1. Per-connection credit protocol on the existing relay port
 
-The guest bridge listens on vsock port **8445** for the flow-controlled protocol. Port 8443 stays the unchanged raw relay. Using a dedicated port avoids an in-band negotiation that an old guest could misread as Incus bytes.
+The guest bridge serves only the flow-controlled protocol on the existing Incus relay port, vsock **8443**. The unframed relay is removed from both sides, so there is one relay socket and one relay implementation.
+
+An old guest still serves unframed bytes on 8443, and a framed host would corrupt its streams. Guest health therefore reports `flow_relay_version: 1`, and the host only becomes ready for a guest that reports it (decision 2).
 
 **Frames.** Each frame has a 5-byte header: a type byte, then a big-endian unsigned 32-bit payload length.
 
@@ -74,7 +76,7 @@ Window size versus memory: 256 KiB per direction keeps worst-case buffering at a
 
 ### 2. Host framed relay
 
-Add a `FlowControlledRelay` beside `SocketRelay`. It is queue-confined, has one serial queue per connection, and keeps the existing descriptor-lifetime pattern: cancellation handlers retain the owners.
+Replace `SocketRelay` with `FlowControlledRelay`. It is queue-confined, has one serial queue per connection, and keeps the existing descriptor-lifetime pattern: cancellation handlers retain the owners.
 
 **Reading guest frames:**
 - The guest descriptor's read source is never suspended for backpressure. It is cancelled only when the relay finishes.
@@ -95,14 +97,14 @@ Add a `FlowControlledRelay` beside `SocketRelay`. It is queue-confined, has one 
 - *Normal completion* shuts down both descriptors.
 - *Abort* covers a client error, a guest error, EOF before both ENDs, a protocol violation or task cancellation. It shuts down both descriptors immediately.
 
-**Choosing the relay:**
-- `RuntimeService.openIncusStream()` returns the stream and a relay mode.
-- It selects port 8445 and the framed relay only when the current `GuestHealth` reports `flowRelayVersion == 1`. Otherwise it uses port 8443 and the raw `SocketRelay`.
-- `GuestHealth.flowRelayVersion` is optional, so health from older appliances still decodes and keeps `protocolVersion` 1.
+**Guest compatibility:**
+- `RuntimeService.openIncusStream()` always opens port 8443, and `APIServer` always runs the framed relay.
+- `GuestHealth.flowRelayVersion` is optional, so health from older appliances still decodes. Readiness, the already-ready start path and `refresh()` require `flowRelayVersion == 1`.
+- A guest with live `protocolVersion` 1 health but no flow relay fails readiness with a fixed message telling the user to recreate the appliance. Runtime data is not deleted, and no Incus stream is opened to that guest.
 
 ### 3. Guest bridge
 
-`bridge.py` keeps the raw handler for port 8443 and adds a flow handler for port 8445. It shares the existing listener supervision, peer check, 128-slot bound and fatal-exit behavior. Health waits for both relay listeners and reports `flow_relay_version: 1` only once the port-8445 listener has started.
+`bridge.py` replaces its raw handler with a flow handler on port 8443. It keeps the existing listener supervision, peer check, 128-slot bound and fatal-exit behavior. Health waits for the relay listener and reports `flow_relay_version: 1`.
 
 Each flow connection runs three activities:
 
@@ -117,7 +119,7 @@ Shared rules:
 - Errors and protocol violations shut down the vsock and Incus sockets. Each thread exits on shutdown.
 - The bridge never parses Incus bytes.
 
-`Integration/scripts/sync-guest-payload.py` regenerates `EmbeddedGuestPayload.swift`, which changes the payload revision for new appliances. Existing appliances keep reporting health without the field, so they continue on port 8443.
+`Integration/scripts/sync-guest-payload.py` regenerates `EmbeddedGuestPayload.swift`, which changes the payload revision for new appliances. Existing appliances keep reporting health without the field, so the host refuses them as described above.
 
 ### 4. Verification
 
@@ -136,5 +138,5 @@ Shared rules:
 ## Risks / Trade-offs
 
 - **Python throughput:** per-frame Python overhead lowers peak throughput compared with raw pumping. Hardware acceptance records the throughput. A blocking `sendall` on vsock is acceptable because the host always drains it.
-- **Existing appliances keep the stall** until they are recreated. Documentation explains that only appliances provisioned with the new payload advertise the flow relay, and that the existing raw relay stays available.
+- **Existing appliances stop working with this Macus** until they are recreated, and recreating an appliance deletes its Incus data. This is accepted to keep one relay socket and implementation, and to leave no appliance on the stalling relay. The failure is explicit and preserves runtime data.
 - **Strict protocol enforcement** means a buggy peer aborts its connection rather than corrupting a stream. That is preferred to silent data loss.

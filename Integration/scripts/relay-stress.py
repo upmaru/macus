@@ -3,8 +3,6 @@
 Idle streams: 80 open Incus streams must not delay control, health or Incus requests.
 Stalled reader: one Incus stream whose client stops reading must not delay other new or
 existing Incus connections, control requests or health probes, and must drain afterwards.
-On an appliance without the flow relay the stalled reader is expected to fail, and its
-health probes can mark that isolated runtime failed.
 """
 import argparse
 import http.client

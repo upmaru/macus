@@ -9,19 +9,6 @@ public struct GuestStream: Sendable {
   }
 }
 
-/// How bytes cross the vsock hop for one incus.sock connection.
-public enum IncusRelayMode: Sendable, Equatable {
-  /// Unframed bytes on guest port 8443, used by appliances without the flow relay.
-  case raw
-  /// Flow-controlled frames on ``FlowRelayProtocol/port``.
-  case flowControlled
-}
-
-public struct IncusStream: Sendable {
-  public let stream: GuestStream
-  public let mode: IncusRelayMode
-}
-
 public protocol VirtualMachineDriver: Sendable {
   func capabilities() async -> HostCapabilities
   func start(configuration: RuntimeConfiguration, paths: RuntimePaths) async throws

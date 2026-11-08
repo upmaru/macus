@@ -35,21 +35,17 @@ class BridgeTests(unittest.TestCase):
         sleep.assert_called_once_with(0.1)
         self.assertFalse(ready.is_set())
 
-    def test_health_waits_for_both_relay_listeners_and_advertises_flow_relay(self):
+    def test_health_waits_for_relay_listener_and_advertises_flow_relay(self):
         client = mock.Mock()
         client.recv.return_value = b'GET /health HTTP/1.1\r\n\r\n'
         bridge.relay_ready.clear()
-        bridge.flow_ready.clear()
         try:
             with mock.patch.object(bridge, 'incus_health',
                                    side_effect=lambda: {'protocol_version': 1}) as probe:
                 bridge.health(client)
                 self.assertTrue(client.sendall.call_args.args[0].startswith(b'HTTP/1.1 503'))
-                bridge.relay_ready.set()
-                bridge.health(client)
-                self.assertTrue(client.sendall.call_args.args[0].startswith(b'HTTP/1.1 503'))
                 probe.assert_not_called()
-                bridge.flow_ready.set()
+                bridge.relay_ready.set()
                 bridge.health(client)
                 response = client.sendall.call_args.args[0]
                 self.assertTrue(response.startswith(b'HTTP/1.1 200'))
@@ -57,7 +53,9 @@ class BridgeTests(unittest.TestCase):
                 self.assertEqual(body, {'protocol_version': 1, 'flow_relay_version': 1})
         finally:
             bridge.relay_ready.clear()
-            bridge.flow_ready.clear()
+
+    def test_flow_relay_uses_the_incus_relay_port(self):
+        self.assertEqual(bridge.RELAY_PORT, 8443)
 
     def test_fatal_listener_exits_even_with_blocked_worker(self):
         # A real subprocess catches executor context-manager shutdown deadlocks.

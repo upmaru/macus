@@ -364,13 +364,14 @@ func waitUntil(seconds: Double = 5, _ condition: @Sendable () -> Bool) async thr
   }
 }
 
-// MARK: Relay selection
+// MARK: Guest bridge compatibility
 
 actor StreamFakeVM: VirtualMachineDriver {
-  let flowRelayVersion: Int?
+  var flowRelayVersion: Int?
   var ports: [UInt32] = []
   var running = false
   init(flowRelayVersion: Int?) { self.flowRelayVersion = flowRelayVersion }
+  func setFlowRelayVersion(_ version: Int?) { flowRelayVersion = version }
   func capabilities() async -> HostCapabilities {
     HostCapabilities(supported: true, nestedVirtualization: true)
   }
@@ -391,21 +392,41 @@ actor StreamFakeVM: VirtualMachineDriver {
   }
 }
 
-@Test(arguments: [
-  (Int?.none, UInt32(8443), IncusRelayMode.raw),
-  (Int?.some(1), FlowRelayProtocol.port, IncusRelayMode.flowControlled),
-  (Int?.some(2), UInt32(8443), IncusRelayMode.raw),
-]) func incusStreamsUseTheFlowRelayOnlyWhenAdvertised(
-  version: Int?, port: UInt32, mode: IncusRelayMode
-) async throws {
+@Test func incusStreamsUseTheFlowRelayPort() async throws {
+  let fixture = try Fixture()
+  defer { fixture.clean() }
+  let driver = StreamFakeVM(flowRelayVersion: FlowRelayProtocol.version)
+  let service = try RuntimeService(driver: driver, store: StateStore(paths: fixture.paths))
+  #expect(try await service.start().state == .ready)
+  _ = try await service.openIncusStream()
+  #expect(FlowRelayProtocol.port == 8443)
+  #expect(await driver.ports == [8443])
+}
+
+@Test(arguments: [Int?.none, Int?.some(2)])
+func startRefusesGuestBridgesWithoutTheFlowRelay(version: Int?) async throws {
   let fixture = try Fixture()
   defer { fixture.clean() }
   let driver = StreamFakeVM(flowRelayVersion: version)
   let service = try RuntimeService(driver: driver, store: StateStore(paths: fixture.paths))
+  await #expect(throws: RuntimeError.self) { try await service.start() }
+  let status = await service.status()
+  #expect(status.state == .failed)
+  #expect(status.lastError == RuntimeService.legacyGuestBridge)
+  await #expect(throws: RuntimeError.self) { try await service.openIncusStream() }
+  #expect(await driver.ports.isEmpty)
+}
+
+@Test func readyRuntimeFailsWhenHealthLosesTheFlowRelay() async throws {
+  let fixture = try Fixture()
+  defer { fixture.clean() }
+  let driver = StreamFakeVM(flowRelayVersion: FlowRelayProtocol.version)
+  let service = try RuntimeService(driver: driver, store: StateStore(paths: fixture.paths))
   #expect(try await service.start().state == .ready)
-  let stream = try await service.openIncusStream()
-  #expect(stream.mode == mode)
-  #expect(await driver.ports == [port])
+  await driver.setFlowRelayVersion(nil)
+  let status = await service.status()
+  #expect(status.state == .failed)
+  #expect(status.lastError == RuntimeService.legacyGuestBridge)
 }
 
 @Test func guestHealthDecodesWithAndWithoutFlowRelay() throws {

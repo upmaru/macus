@@ -10,7 +10,8 @@ import Foundation
 /// memory: each direction may have at most `window` unacknowledged payload bytes, and a
 /// receiver grants credit only after delivering bytes to its local peer.
 public enum FlowRelayProtocol {
-  public static let port: UInt32 = 8445
+  /// The guest Incus relay port. Guests serve only this framed protocol on it.
+  public static let port: UInt32 = 8443
   public static let version = 1
   public static let window = 262_144
   public static let maximumPayload = 65_536

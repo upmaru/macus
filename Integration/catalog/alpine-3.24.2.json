@@ -25,5 +25,5 @@
     "zfs-openrc": "2.4.4-r0"
   },
   "notes": "Digests were checked with Integration/scripts/verify-appliance.py against the pinned Alpine cloud signer. The downloaded sidecar checksum is not an independent trust root. guest_payload_revision is filled by Integration/scripts/sync-guest-payload.py.",
-  "guest_payload_revision": "eae790d1aded1097158baf5d8c81d06e3ec89abe3d336c15d55efb92f54e55da"
+  "guest_payload_revision": "9d1cbd34e7d1d165126394af5b59a71a34f5788de1382ae40f7e84e62b22cb3d"
 }
