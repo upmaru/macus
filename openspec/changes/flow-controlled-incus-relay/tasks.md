@@ -1,0 +1,24 @@
+# Tasks
+
+## 1. Protocol and host relay
+
+- [x] 1.1 Add the flow relay protocol constants and frame codec (DATA/CREDIT/END, 64 KiB maximum payload, 256 KiB window) with an incremental parser; verify valid frames, partial headers/payloads across reads, and rejection of unknown types, bad lengths and zero/oversized credit.
+- [x] 1.2 Implement `FlowControlledRelay` with queue-confined nonblocking Dispatch sources, an always-armed guest reader, window/credit enforcement, coalesced credit, END/half-close handling, normal completion, abort and cancellation; verify binary transparency and half-close in both directions, 2 MB bidirectional transfers, stalled-client draining to exactly one window without credit until the client reads, protocol-violation aborts and cancellation using socket pairs and a Swift test peer.
+- [x] 1.3 Add optional `GuestHealth.flowRelayVersion`, always relay `incus.sock` through the framed relay on port 8443, remove `SocketRelay`, and fail readiness (boot, already-ready start and refresh) for guests without flow relay version 1 with a recreate instruction; verify health decoding with and without the field, the 8443 stream port, refusal of missing/other versions without opening streams, and failure when a ready guest loses the field.
+
+## 2. Guest bridge and payload
+
+- [x] 2.1 Replace the raw port-8443 handler in `bridge.py` with the flow handler with an eager vsock reader, bounded Incus writer, credit-gated Incus reader, serialized frame writes, END/half-close, abort and the shared 128-slot listener supervision; health reports `flow_relay_version: 1` only after the relay listener starts; verify Python unit tests for window enforcement, credit coalescing, half-close, abort on violation, listener failure exit and health advertisement.
+- [x] 2.2 Add a Swift interop test that runs the real bridge flow handler in a `python3` subprocess, connected over Unix sockets standing in for vsock and the Incus socket; verify transparent bidirectional transfer, half-close and stalled-client behavior across both implementations.
+- [x] 2.3 Regenerate `EmbeddedGuestPayload.swift` and record the new revision in the appliance catalog; verify `sync-guest-payload.py --check` and `check-catalog.py`.
+
+## 3. Documentation and verification
+
+- [x] 3.1 Document the flow relay on port 8443, the health field, the breaking appliance compatibility (existing appliances must be recreated) and the Virtualization.framework stall evidence in architecture and transport docs.
+- [x] 3.2 Extend `Integration/scripts/relay-stress.py` with the opt-in stalled-reader scenario and throughput record; verify it compiles and its non-hardware argument handling in tests.
+- [x] 3.3 Run `Integration/scripts/check.sh` and `mise exec -- openspec validate --all --strict --no-interactive`; review the diff for Swift 6 concurrency, bounded buffers, removal of the raw relay and no committed `.integration`/build outputs.
+- [x] 3.4 With explicit opt-in and an isolated state directory, provision an appliance with the new payload and run the stalled-reader and relay stress acceptance; record results separately from unit tests and leave this unchecked until it passes on hardware.
+
+Evidence (2026-11-08, unit and fixture level only): after moving the flow relay onto port 8443 and removing the raw relay, `Integration/scripts/check.sh` passed with 147 Swift tests (flow relay, guest compatibility and Swift–Python interop tests) and 81 Python tests, release build and strict formatting; `openspec validate --all --strict` passed 10 items. The stall was reproduced read-only on Macus `64a2ec0` with a sample showing the Virtualization.framework vsock device queue blocked in `writev`; hardware acceptance of the fix is recorded below.
+
+Hardware evidence (2026-11-08, task 3.4): `docs/testing/flow-relay-acceptance.json`. On an isolated appliance booted by a release build of `1085025`, `relay-stress.py` passed: idle streams with a 13 ms maximum, and the stalled reader with 144 of 144 probes answering within 62 ms and all 400 responses drained. A 1.04 GiB export streamed directly into an import on a second connection at about 194 MiB/s with every concurrent probe answering. The payload used an uncommitted 6.18.62-r0 kernel/ZFS pin because Alpine no longer serves 6.18.60-r0; that pair is unqualified, so this is relay evidence only, not ZFS evidence.
