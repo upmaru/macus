@@ -111,12 +111,17 @@ def stalled_reader(state):
                 except (OSError, AssertionError, http.client.HTTPException, ValueError) as error:
                     failures.append({'probe': name, 'error': type(error).__name__})
             time.sleep(0.25)
-        drained = bytearray()
-        while True:
-            chunk = stalled.recv(1 << 20)
-            if not chunk:
-                break
-            drained.extend(chunk)
+        drained, drain_error = bytearray(), None
+        try:
+            while True:
+                chunk = stalled.recv(1 << 20)
+                if not chunk:
+                    break
+                drained.extend(chunk)
+        except OSError as error:
+            # A relay that never resumes is the regression this check exists to catch;
+            # keep the probe results instead of losing them with the exception.
+            drain_error = type(error).__name__
     finally:
         existing.close()
         stalled.close()
@@ -126,7 +131,8 @@ def stalled_reader(state):
             'probes': len(samples), 'failure_count': len(failures), 'failures': failures[:20],
             'maximum_response_seconds': max(samples) if samples else None,
             'drained_bytes': len(drained), 'drained_responses': responses,
-            'passed': not failures and responses == PIPELINED_REQUESTS}
+            'drain_error': drain_error,
+            'passed': not failures and drain_error is None and responses == PIPELINED_REQUESTS}
 
 
 def export_throughput(state, fingerprint, seconds=10.0):
@@ -154,11 +160,19 @@ def main(argv=None):
     args = parse_args(argv)
     state = args.state_dir.resolve()
     report = {'tested_at': datetime.now(timezone.utc).isoformat()}
-    report.update(idle_streams(state))
-    report['stalled_reader'] = stalled_reader(state)
-    if args.export_image:
-        report['export_throughput'] = export_throughput(state, args.export_image)
-    report['status'] = 'passed' if report['stalled_reader']['passed'] else 'failed'
+    stage = 'idle_streams'
+    try:
+        report.update(idle_streams(state))
+        stage = 'stalled_reader'
+        report['stalled_reader'] = stalled_reader(state)
+        if args.export_image:
+            stage = 'export_throughput'
+            report['export_throughput'] = export_throughput(state, args.export_image)
+        report['status'] = 'passed' if report['stalled_reader']['passed'] else 'failed'
+    except (OSError, AssertionError, http.client.HTTPException, ValueError) as error:
+        # Always leave a failed report behind; partial results stay in place.
+        report['status'] = 'failed'
+        report['error'] = {'stage': stage, 'type': type(error).__name__}
     args.report.write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report))
     return 0 if report['status'] == 'passed' else 1
