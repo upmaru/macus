@@ -1,0 +1,58 @@
+{
+  "status": "passed",
+  "scope": "Opt-in hardware acceptance of the flow-controlled Incus relay on an isolated appliance (task 3.4). Relay evidence only; not ZFS qualification.",
+  "tested_at": "2026-11-08T13:47:48.886193+00:00",
+  "host": {
+    "model": "Mac16,5",
+    "macos": "27.0.1"
+  },
+  "macus": {
+    "commit": "1085025",
+    "build": "release, ad-hoc signed with the virtualization entitlement"
+  },
+  "deviation": "The guest payload carried an uncommitted pin bump to linux-lts/zfs-lts 6.18.62-r0 because Alpine v3.24 no longer serves the committed 6.18.60-r0 pair. That payload revision (ea1aa733ed6010bcea293df9ad51e2b48f1f6c69b3dbae027c55e2a7cc23deaa) was used only for this run; the kernel/ZFS pair is unqualified and this run is not ZFS evidence.",
+  "appliance": {
+    "catalog_id": "alpine-3.24.2-incus-v1",
+    "state": "isolated state directory",
+    "kernel_version": "6.18.62-0-lts",
+    "incus_version": "7.0.1",
+    "storage": "zfs 2.4.4-1",
+    "start_seconds": 457.0,
+    "expected_kernel_reboot": true,
+    "start_ready": true,
+    "client_connected": true
+  },
+  "relay_stress": {
+    "tested_at": "2026-11-08T13:47:48.886193+00:00",
+    "idle_incus_streams": 80,
+    "successful_control_health_and_incus_requests": 60,
+    "maximum_response_seconds": 0.01301450002938509,
+    "median_response_seconds": 0.003532249480485916,
+    "stalled_reader": {
+      "pipelined_requests": 400,
+      "stall_seconds": 10.0,
+      "flow_relay_version": 1,
+      "probes": 144,
+      "failure_count": 0,
+      "failures": [],
+      "maximum_response_seconds": 0.061770583037287,
+      "drained_bytes": 5872019,
+      "drained_responses": 400,
+      "passed": true
+    },
+    "status": "passed"
+  },
+  "relay_pipe": {
+    "bytes": 1088504320,
+    "stream_seconds": 5.35,
+    "mebibytes_per_second": 194.0,
+    "import_status": "Success",
+    "import_error": "",
+    "imported_fingerprint": "2b6056054449165f449deccf225597eb594733e4686801b5cd460e9499038e57",
+    "probes": 24,
+    "probe_failures": [],
+    "probe_max_seconds": 0.0058,
+    "description": "One incus.sock connection streams a 1.04 GiB uncompressed image export while a second connection uploads the same bytes as an image import into another project, so guest-to-host and host-to-guest data cross the vsock device at once (the relay-migration pattern). New-connection /1.0 probes ran every 250 ms throughout."
+  },
+  "not_counted": "An `incus copy --mode relay` between two remote names for the same socket completed server-side because the client detects the same server, so it is not recorded as relay evidence."
+}
