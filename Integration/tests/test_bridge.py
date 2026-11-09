@@ -248,6 +248,43 @@ class FlowRelayTests(unittest.TestCase):
                 for sock in (host, incus_peer, vsock, incus):
                     sock.close()
 
+    def test_host_close_right_after_guest_end_keeps_queued_bytes(self):
+        """The host may close as soon as it reads our END; that close is normal."""
+        host_closed = threading.Event()
+
+        class SlowEndVsock:
+            def __init__(self, sock):
+                self.sock = sock
+
+            def __getattr__(self, name):
+                return getattr(self.sock, name)
+
+            def sendall(self, data):
+                self.sock.sendall(data)
+                if data == bridge.frame(bridge.END):
+                    # Widen the window between delivering END and recording it.
+                    host_closed.wait(5)
+                    threading.Event().wait(0.2)
+
+        self.connection.vsock = SlowEndVsock(self.connection.vsock)
+        self.incus_peer.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        self.connection.incus.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        self.thread.start()
+        payload = bytes(range(256)) * (bridge.WINDOW // 256)
+        for offset in range(0, len(payload), bridge.MAX_PAYLOAD):
+            self.peer.send(bridge.DATA, payload[offset:offset + bridge.MAX_PAYLOAD])
+        self.peer.send(bridge.END)
+        # Incus finished writing but has not read the queued request yet.
+        self.incus_peer.shutdown(socket.SHUT_WR)
+        data, _ = self.frames_until_end()
+        self.assertEqual(data, b'')
+        self.host.shutdown(socket.SHUT_RDWR)
+        host_closed.set()
+        self.assertEqual(read_all(self.incus_peer), payload)
+        self.thread.join(5)
+        self.assertFalse(self.thread.is_alive())
+        self.assertFalse(self.connection.aborted)
+
     def test_host_close_before_end_aborts_incus_stream(self):
         self.thread.start()
         self.peer.send(bridge.DATA, b'partial')

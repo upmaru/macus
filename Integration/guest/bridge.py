@@ -97,6 +97,15 @@ class FlowConnection:
         with self.send_lock:
             self.vsock.sendall(frame(kind, payload))
 
+    def send_end(self):
+        # Record END before any byte of it can reach the host: once the host has
+        # ended too, it may close as soon as it reads this frame, and the frame
+        # reader must treat that close as normal. A failed send still aborts.
+        with self.send_lock:
+            with self.state:
+                self.end_sent = True
+            self.vsock.sendall(frame(END))
+
     def read_exact(self, size, allow_eof=False):
         data = bytearray()
         while len(data) < size:
@@ -199,9 +208,7 @@ class FlowConnection:
                     allowed = min(MAX_PAYLOAD, self.credit)
                 data = self.incus.recv(allowed)
                 if not data:
-                    self.send(END)
-                    with self.state:
-                        self.end_sent = True
+                    self.send_end()
                     return
                 with self.state:
                     self.credit -= len(data)
