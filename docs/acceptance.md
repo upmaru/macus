@@ -161,3 +161,7 @@ The flow-controlled Incus relay passed [opt-in hardware acceptance](testing/flow
 - **Bidirectional relay:** a 1.04 GiB image export was streamed directly into an image import on a second connection in 5.35 s, about 194 MiB/s with both directions crossing the vsock device at once. The import succeeded with the same fingerprint, and 24 concurrent new-connection probes answered within 6 ms.
 
 **Deviation:** Alpine v3.24 no longer serves the committed `linux-lts`/`zfs-lts` 6.18.60-r0 pair, so this run used an uncommitted payload pinned to 6.18.62-r0. The relay does not depend on the kernel version, but that kernel/ZFS pair is unqualified and this run is not ZFS evidence. A relay-mode `incus copy` between two remote names for the same socket completed server-side and is not counted.
+
+**Follow-up:** after this run, review found a guest close race. The guest sent END before recording it, so a host that had already ended could close in between and make the guest abort with host bytes still queued for Incus. The guest now records END before sending it. Payload revision `11acf521…` contains the fix, which is covered by a deterministic bridge unit test. The hardware run above used the earlier payload and has not been repeated with this revision.
+
+On 2026-11-09, the same appliance also served the opsmaru-incus real-Incus gateway gate. That run passed all twelve relay/pull/push copies and all six instance moves through the vsock relay. It is opsmaru-incus evidence, not Macus hardware qualification.
