@@ -4,7 +4,7 @@
 
 ### Requirement: Appliance provisioning
 
-Provisioning SHALL be idempotent and use a pinned, maintained Alpine Linux ARM64 base and OpenRC service management. Packages SHALL be signature-verified APKs from main/community repositories on the same stable release branch, installed when the Macus appliance image is built, at the exact versions of a reviewed lock. The image SHALL contain Incus with its LXC, OCI and ARM64 VM dependencies, and compatible ZFS userspace and boot-kernel modules for exactly one kernel channel: `lts` (`linux-lts`/`zfs-lts`) or `stable` (`linux-stable`/`zfs-stable`), both from that branch. The guest helper SHALL be delivered by the seed. First boot MUST NOT install, upgrade, remove or substitute packages; it SHALL verify the installed packages and booted kernel against the qualified manifest. Provisioning MUST NOT mix edge repositories, bypass package signature verification or include development/desktop/orchestration software.
+Provisioning SHALL be idempotent and use a pinned, maintained Alpine Linux ARM64 base and OpenRC service management. Packages SHALL be signature-verified APKs from main/community repositories on the same stable release branch, installed when upmaru/macus-appliance builds the appliance image, at the exact versions of a reviewed lock. The image SHALL contain Incus with its LXC, OCI and ARM64 VM dependencies, and compatible ZFS userspace and boot-kernel modules for exactly one kernel channel: `lts` (`linux-lts`/`zfs-lts`) or `stable` (`linux-stable`/`zfs-stable`), both from that branch. The guest helper SHALL be delivered by the seed. First boot MUST NOT install, upgrade, remove or substitute packages; it SHALL verify the installed packages and booted kernel against the qualified manifest. Provisioning MUST NOT mix edge repositories, bypass package signature verification or include development/desktop/orchestration software.
 
 #### Scenario: Repeated provisioning
 
@@ -33,7 +33,7 @@ Provisioning SHALL be idempotent and use a pinned, maintained Alpine Linux ARM64
 
 ### Requirement: Trusted image acquisition
 
-Automated acquisition SHALL select the fixed compatible ARM64 Macus appliance image for the appliance's kernel channel from trusted metadata shipped with Macus and download it from a published Macus release asset. Archive and extracted-disk digests SHALL be verified before publication or runtime creation. Metadata SHALL record the upstream Alpine signature verification of the base image against a pinned signer, the build commit and workflow run, the build provenance attestation and the installed package manifest digest. A checksum downloaded beside an image MUST NOT establish trust on its own; unsupported catalog versions or integrity failures SHALL stop creation.
+Automated acquisition SHALL select the fixed compatible ARM64 Macus appliance image for the appliance's kernel channel from trusted metadata shipped with Macus and download it from a published upmaru/macus-appliance release asset. Archive and extracted-disk digests SHALL be verified before runtime creation. Metadata SHALL record the upstream Alpine archive and signer, the image build commit, workflow run and provenance attestation, the image record format, and the expected installed-manifest digest and kernel release. A checksum downloaded beside an image MUST NOT establish trust on its own; unsupported catalog versions or integrity failures SHALL stop creation.
 
 #### Scenario: Authentic pinned archive
 
@@ -90,45 +90,31 @@ Macus SHALL offer an `lts` kernel channel and a `stable` kernel channel, each se
 - **WHEN** the `stable` channel is requested but the shipped catalog has no published, qualified `stable` image
 - **THEN** provisioning fails before any download and does not substitute the `lts` image
 
-### Requirement: Appliance image build
+### Requirement: Appliance image qualification and adoption
 
-Macus SHALL build appliance images with a manually dispatched GitHub Actions workflow on a GitHub-hosted Linux arm64 runner, starting from the upstream Alpine archive verified against the pinned signer and recorded digests. The build SHALL install the exact locked package set into the image without booting it, run package triggers so the installed kernel, its ZFS module and initramfs match, and record the kernel release, appliance ID and installed package manifest digest in the image. The build SHALL fail when the installed packages differ from the lock, a locked version is unavailable, the ZFS module does not match the installed kernel, or the boot configuration does not select the installed kernel. Images MUST NOT contain a machine ID, SSH host keys, cloud-init instance state, package caches, build logs or workflow credentials. CI success MUST NOT be reported as boot, ZFS or hardware evidence.
+Macus SHALL consume prebuilt appliance images built and released by upmaru/macus-appliance and MUST NOT build images or publish their releases. The shipped catalog SHALL reference only published upmaru/macus-appliance release assets whose exact image has recorded opt-in hardware qualification on isolated state, including ZFS acceptance evidence for its kernel and package versions, and SHALL hold at most one image per channel. Qualifying an unpublished draft image SHALL use a test-only mechanism that still verifies digests and is unavailable in release builds. Macus SHALL accept only image record formats it supports and SHALL reject any other before storage initialization.
 
-#### Scenario: Locked build
+#### Scenario: Draft image qualified
 
-- **WHEN** the workflow runs while the repository still serves every locked version
-- **THEN** the image contains exactly the locked packages, its manifest digest and kernel record match, and static checks pass
-
-#### Scenario: Repository drift
-
-- **WHEN** a locked version is unavailable or the resolved package set differs from the lock
-- **THEN** the build fails without producing or attaching an image
-
-#### Scenario: Image hygiene
-
-- **WHEN** the image is prepared for compression
-- **THEN** it has no machine ID, host keys, cloud-init instance state, package caches, logs or credentials, so the seed runs as a first boot
-
-### Requirement: Appliance image release and qualification
-
-The image build SHALL attach the compressed image, its archive and raw-disk digests, the installed package manifest and a build provenance attestation to a draft GitHub release for a new appliance ID. Workflows and agents MUST NOT publish that release or change the shipped catalog. A human SHALL publish it only after recorded opt-in hardware qualification on isolated state, including ZFS acceptance evidence for its kernel and package versions. The shipped catalog SHALL reference only published, qualified images. A published image referenced by any released Macus version MUST remain available and MUST NOT be replaced in place; a changed image requires a new appliance ID. Qualifying an unpublished image SHALL use a test-only mechanism that still verifies digests and is unavailable in release builds.
-
-#### Scenario: Draft image
-
-- **WHEN** the build workflow completes
-- **THEN** the release remains a draft and the shipped catalog is unchanged
+- **WHEN** acceptance tooling boots a draft image through the test-only path on isolated state
+- **THEN** it verifies the draft's digests, records first-boot, storage, ZFS and relay evidence for that exact image, and changes no shipped catalog
 
 #### Scenario: Qualified image adopted
 
-- **WHEN** hardware qualification of a draft image is recorded and a human publishes the release
-- **THEN** the catalog can move to the new appliance ID, release URL, digests and provenance through a normal reviewed change
+- **WHEN** hardware qualification of a draft image is recorded and a human publishes its upmaru/macus-appliance release
+- **THEN** that channel's catalog entry can move to the published ID, release URL, digests and expected record values through a normal reviewed change
 
 #### Scenario: Qualification fails
 
-- **WHEN** the draft image fails boot, storage or ZFS qualification
-- **THEN** it is not published, the catalog keeps its previous image, and the failure is recorded
+- **WHEN** a draft image fails boot, storage or ZFS qualification
+- **THEN** it is not adopted, the catalog keeps its previous image for that channel, and the failure is recorded
+
+#### Scenario: Unsupported image format
+
+- **WHEN** first boot finds an image record format Macus does not support
+- **THEN** it reports an image mismatch before storage initialization and withholds readiness
 
 #### Scenario: Superseded image
 
-- **WHEN** a newer image is adopted
-- **THEN** older published images stay downloadable for the Macus versions that pin them
+- **WHEN** a newer image is adopted for a channel
+- **THEN** Macus versions released earlier keep provisioning the image they pin
