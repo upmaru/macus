@@ -9,6 +9,15 @@
 
 **Why that breaks:** Alpine stable branches carry only the newest revision of each package. When `linux-lts` moves, the pinned revision disappears and every fresh start fails with `TAMA_ZFS_QUALIFIED_REVISION_UNAVAILABLE`. This happened on 2026-11-01 (6.18.55 → 6.18.60) and again by 2026-11-08 (6.18.62). Existing appliances are not affected, because they finished provisioning.
 
+**Kernel flavors on v3.24 (aarch64 package indexes, 2026-11-09):**
+
+| Flavor | Repository | Kernel | ZFS module | Shared userland |
+|---|---|---|---|---|
+| `lts` | `main` | `linux-lts` 6.18.62-r0 | `zfs-lts` 6.18.62-r0 | `zfs` 2.4.4-r0, `incus` 7.0.1-r2, `qemu-system-aarch64` 11.0.3-r0 |
+| `stable` | `community` | `linux-stable` 7.1.5-r0 | `zfs-stable` 7.1.5-r1 | same |
+
+Each ZFS module package depends on its exact kernel revision. Alpine edge carries a newer kernel (7.3.3) but also a different Incus and QEMU and a rolling userland, so it is not used.
+
 **Constraints:**
 - The ZFS module must match the booted kernel, and kernel/ZFS combinations require recorded hardware qualification (`linux-appliance` "Default storage qualification" and "ZFS acceptance evidence").
 - Runtime acquisition must not need host Python, GnuPG or repository files ("Bounded private appliance preparation").
@@ -22,6 +31,7 @@
 - Every package in a fresh appliance, including Incus, is fixed by a reviewed lock and recorded in a manifest.
 - A new kernel/ZFS combination reaches users only through an explicit build, hardware qualification, human publication and catalog change.
 - Fresh first boot needs no package downloads and no kernel-transition reboot.
+- Users can choose a newer `stable` kernel for a fresh appliance, from the same release branch and under the same lock, qualification and publication rules as `lts`.
 
 **Non-Goals:**
 - Changing or upgrading existing appliances or their root images.
@@ -29,6 +39,8 @@
 - Bit-for-bit reproducible images. The published digest, not reproducibility, is the trust root.
 - Changing storage layout, ZFS policy, transport, the Incus API or runtime control routes.
 - Automatic image updates or a fallback to live package installation.
+- Alpine edge repositories, or mixing kernels from another branch.
+- Switching an existing appliance between channels in place.
 
 ## Decisions
 
@@ -40,7 +52,7 @@ Build steps:
 1. Download the Alpine archive, `.sha512` and `.asc` named in the build inputs, and the signing key. Verify the signature against the pinned fingerprint `F26ADFADBAE702EF7AF637459DA7EF23BFFCDF22` and the recorded digests with `Integration/scripts/verify-appliance.py`.
 2. Extract `disk.raw`, extend it to the build size and grow the root partition and filesystem.
 3. Attach it as a loop device with partitions, mount the root and boot/EFI partitions, and bind-mount `/dev`, `/proc` and `/sys` for package triggers. Provide a temporary `resolv.conf`.
-4. In a `chroot`, configure `https://dl-cdn.alpinelinux.org/alpine/v3.24/{main,community}` only, run `apk update`, remove `/boot/dtbs-lts` (the existing workaround for EFI partition space), and install every package in the lock at its exact version. APK signature verification stays enabled, using the image's own Alpine keys.
+4. In a `chroot`, configure `https://dl-cdn.alpinelinux.org/alpine/v3.24/{main,community}` only, run `apk update`, remove the channel's `/boot/dtbs-<flavor>` directory (the existing workaround for EFI partition space), and install every package in the channel's lock at its exact version. APK signature verification stays enabled, using the image's own Alpine keys.
 5. Let package triggers (`mkinitfs` and the boot configuration update) run inside the chroot.
 6. Write the image record and kernel record (Decision 4), clean the image (Decision 4), unmount, detach and compress.
 
@@ -48,13 +60,13 @@ Build steps:
 
 *Alternative considered:* `alpine-make-vm-image` creating a disk from scratch. Rejected for now because starting from the signed official cloud image keeps its known EFI, cloud-init and partition layout, which hardware acceptance has already covered. An implementation may still borrow its techniques.
 
-*Open point:* the Alpine cloud metal image's exact bootloader mechanism must be confirmed during implementation. The build must prove that the boot configuration selects the installed `linux-lts` kernel and initramfs, and fail otherwise.
+*Open point:* the Alpine cloud metal image's exact bootloader mechanism must be confirmed during implementation. The build must prove that the boot configuration selects the channel's installed kernel (`linux-lts` or `linux-stable`) and initramfs, and fail otherwise. The base cloud image ships the `lts` kernel, so the `stable` build must also remove `linux-lts` and show that only the `stable` kernel remains bootable. If some base package requires `linux-lts`, the build fails and the design is revisited rather than shipping two kernels.
 
 ### 2. A full package lock
 
-`Integration/appliance-image/packages.lock` (path indicative) lists every package that must be present in the final image as `name=version`, covering the base image's packages and the additions. It is the complete `apk info -v` closure, sorted.
+Each channel has its own lock, for example `Integration/appliance-image/lts.lock` and `stable.lock` (paths indicative). A lock lists every package that must be present in the final image as `name=version`, covering the base image's packages and the additions. It is the complete `apk info -v` closure, sorted.
 
-- The top-level package list mirrors today's `bootstrap.sh` install set, with Incus pinned exactly instead of `>=7.0.1`.
+- The top-level package list mirrors today's `bootstrap.sh` install set, with Incus pinned exactly instead of `>=7.0.1`. The channels differ only in the kernel and ZFS module packages (`linux-lts`/`zfs-lts` or `linux-stable`/`zfs-stable`) and what those pull in; the `stable` image must not keep `linux-lts` installed.
 - After installation the build compares the sorted `apk info -v` output to the lock and fails on any difference: missing, extra or different version.
 - A lock-refresh script resolves the current repository for the top-level list and rewrites the lock. A human reviews the diff. Refreshing the lock is the start of requalification, never an automatic CI step.
 - The build fails if the repository no longer serves a locked version. That failure is expected once Alpine moves on, and it does not affect already published images.
@@ -69,8 +81,8 @@ Build steps:
 
 **Baked into the image:**
 - Every locked package, including the kernel, initramfs and ZFS module.
-- `/etc/tama-zfs-qualified-kernel` with the installed kernel release.
-- `/etc/macus-appliance-image`: appliance ID, lock SHA-256, installed-manifest SHA-256 and kernel release. It contains no secrets and no build host paths.
+- `/etc/tama-zfs-qualified-kernel` with the installed kernel release, read from `uname -r` format for the channel's flavor (for example `6.18.62-0-lts` or `7.1.5-0-stable`) instead of today's hard-coded `-lts` suffix.
+- `/etc/macus-appliance-image`: appliance ID, channel, lock SHA-256, installed-manifest SHA-256 and kernel release. It contains no secrets and no build host paths.
 - The HTTPS v3.24 repositories file, as today.
 
 **Stays in the seed, not the image:** the guest helper payload (`bootstrap.sh`, `storage.sh`, `bridge.py`, OpenRC scripts), the ZFS ARC cap and Incus preseed. Helper fixes then ship with Macus without a new image, and an image's qualification is not invalidated by helper changes. The seed's `guest_payload_revision` stays independent of the image digest.
@@ -81,7 +93,7 @@ Build steps:
 
 New `bootstrap.sh` flow for fresh appliances:
 1. Persist the IPv4 DHCP configuration and wait for an IPv4 route, as today. Incus still needs the network for workload images.
-2. Read `/etc/macus-appliance-image`. Compute the SHA-256 of the sorted `apk info -v` output and compare it, and the appliance ID, with the expected values the seed carries from the catalog. Compare `uname -r` with `/etc/tama-zfs-qualified-kernel`.
+2. Read `/etc/macus-appliance-image`. Compute the SHA-256 of the sorted `apk info -v` output and compare it, the appliance ID and the channel, with the expected values the seed carries from the catalog. Compare `uname -r` with `/etc/tama-zfs-qualified-kernel`.
 3. On any mismatch emit `MACUS_OBSERVATION v1 stage=failed code=image_mismatch` and a `TAMA_APPLIANCE_IMAGE_MISMATCH` diagnostic, and exit before storage initialization. Never install, upgrade or substitute packages.
 4. Continue with today's sysctl, cgroup, module loading, OpenRC, storage and Incus steps unchanged.
 
@@ -91,10 +103,11 @@ Observations: emit `stage=image` for verification instead of `stage=packages`. H
 
 ### 6. Catalog and trust
 
-The catalog moves to `schema_version` 2 under a new appliance ID. The ID names the image, for example `alpine-3.24.2-macus-<n>`; the exact scheme is chosen during implementation. Every published image gets a new ID.
+The catalog moves to `schema_version` 2 and holds at most one adopted image per channel, each under its own appliance ID. The ID names the image and its channel, for example `alpine-3.24.2-lts-<n>` and `alpine-3.24.2-stable-<n>`; the exact scheme is chosen during implementation. Every published image gets a new ID.
 
 | Field | Meaning |
 |---|---|
+| `channel` | `lts` or `stable` |
 | `archive_url` | `https://github.com/upmaru/macus/releases/download/<tag>/<asset>` |
 | `archive_sha512`, `archive_bytes`, `member_name`, `raw_bytes`, `raw_sha256` | Verified by acquisition exactly as today |
 | `upstream` | Alpine archive name, SHA-512 and pinned signer fingerprint verified by the build |
@@ -108,7 +121,7 @@ The catalog moves to `schema_version` 2 under a new appliance ID. The ID names t
 
 ### 7. Release publication and qualification
 
-**Workflow:** `.github/workflows/appliance-image.yml` runs only on `workflow_dispatch`, with inputs for the appliance ID and lock revision. Its permissions are limited to `contents: write`, `id-token: write` and `attestations: write`, and third-party actions are pinned by commit SHA. It creates a **draft** release tagged `appliance/<id>` with:
+**Workflow:** `.github/workflows/appliance-image.yml` runs only on `workflow_dispatch`, with inputs for the channel, appliance ID and lock revision. Its permissions are limited to `contents: write`, `id-token: write` and `attestations: write`, and third-party actions are pinned by commit SHA. It creates a **draft** release tagged `appliance/<id>` with:
 - the compressed image archive;
 - `SHA512SUMS` and `SHA256SUMS` for the archive and raw disk;
 - the installed package manifest;
@@ -123,6 +136,14 @@ It never publishes the release, edits the catalog or opens a pull request with c
 
 **Retention:** published images referenced by any released Macus are never deleted or replaced. Older Macus versions keep provisioning the image they pin.
 
+### 8. Kernel channels
+
+- **Selection:** the host picks a channel only when it provisions a fresh appliance. `lts` is the default. A `stable` choice (for example `macus start --kernel stable`; the exact flag is chosen during implementation) is persisted with the runtime state, so restarts and later `macus start` calls keep it. Asking for a different channel on an existing appliance fails with `conflict` and changes nothing; moving channels means a new state directory. Appliances provisioned before prebuilt images count as `lts`.
+- **Availability:** a channel is offered only when the shipped catalog has a published, qualified image for it. If `stable` is not catalogued, selecting it fails before any download, rather than falling back to `lts`.
+- **Seed:** the seed carries the expected channel with the appliance ID and manifest digest, and first-boot verification compares all three.
+- **Qualification:** each channel's image needs its own opt-in hardware run covering boot, storage, ZFS and relay acceptance. The first `stable` run must also cover what a new kernel series can break on Virtualization.framework: EFI boot, virtio block and network, vsock, configured VirtioFS and, where the host supports it, nested KVM. `lts` adoption does not wait for `stable`.
+- **Cadence:** `linux-stable` moves across kernel series during a branch's lifetime (for example 7.1 to 7.2), while `linux-lts` stays on one series. Published `stable` images keep working when Alpine moves on, so this only changes how often `stable` is requalified, never whether a published image provisions.
+
 ## Risks / Trade-offs
 
 - **Boot configuration under chroot:** triggers may behave differently than on a booted system. Mitigation: the build verifies the boot entry and initramfs statically, and hardware qualification boots the exact artifact before publication.
@@ -130,6 +151,9 @@ It never publishes the release, edits the catalog or opens a pull request with c
 - **Image size and build time:** pre-installed packages make the download larger than the 627 MB base archive, but first boot no longer downloads those packages. The archive must stay under 2 GiB.
 - **Security updates are slower:** fresh appliances get kernel and Incus fixes only when a new image is qualified. This is the deliberate trade-off for a qualified kernel/ZFS pair. Users can still apply standard Alpine updates themselves.
 - **Supply chain:** APK signatures, the exact lock, SHA-pinned actions, minimal workflow permissions and provenance attestations bound what a compromised dependency can change. A human reviews both the lock and the publication.
+- **`stable` support level:** `linux-stable` and `zfs-stable` live in `community`, which Alpine supports for a shorter period than `main`, and the kernel series changes more often. `stable` is opt-in, and `lts` stays the default.
+- **Newer kernel on Virtualization.framework:** 7.x kernels have no Macus hardware evidence yet. The first `stable` qualification must cover the virtual hardware Macus relies on before that image is published.
+- **Two images to maintain:** each channel needs its own lock refresh, build, qualification and release. A channel can be left without a new image while the other moves.
 - **No fallback:** if a published asset were removed, fresh installs for that Macus version would fail. Retention prevents that.
 
 ## Migration
@@ -137,3 +161,5 @@ It never publishes the release, edits the catalog or opens a pull request with c
 - Existing appliances and state directories are untouched. `macus start` on an existing runtime reuses its disks and never downloads an image.
 - Fresh starts use the new appliance ID, cache directory and image source.
 - The first image to adopt is expected to carry the then-current `linux-lts`/`zfs-lts` pair, for example 6.18.62-r0, after it passes qualification.
+- The `stable` channel is adopted separately, with the then-current `linux-stable`/`zfs-stable` pair (for example 7.1.5), after its own qualification. Until then the catalog offers only `lts`.
+- Existing appliances, including those provisioned before prebuilt images, count as `lts` and are not converted.

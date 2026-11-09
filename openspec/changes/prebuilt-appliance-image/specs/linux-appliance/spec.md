@@ -4,7 +4,7 @@
 
 ### Requirement: Appliance provisioning
 
-Provisioning SHALL be idempotent and use a pinned, maintained Alpine Linux ARM64 base and OpenRC service management. Packages SHALL be signature-verified APKs from main/community repositories on the same stable release branch, installed when the Macus appliance image is built, at the exact versions of a reviewed lock. The image SHALL contain Incus with its LXC, OCI and ARM64 VM dependencies, and compatible ZFS userspace and boot-kernel modules. The guest helper SHALL be delivered by the seed. First boot MUST NOT install, upgrade, remove or substitute packages; it SHALL verify the installed packages and booted kernel against the qualified manifest. Provisioning MUST NOT mix edge repositories, bypass package signature verification or include development/desktop/orchestration software.
+Provisioning SHALL be idempotent and use a pinned, maintained Alpine Linux ARM64 base and OpenRC service management. Packages SHALL be signature-verified APKs from main/community repositories on the same stable release branch, installed when the Macus appliance image is built, at the exact versions of a reviewed lock. The image SHALL contain Incus with its LXC, OCI and ARM64 VM dependencies, and compatible ZFS userspace and boot-kernel modules for exactly one kernel channel: `lts` (`linux-lts`/`zfs-lts`) or `stable` (`linux-stable`/`zfs-stable`), both from that branch. The guest helper SHALL be delivered by the seed. First boot MUST NOT install, upgrade, remove or substitute packages; it SHALL verify the installed packages and booted kernel against the qualified manifest. Provisioning MUST NOT mix edge repositories, bypass package signature verification or include development/desktop/orchestration software.
 
 #### Scenario: Repeated provisioning
 
@@ -28,12 +28,12 @@ Provisioning SHALL be idempotent and use a pinned, maintained Alpine Linux ARM64
 
 #### Scenario: Installed packages differ from the manifest
 
-- **WHEN** first boot finds an installed package set, appliance ID or booted kernel that differs from the qualified manifest carried by the seed
+- **WHEN** first boot finds an installed package set, appliance ID, channel or booted kernel that differs from the qualified manifest carried by the seed
 - **THEN** it reports an image mismatch before storage initialization, leaves a blank data disk unformatted and withholds readiness
 
 ### Requirement: Trusted image acquisition
 
-Automated acquisition SHALL select a fixed compatible ARM64 Macus appliance image from trusted metadata shipped with Macus and download it from a published Macus release asset. Archive and extracted-disk digests SHALL be verified before publication or runtime creation. Metadata SHALL record the upstream Alpine signature verification of the base image against a pinned signer, the build commit and workflow run, the build provenance attestation and the installed package manifest digest. A checksum downloaded beside an image MUST NOT establish trust on its own; unsupported catalog versions or integrity failures SHALL stop creation.
+Automated acquisition SHALL select the fixed compatible ARM64 Macus appliance image for the appliance's kernel channel from trusted metadata shipped with Macus and download it from a published Macus release asset. Archive and extracted-disk digests SHALL be verified before publication or runtime creation. Metadata SHALL record the upstream Alpine signature verification of the base image against a pinned signer, the build commit and workflow run, the build provenance attestation and the installed package manifest digest. A checksum downloaded beside an image MUST NOT establish trust on its own; unsupported catalog versions or integrity failures SHALL stop creation.
 
 #### Scenario: Authentic pinned archive
 
@@ -65,6 +65,30 @@ Guest provisioning SHALL expose versioned stage observations scoped to the curre
 - **THEN** progress identifies the failure and preserves diagnostics without installing or substituting packages, formatting data, or advertising readiness
 
 ## ADDED Requirements
+
+### Requirement: Appliance kernel channels
+
+Macus SHALL offer an `lts` kernel channel and a `stable` kernel channel, each served by its own qualified appliance image from the same Alpine stable release branch. `lts` SHALL be the default. The host SHALL choose a channel only when provisioning a fresh appliance and SHALL persist it with the runtime state. Appliances provisioned before prebuilt images SHALL count as `lts`. A request for a different channel on an existing appliance MUST fail without changing its disks or state. A channel without a published, qualified catalog entry MUST NOT be offered and MUST NOT fall back to another channel. Each channel's image SHALL be qualified separately, and a new kernel series SHALL be qualified for EFI boot, virtio storage and networking, vsock, configured VirtioFS and, where supported, nested KVM before its image is published.
+
+#### Scenario: Default channel
+
+- **WHEN** a fresh appliance is provisioned without a channel choice
+- **THEN** it uses the catalogued `lts` image
+
+#### Scenario: Newer kernel chosen
+
+- **WHEN** a fresh appliance is provisioned with the `stable` channel and the catalog has a qualified `stable` image
+- **THEN** it boots that image with the `linux-stable` kernel and matching `zfs-stable` module, and later starts keep the `stable` channel
+
+#### Scenario: Channel change on an existing appliance
+
+- **WHEN** a start requests a channel other than the one an existing appliance was provisioned with
+- **THEN** it fails with a conflict and leaves the appliance's disks and state unchanged
+
+#### Scenario: Channel without a qualified image
+
+- **WHEN** the `stable` channel is requested but the shipped catalog has no published, qualified `stable` image
+- **THEN** provisioning fails before any download and does not substitute the `lts` image
 
 ### Requirement: Appliance image build
 
