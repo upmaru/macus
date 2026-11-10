@@ -121,7 +121,7 @@ enum SeedPreparation {
       "source": [
         "archive": entry.archiveName,
         "archive_sha512": entry.archiveSHA512,
-        "signing_fingerprint": entry.signerFingerprint,
+        "upstream_signing_fingerprint": entry.upstream.signerFingerprint,
         "raw_sha256": entry.rawSHA256,
       ],
     ]

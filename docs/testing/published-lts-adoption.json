@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "macus_source_base_commit": "e76eb18b6f4ca02cd366f4a233cad078d5f0e4f1",
+  "macus_build": "release with catalog adoption changes and ad hoc virtualization signing",
+  "host": {
+    "model": "Mac16,5",
+    "chip": "Apple M4 Max",
+    "memory_gib": 64,
+    "architecture": "arm64",
+    "macos": "27.0.1 (26A434)",
+    "virtualization": "Apple Virtualization.framework",
+    "incus_client": "7.5.1"
+  },
+  "status": "passed",
+  "started_at": "2026-11-10T13:43:10.327675+00:00",
+  "image_id": "alpine-3.24.2-lts-1",
+  "image_source_commit": "2814fe68917380dd748b8e3a4433d76f56f04835",
+  "archive_url": "https://github.com/upmaru/macus-appliance/releases/download/alpine-3.24.2-lts-1/alpine-3.24.2-lts-1.raw.tar.gz",
+  "archive_bytes": 823516002,
+  "archive_sha512": "596ff56397d38f7d276acf485445b588b86125d33523a2f7d26d989af30f90fe2f23686bcc8bb72dee709a1f1c7a365f3427626153c639526263f3390b41cf6c",
+  "raw_sha256": "23c5786327bc272b2a493eeafc9cb367dc4d4f471a46e4154f6c0946fa332380",
+  "manifest_sha256": "50f32997ef0584476459fb961c8317aef8d5bc6ca68206929a69a986ce45130e",
+  "macus_binary_sha256": "9789d25a5bd0e57290df3cb1c2aeaf1421118c8264b1161f27d1e843604a8231",
+  "empty_runtime_state_and_client": true,
+  "draft_override_used": false,
+  "checks": {
+    "published_archive_downloaded_and_verified": true,
+    "catalogued_raw_disk_matches_cache_and_runtime_manifest": {
+      "bytes": 4294967296
+    },
+    "offline_image_verification_before_storage_without_package_install_or_kernel_reboot": true,
+    "live_guest": {
+      "kernel_version": "6.18.62-0-lts",
+      "kernel_architecture": "aarch64",
+      "server_version": "7.0.1",
+      "storage_version": "2.4.4-1",
+      "pool": "zfs"
+    },
+    "graceful_stop": true,
+    "isolated_service_unloaded": true
+  },
+  "startup_seconds": 129.3,
+  "finished_at": "2026-11-10T13:45:26.046255+00:00"
+}

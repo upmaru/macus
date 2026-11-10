@@ -138,6 +138,6 @@ kernel-transition stage appeared in `serial.log`.
 For hardware acceptance, configure dedicated read-only and writable VirtioFS
 shares on the stopped test runtime, restart it, and run
 `Integration/scripts/acceptance.py` and `Integration/scripts/relay-stress.py`
-with that isolated state. Keep failed disks and transcripts. The normal catalog
-still points to the existing Alpine base. Adopting a draft requires separate
-hardware evidence and publication by a human.
+with that isolated state. Keep failed disks and transcripts. The normal catalog points to the published LTS release. Adoption of a new
+image requires hardware evidence and publication by a human before a fresh
+start through the updated catalog.

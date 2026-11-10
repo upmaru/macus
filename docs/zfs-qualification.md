@@ -62,15 +62,29 @@ overrides leave Stable's default nested KVM qualification open (task 4.3).
 The [evidence report](testing/prebuilt-draft-qualification.json) records the
 exact image and Macus digests, workload results and relay timings. The
 [runbook](../Integration/qualification/README.md#prebuilt-draft-appliances)
-covers reproduction. Both appliance releases remain drafts. Catalog adoption
-is a separate step after publication.
+covers reproduction. Stable remains a draft and its default nested KVM
+qualification is still open.
+
+## Published LTS adoption, 2026-11-10
+
+The released `alpine-3.24.2-lts-1` asset matched the archive, disk and package
+manifest digests from draft qualification. On the same Apple M4 Max host, a
+signed release build of Macus started with empty runtime and Incus client
+state. It downloaded all 823,516,002 bytes from the public release, verified
+the archive and 4 GiB raw disk, and reached live Incus readiness in 129.3 seconds.
+The guest verified the installed image before storage initialization and booted
+`6.18.62-0-lts` with Incus 7.0.1 and a ZFS default pool. There was no package
+installation or kernel-transition reboot. The isolated runtime stopped cleanly
+and its launchd service was unloaded.
+
+[Published appliance release](https://github.com/upmaru/macus-appliance/releases/tag/alpine-3.24.2-lts-1) ·
+[Adoption evidence](testing/published-lts-adoption.json)
 
 ## Package requalification, 2026-11-04
 
 Alpine published `linux-lts` and `zfs-lts` 6.18.60-r0 on 2026-11-01 and removed
 6.18.55-r0 from v3.24 `main/aarch64`. The pinned bootstrap then refused every fresh
-start with `TAMA_ZFS_QUALIFIED_REVISION_UNAVAILABLE`. The pin, catalog
-`qualified_packages`, embedded guest payload and its catalog revision now name
+start with `TAMA_ZFS_QUALIFIED_REVISION_UNAVAILABLE`. The legacy bootstrap pin, then-current catalog and embedded guest payload named
 `linux-lts`/`zfs-lts` 6.18.60-r0. `zfs`, `zfs-libs` and `zfs-openrc` stay at
 2.4.4-r0. On 2026-11-04 the live v3.24 aarch64 APKINDEX listed exactly these
 revisions, with Incus 7.0.1-r2.
