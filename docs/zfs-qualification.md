@@ -65,6 +65,28 @@ exact image and Macus digests, workload results and relay timings. The
 covers reproduction. Stable remains a draft and its default nested KVM
 qualification is still open.
 
+## Nested Ubuntu 24.04 comparison, 2026-11-11 (Asia/Bangkok)
+
+A physical Apple M4 Max running macOS 27.0.1 (26A434) booted the exact LTS and
+Stable appliance images in separate isolated Macus state directories. Incus
+launched the same Ubuntu 24.04 ARM64 VM fingerprint on each appliance with two
+vCPUs, 1 GiB RAM, an 8 GiB disk and Secure Boot disabled, matching the Debian
+fixture's settings. Both runs used default KVM with no QEMU, MSI or ITS
+overrides. QEMU reported `host-arm-cpu` for both vCPUs in each run.
+
+| Appliance | Appliance kernel | Ubuntu result |
+| --- | --- | --- |
+| `alpine-3.24.2-lts-1` | `6.18.62-0-lts` | Agent exec returned `aarch64` in 14.5 seconds, running `6.8.0-149-generic`. |
+| `alpine-3.24.2-stable-1` | `7.1.5-0-stable` | Reached the UEFI disk boot entry, then timed out at 180 seconds with no login prompt or agent response. |
+
+The Stable Ubuntu console showed no hard-lockup message. The default-KVM
+failure therefore extends beyond the Debian 13 fixture, although the two
+guests may stop for different reasons. Stable remains a draft and the Debian
+qualification check stays open. Both test appliances were stopped, and the
+failed Ubuntu fixture and raw logs were retained locally. The
+[machine-readable report](testing/prebuilt-ubuntu-nested-vm.json) records the
+image fingerprint, appliance digests and observed results.
+
 ## Published LTS adoption, 2026-11-10
 
 The released `alpine-3.24.2-lts-1` asset matched the archive, disk and package

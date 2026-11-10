@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "started_at": "2026-11-10T18:16:55.993633+00:00",
+  "host": {
+    "model": "Mac16,5",
+    "chip": "Apple M4 Max",
+    "macos": "27.0.1",
+    "macos_build": "26A434",
+    "incus_client": "7.5.1"
+  },
+  "macus_binary_sha256": "65768ca9c5063823db971432bdca4a3c64365b29b2f71fcf8bc303620d586f0e",
+  "guest_image": "images:ubuntu/24.04/default/arm64",
+  "vm": {
+    "vcpus": 2,
+    "ram_mib": 1024,
+    "disk_gib": 8,
+    "secureboot": false,
+    "qemu_overrides": false,
+    "agent_deadline_seconds": 180
+  },
+  "cases": {
+    "lts": {
+      "appliance_id": "alpine-3.24.2-lts-1",
+      "started_at": "2026-11-10T18:20:09.068073+00:00",
+      "status": "passed",
+      "archive_sha512": "596ff56397d38f7d276acf485445b588b86125d33523a2f7d26d989af30f90fe2f23686bcc8bb72dee709a1f1c7a365f3427626153c639526263f3390b41cf6c",
+      "raw_sha256": "23c5786327bc272b2a493eeafc9cb367dc4d4f471a46e4154f6c0946fa332380",
+      "manifest_sha256": "50f32997ef0584476459fb961c8317aef8d5bc6ca68206929a69a986ce45130e",
+      "first_boot_started_at": "2026-11-10T18:16:56.024926+00:00",
+      "first_boot_preserved_after_image_selector_correction": true,
+      "outer": {
+        "kernel_version": "6.18.62-0-lts",
+        "server_version": "7.0.1",
+        "storage_version": "2.4.4-1"
+      },
+      "nested_virtualization_supported_and_enabled": true,
+      "guest_image_fingerprint": "06021741e08dc81a8d9f3cbdd6c6c9d359e3a300c4e0d03b537fd67c9ff0cf56",
+      "guest_agent_exec": true,
+      "guest_architecture": "aarch64",
+      "guest_kernel": "6.8.0-149-generic",
+      "guest_release": "24.04",
+      "guest_agent_elapsed_seconds": 14.5,
+      "console_hard_lockup": false,
+      "console_rcu_timer_warning": false,
+      "qmp_cpu_types": [
+        "host-arm-cpu"
+      ],
+      "nested_fixture_stopped": true,
+      "outer_fixture_stopped": true,
+      "isolated_service_unloaded": true,
+      "finished_at": "2026-11-10T18:21:27.345956+00:00",
+      "console_reached_uefi_disk_boot": true,
+      "console_reached_login_prompt": true,
+      "console_diagnostics": []
+    },
+    "stable": {
+      "appliance_id": "alpine-3.24.2-stable-1",
+      "started_at": "2026-11-10T18:21:27.347485+00:00",
+      "status": "failed",
+      "archive_sha512": "3111003ac2db937acbf0824e7aa0c8416f8972c7948dd9211fe6ed555f514f01bbef8677a075ef512ee45d3709f38e6a9d2310a3b4e5d7329e736a3b5ae7b36a",
+      "raw_sha256": "6d37778dfa9e0017402692f0f77c89b68b959fd4ae894b3f4d350d329e387fd3",
+      "manifest_sha256": "ae065418241949cd75dd0b3ae807ce8232d0cc9fee2aee916e8a436531f459fa",
+      "first_boot_started_at": "2026-11-10T18:18:31.474919+00:00",
+      "first_boot_preserved_after_image_selector_correction": true,
+      "outer": {
+        "kernel_version": "7.1.5-0-stable",
+        "server_version": "7.0.1",
+        "storage_version": "2.4.4-1"
+      },
+      "nested_virtualization_supported_and_enabled": true,
+      "guest_image_fingerprint": "06021741e08dc81a8d9f3cbdd6c6c9d359e3a300c4e0d03b537fd67c9ff0cf56",
+      "guest_agent_exec": false,
+      "guest_agent_elapsed_seconds": 180.0,
+      "console_hard_lockup": false,
+      "console_rcu_timer_warning": false,
+      "qmp_cpu_types": [
+        "host-arm-cpu"
+      ],
+      "nested_fixture_stopped": true,
+      "outer_fixture_stopped": true,
+      "isolated_service_unloaded": true,
+      "finished_at": "2026-11-10T18:26:41.341756+00:00",
+      "console_reached_uefi_disk_boot": true,
+      "console_reached_login_prompt": false,
+      "console_diagnostics": [],
+      "last_agent_error": "Error: VM agent isn't currently running"
+    }
+  },
+  "resumed_at": "2026-11-10T18:20:09.067428+00:00",
+  "guest_image_fingerprint": "06021741e08dc81a8d9f3cbdd6c6c9d359e3a300c4e0d03b537fd67c9ff0cf56",
+  "finished_at": "2026-11-10T18:26:41.342225+00:00",
+  "macus_source_commit": "d7b8aec11778f04f7a2f4d7bb7d387c7b121b9dc",
+  "scope": "Supplementary nested Ubuntu boot and guest-agent test on fresh isolated Macus appliances",
+  "debian_qualification": "open",
+  "stable_release": "draft"
+}
