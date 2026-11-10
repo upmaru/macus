@@ -87,6 +87,31 @@ failed Ubuntu fixture and raw logs were retained locally. The
 [machine-readable report](testing/prebuilt-ubuntu-nested-vm.json) records the
 image fingerprint, appliance digests and observed results.
 
+## Outer kernel comparison, 2026-11-11 (Asia/Bangkok)
+
+Two disposable VMs on the same Apple M4 Max started from copies of one stopped
+Stable appliance's root disk, Incus data disk, EFI variable store and seed. The
+LTS copy booted the LTS kernel with its matching initramfs and modules, including
+ZFS. Its diagnostic kernel record matched the selected kernel. QEMU, AAVMF,
+Limine and the installed package database had identical hashes. Incus launched
+the same cached Ubuntu 24.04 ARM64 image with the same workload settings in
+each copy. Both generated QEMU configs selected KVM and `gic-version=max` and
+left MSI and ITS at their defaults. The configs differed only in generated
+instance and vsock IDs and a 1 MiB difference in the automatic memory hotplug
+ceiling. The VM boot memory was 1 GiB in both cases.
+
+| Outer kernel | Nested Ubuntu result |
+| --- | --- |
+| `7.1.5-0-stable` | Reached the UEFI disk boot entry. No login prompt or Incus agent response by 180 seconds. |
+| `6.18.62-0-lts` | The Incus agent returned `aarch64` in 14.5 seconds. The guest recorded active ITS-MSI interrupts for Virtio devices. |
+
+Changing the outer kernel and its matching boot files restored the nested
+boot on this baseline while keeping MSI enabled. This narrows the failure to
+the outer kernel stack on this Mac, with the specific upstream defect still
+unidentified. Both copies were stopped and the failure state was retained.
+Stable remains a draft and the Debian qualification check is still open.
+See the [comparison evidence](testing/prebuilt-nested-kernel-comparison.json).
+
 ## Published LTS adoption, 2026-11-10
 
 The released `alpine-3.24.2-lts-1` asset matched the archive, disk and package

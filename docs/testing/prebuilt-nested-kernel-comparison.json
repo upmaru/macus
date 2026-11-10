@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "started_at": "2026-11-10T18:35:42.159909+00:00",
+  "host": {
+    "model": "Mac16,5",
+    "chip": "Apple M4 Max",
+    "macos": "27.0.1",
+    "macos_build": "26A434"
+  },
+  "macus_binary_sha256": "65768ca9c5063823db971432bdca4a3c64365b29b2f71fcf8bc303620d586f0e",
+  "guest_image_fingerprint": "06021741e08dc81a8d9f3cbdd6c6c9d359e3a300c4e0d03b537fd67c9ff0cf56",
+  "vm": {
+    "vcpus": 2,
+    "memory_mib": 1024,
+    "root_disk_gib": 8,
+    "secure_boot": false,
+    "agent_deadline_seconds": 180
+  },
+  "fixed_files_sha256": {
+    "usr/bin/qemu-system-aarch64": "ad59e9c9f8cf5c2e5ba6a45a1bfa7c84a32831fd3f8b617c5c9ce3570f4e93bc",
+    "boot/EFI/BOOT/BOOTAA64.EFI": "94fd8f423b4386a91c9bc9dcf97b4bfd8b8907ccdb552d2bba9178874032a8ae",
+    "boot/limine/limine.conf": "50b006870903f897af7ece08852a76d763d3d239754af963a8272bdfa0cb1aaa",
+    "etc/local.d/kernel-matrix.start": "f5e4753f346e4c8f7831a5ee608b75fe56d2cfe72ec054e5a9d3f51a7af734f9",
+    "lib/apk/db/installed": "9c621541e0ac7b3d64397ceaa45cb61dfecc0333c1f6ce9cef0d10bf176b9197",
+    "usr/share/qemu/edk2-aarch64-code.fd": "47765fe344818cbc464b1c14ae658fb4b854f5c2ceffa982411731eb4865594d"
+  },
+  "cases": {
+    "stable": {
+      "started_at": "2026-11-10T18:35:42.183472+00:00",
+      "expected_kernel": "7.1.5-0-stable",
+      "status": "failed",
+      "outer": {
+        "kernel_version": "7.1.5-0-stable",
+        "kernel_architecture": "aarch64",
+        "server_version": "7.0.1",
+        "storage_version": "2.4.4-1"
+      },
+      "guest_image_fingerprint": "06021741e08dc81a8d9f3cbdd6c6c9d359e3a300c4e0d03b537fd67c9ff0cf56",
+      "qemu_overrides": false,
+      "guest_agent_exec": false,
+      "guest_agent_elapsed_seconds": 180.0,
+      "last_agent_error": "Error: VM agent isn't currently running",
+      "qmp_cpu_types": [
+        "host-arm-cpu"
+      ],
+      "console_uefi_disk_boot": true,
+      "console_login_prompt": false,
+      "console_hard_lockup": false,
+      "observed_qemu_config": true,
+      "msi_or_its_disabled_in_qemu_config": false,
+      "nested_fixture_stopped": true,
+      "outer_fixture_stopped": true,
+      "isolated_service_unloaded": true,
+      "finished_at": "2026-11-10T18:39:29.241576+00:00",
+      "qemu_machine": {
+        "accel": "kvm",
+        "type": "virt",
+        "gic-version": "max"
+      },
+      "qemu_firmware_code_path": "/usr/share/AAVMF/AAVMF_CODE.fd",
+      "msi_configuration": "QEMU default, no MSI or ITS override"
+    },
+    "lts": {
+      "started_at": "2026-11-10T18:39:29.242047+00:00",
+      "expected_kernel": "6.18.62-0-lts",
+      "status": "passed",
+      "outer": {
+        "kernel_version": "6.18.62-0-lts",
+        "kernel_architecture": "aarch64",
+        "server_version": "7.0.1",
+        "storage_version": "2.4.4-1"
+      },
+      "guest_image_fingerprint": "06021741e08dc81a8d9f3cbdd6c6c9d359e3a300c4e0d03b537fd67c9ff0cf56",
+      "qemu_overrides": false,
+      "guest_agent_exec": true,
+      "guest_architecture": "aarch64",
+      "guest_kernel": "6.8.0-149-generic",
+      "guest_agent_elapsed_seconds": 14.5,
+      "guest_msi_irq_lines": [
+        "89:          0       4888   ITS-MSI 1572865 Edge      virtio8-requests",
+        "71:          0       1726   ITS-MSI 1048580 Edge      virtio7-request",
+        "70:        951          0   ITS-MSI 1048579 Edge      virtio7-request"
+      ],
+      "qmp_cpu_types": [
+        "host-arm-cpu"
+      ],
+      "console_uefi_disk_boot": true,
+      "console_login_prompt": true,
+      "console_hard_lockup": false,
+      "observed_qemu_config": true,
+      "msi_or_its_disabled_in_qemu_config": false,
+      "nested_fixture_stopped": true,
+      "outer_fixture_stopped": true,
+      "isolated_service_unloaded": true,
+      "finished_at": "2026-11-10T18:40:32.350526+00:00",
+      "qemu_machine": {
+        "accel": "kvm",
+        "type": "virt",
+        "gic-version": "max"
+      },
+      "qemu_firmware_code_path": "/usr/share/AAVMF/AAVMF_CODE.fd",
+      "msi_configuration": "QEMU default, no MSI or ITS override",
+      "guest_msi_irq_line_count": 41,
+      "guest_msi_active_irq_line_count": 23
+    }
+  },
+  "finished_at": "2026-11-10T18:40:32.351058+00:00",
+  "macus_source_commit": "d7b8aec11778f04f7a2f4d7bb7d387c7b121b9dc",
+  "stable_release": "draft",
+  "scope": "Diagnostic kernel comparison using two private clones of one stopped Stable appliance",
+  "baseline": {
+    "appliance_id": "alpine-3.24.2-stable-1",
+    "raw_sha256": "6d37778dfa9e0017402692f0f77c89b68b959fd4ae894b3f4d350d329e387fd3",
+    "description": "Cloned stopped root, Incus data, EFI variable store and seed before testing"
+  },
+  "firmware_inputs_sha256": {
+    "usr/share/AAVMF/AAVMF_CODE.fd": "ebd96f78d2d31c002ad1c4233df82c6bb5d3ded57452b47344690f58265a91b9",
+    "usr/share/AAVMF/AAVMF_VARS.fd": "3b6a07d0d404fab4e23b6d34bc6696a6a312dd92821332385e5af7c01c421351",
+    "usr/share/AAVMF/QEMU_EFI.fd": "2c2a77fc3a1da5833ba0a4e5f994732b5e79812b6dfc84bf8acb2e62f14b4e31",
+    "usr/share/AAVMF/QEMU_VARS.fd": "8b634c1e6bd11607850b69111f6c4dbd1583dbbd1460dac72dbacbdc1a4a130a"
+  },
+  "kernel_inputs_sha256": {
+    "stable": {
+      "vmlinuz-stable": "d653f6caa1ddfb1d34382f89da5985139ea06ff5ccc321c38eda7152994cd684",
+      "initramfs-stable": "26c7d6e008790a1adefa5726579ea5d70e6dfb4a207371895b1fab6e115d8ea2"
+    },
+    "lts": {
+      "vmlinuz-lts": "a411fa2f9234162c393c63c697b482c2a63702a4d06951c0e85a0ca5ad97cd28",
+      "initramfs-lts": "d609a5156d0cd86f30e34ac1e1946c854bcafe6d2e0fbbaa73f934b4b95bfbd6"
+    }
+  },
+  "generated_qemu_differences": [
+    "instance UUID",
+    "vsock CID",
+    "automatic hotplug memory ceiling (3821 vs 3822 MiB)"
+  ],
+  "fixed_file_digests_rechecked_after_boot": true
+}
