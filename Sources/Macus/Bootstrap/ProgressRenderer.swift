@@ -95,6 +95,7 @@ func readableDetail(_ detail: String) -> String {
   case "packages": "Installing guest packages"
   case "storage": "Preparing guest storage"
   case "incus": "Starting Incus"
+  case "image": "Verifying installed appliance image"
   case "kernel_transition": "Waiting for kernel restart"
   default: terminalSafe(detail)
   }

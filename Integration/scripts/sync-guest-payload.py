@@ -14,6 +14,7 @@ CATALOG = ROOT / "Integration" / "catalog" / "alpine-3.24.2.json"
 OUTPUT = ROOT / "Sources" / "Macus" / "Bootstrap" / "EmbeddedGuestPayload.swift"
 FILES = (
     "bootstrap.sh",
+    "verify-appliance-image.sh",
     "bridge.py",
     "storage.sh",
     "tama-bootstrap.initd",

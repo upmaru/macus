@@ -20,6 +20,7 @@ struct ApplianceCatalogEntry: Sendable, Equatable {
   var helperVersion: Int
   var qualifiedPackages: [String: String]
   var guestPayloadRevision: String
+  var prebuiltIdentity: PrebuiltImageIdentity? = nil
 
   static let current = ApplianceCatalogEntry(
     schemaVersion: 1,

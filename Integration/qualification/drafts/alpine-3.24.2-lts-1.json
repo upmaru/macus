@@ -1,0 +1,12 @@
+{
+  "appliance_id": "alpine-3.24.2-lts-1",
+  "channel": "lts",
+  "alpine_branch": "v3.24",
+  "archive_bytes": 823516002,
+  "archive_sha512": "596ff56397d38f7d276acf485445b588b86125d33523a2f7d26d989af30f90fe2f23686bcc8bb72dee709a1f1c7a365f3427626153c639526263f3390b41cf6c",
+  "raw_bytes": 4294967296,
+  "raw_sha256": "23c5786327bc272b2a493eeafc9cb367dc4d4f471a46e4154f6c0946fa332380",
+  "lock_sha256": "cd6cfe47c3c6f2fe0ba805d3ab9a3e1676cdaa2632015a2c7f3f83a572e1d107",
+  "manifest_sha256": "50f32997ef0584476459fb961c8317aef8d5bc6ca68206929a69a986ce45130e",
+  "kernel_release": "6.18.62-0-lts"
+}

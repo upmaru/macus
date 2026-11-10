@@ -15,7 +15,7 @@ struct GuestObservation: Sendable, Equatable {
 
 enum GuestObservationParser {
   static let stages: Set<String> = [
-    "packages", "kernel_transition", "storage", "incus", "failed", "ready",
+    "image", "packages", "kernel_transition", "storage", "incus", "failed", "ready",
   ]
   static let legacyReboot = "TAMA_ZFS_KERNEL_REBOOT_REQUIRED"
 
