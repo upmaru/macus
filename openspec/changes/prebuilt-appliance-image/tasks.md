@@ -8,18 +8,18 @@
 
 ## 2. Catalog, acquisition and channels
 
-- [ ] 2.1 Move the catalog to schema version 2 with at most one entry per channel, each with `id`, `channel`, an upmaru/macus-appliance release asset URL, digests, `image_format`, `manifest_sha256`, `kernel_release`, exact `qualified_packages`, `upstream` and `build`, in both `Integration/catalog/*.json` and `ApplianceCatalogEntry`; keep acquisition's digest, size and extraction checks unchanged; verify catalog decoding, acquisition and cache-validation tests.
-- [ ] 2.2 Extend `check-catalog.py` to keep the JSON and Swift entries in sync, require an upmaru/macus-appliance release URL whose tag equals the ID, require `image_format` 1, allow at most one entry per channel and reject placeholder digests; verify with passing and failing fixtures.
+- [x] 2.1 Move the catalog to schema version 2 with at most one entry per channel, each with `id`, `channel`, an upmaru/macus-appliance release asset URL, digests, `image_format`, `manifest_sha256`, `kernel_release`, exact `qualified_packages`, `upstream` and `build`, in both `Integration/catalog/*.json` and `ApplianceCatalogEntry`; keep acquisition's digest, size and extraction checks unchanged; verify catalog decoding, acquisition and cache-validation tests.
+- [x] 2.2 Extend `check-catalog.py` to keep the JSON and Swift entries in sync, require an upmaru/macus-appliance release URL whose tag equals the ID, require `image_format` 1, allow at most one entry per channel and reject placeholder digests; verify with passing and failing fixtures.
 - [ ] 2.3 Add channel selection for fresh provisioning: default `lts`, an optional `stable` choice through `macus start` and the daemon's provisioning path, persisted with the runtime state; a different channel for an existing appliance fails with `conflict` without changes, a channel without a catalogued image fails before any download, and pre-prebuilt appliances count as `lts`; document it in `docs/cli.md`; verify CLI parsing, persistence and conflict tests.
 - [x] 2.4 Add a test-only way for acceptance tooling to use an unpublished draft image from upmaru/macus-appliance (for example a catalog override or pre-populated isolated cache) that still verifies digests and is unavailable in release builds; verify a release build rejects it.
 
 ## 3. Documentation
 
-- [ ] 3.1 Document prebuilt provisioning, channels, the qualification and adoption flow and the requalification procedure in `docs/development.md`, `docs/zfs-qualification.md`, `docs/architecture.md` and `docs/acceptance.md`, linking upmaru/macus-appliance for building and releasing images, and state that existing appliances are unchanged.
+- [x] 3.1 Document prebuilt provisioning, channels, the qualification and adoption flow and the requalification procedure in `docs/development.md`, `docs/zfs-qualification.md`, `docs/architecture.md` and `docs/acceptance.md`, linking upmaru/macus-appliance for building and releasing images, and state that existing appliances are unchanged.
 
 ## 4. Verification and adoption
 
 - [x] 4.1 Run `Integration/scripts/check.sh` and `mise exec -- openspec validate --all --strict --no-interactive`.
 - [x] 4.2 With explicit opt-in and isolated state, boot the first `lts` draft image from upmaru/macus-appliance through the test-only path and record first-boot, storage, ZFS and relay acceptance per `docs/zfs-qualification.md`, confirming no package downloads and no kernel-transition reboot; leave this unchecked until it passes on hardware.
 - [ ] 4.3 With explicit opt-in and isolated state, qualify the first `stable` draft image the same way, adding EFI boot, virtio block and network, vsock, configured VirtioFS and, where supported, nested KVM checks for the new kernel series; leave this unchecked until it passes on hardware. `lts` adoption does not wait for it.
-- [ ] 4.4 After a human publishes a qualified upmaru/macus-appliance release, point that channel's catalog entry at it and verify a fresh isolated `macus start` on that channel downloads and verifies the published asset. Do not publish releases, tag a Macus release or merge without user authorization.
+- [x] 4.4 After a human publishes a qualified upmaru/macus-appliance release, point that channel's catalog entry at it and verify a fresh isolated `macus start` on that channel downloads and verifies the published asset. Do not publish releases, tag a Macus release or merge without user authorization.

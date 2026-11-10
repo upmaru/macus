@@ -8,7 +8,14 @@ Debug/release builds with warnings-as-errors, 26 Swift Testing tests plus four g
 
 GitHub Actions runs these checks on the macOS ARM64 `xcode-27` runner with pinned checkout/setup-node actions and OpenSpec 1.14.0. [The Alpine implementation workflow run passed](https://github.com/kritama/tama-incus-mac/actions/runs/37146208220). CI does not boot VZ or establish hardware acceptance; final PR-head checks are recorded on GitHub.
 
-## Alpine appliance
+## Prebuilt LTS appliance
+
+The [qualification record](zfs-qualification.md#prebuilt-draft-qualification-2026-11-10)
+covers local hardware acceptance for the published LTS image and the open Stable
+checks. [Published LTS adoption](zfs-qualification.md#published-lts-adoption-2026-11-10)
+covers a separate download and first boot through the shipped catalog.
+
+## Original Alpine appliance
 
 The signed native Swift process boots the verified Alpine ARM64 raw image through Apple VZ EFI, provisions signed stable-branch APK packages, starts OpenRC services and exposes Incus through Unix-to-vsock sockets. No SSH or Mac VM CLI is used. The host reports nested virtualization support, and the Linux guest exposes usable KVM.
 

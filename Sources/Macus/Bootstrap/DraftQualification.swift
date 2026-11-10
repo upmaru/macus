@@ -1,6 +1,7 @@
 import Foundation
 
 struct PrebuiltImageIdentity: Sendable, Equatable {
+  var imageFormat: Int = 1
   let channel: String
   let alpineBranch: String
   let lockSHA256: String
@@ -9,7 +10,7 @@ struct PrebuiltImageIdentity: Sendable, Equatable {
 
   func record(id: String) -> String {
     """
-    format=1
+    format=\(imageFormat)
     appliance_id=\(id)
     channel=\(channel)
     alpine_branch=\(alpineBranch)
@@ -70,6 +71,8 @@ enum DraftQualification {
       entry.archiveBytes = pins.archiveBytes
       entry.rawBytes = pins.rawBytes
       entry.rawSHA256 = pins.rawSha256
+      entry.build = nil
+      entry.qualifiedPackages = [:]
       entry.prebuiltIdentity = PrebuiltImageIdentity(
         channel: pins.channel, alpineBranch: pins.alpineBranch, lockSHA256: pins.lockSha256,
         manifestSHA256: pins.manifestSha256, kernelRelease: pins.kernelRelease)
