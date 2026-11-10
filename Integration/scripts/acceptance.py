@@ -121,7 +121,7 @@ try:
     run('exec', name, '--', 'sh', '-c', 'printf changed > /mnt/volume/data')
     # The attached volume cannot be restored while the container is running.
     run('stop', name, '--force')
-    run('storage', 'volume', 'restore', 'default', volume, 's1')
+    run('storage', 'volume', 'snapshot', 'restore', 'default', volume, 's1')
     run('start', name)
     assert run('exec', name, '--', 'sha256sum', '/mnt/volume/data') == volume_checksum
     check('custom_volume_snapshot_restore')

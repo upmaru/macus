@@ -25,6 +25,7 @@ func runStart(
   timeout: Int, json: Bool, environment: [String: String], transport: any LocalHTTPTransport,
   runner: any LocalCommandRunner, streams: MacusStreams, overrides: StartupOverrides
 ) async throws {
+  let draft = try DraftQualification.load(environment: environment, state: directory)
   let rendering = ProgressRenderer.resolve(
     selection: progress, stderrIsTTY: overrides.stderrIsTTY ?? streams.stderrIsTTY,
     term: overrides.term ?? environment["TERM"], json: json)
@@ -44,7 +45,7 @@ func runStart(
   let dependencies = StartupDependencies(
     transport: transport,
     runner: overrides.runner ?? runner,
-    downloader: overrides.downloader ?? URLSessionApplianceDownloader(),
+    downloader: overrides.downloader ?? draft?.downloader ?? URLSessionApplianceDownloader(),
     launchControl: overrides.launchControl
       ?? ProcessLaunchControl(
         runner: runner, environment: environment, uid: overrides.uid ?? getuid()),
@@ -57,7 +58,7 @@ func runStart(
     launchAgentsDirectory: overrides.launchAgentsDirectory
       ?? home.appendingPathComponent("Library/LaunchAgents", isDirectory: true),
     uid: overrides.uid ?? getuid(),
-    catalog: overrides.catalog ?? .current,
+    catalog: overrides.catalog ?? draft?.catalog ?? .current,
     sink: sink)
   let request = StartupRequest(
     stateDirectory: directory, remote: remote, setDefault: setDefault, incusOverride: incusOverride,

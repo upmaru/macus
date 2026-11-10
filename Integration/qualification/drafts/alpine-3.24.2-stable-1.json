@@ -1,0 +1,12 @@
+{
+  "appliance_id": "alpine-3.24.2-stable-1",
+  "channel": "stable",
+  "alpine_branch": "v3.24",
+  "archive_bytes": 827359797,
+  "archive_sha512": "3111003ac2db937acbf0824e7aa0c8416f8972c7948dd9211fe6ed555f514f01bbef8677a075ef512ee45d3709f38e6a9d2310a3b4e5d7329e736a3b5ae7b36a",
+  "raw_bytes": 4294967296,
+  "raw_sha256": "6d37778dfa9e0017402692f0f77c89b68b959fd4ae894b3f4d350d329e387fd3",
+  "lock_sha256": "af016a0cdcdc3a060ccc34587049af5feaaebb522c3efe99c58daa8aedea1fc6",
+  "manifest_sha256": "ae065418241949cd75dd0b3ae807ce8232d0cc9fee2aee916e8a436531f459fa",
+  "kernel_release": "7.1.5-0-stable"
+}

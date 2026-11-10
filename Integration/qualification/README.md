@@ -103,3 +103,41 @@ Repository checks perform no hardware execution:
 Integration/scripts/check.sh
 mise exec -- openspec validate --all --strict --no-interactive
 ```
+
+## Prebuilt draft appliances
+
+Use the Macus debug executable and the pinned inputs in [drafts](drafts). Each
+pin identifies a draft of upmaru/macus-appliance built from
+`2814fe68917380dd748b8e3a4433d76f56f04835`. The pinned archive and raw digests
+come from the independently verified appliance handoff. Use the matching
+archive downloaded with authenticated `gh release download`.
+
+```sh
+swift build -Xswiftc -warnings-as-errors
+run=$(mktemp -d /private/tmp/macus-draft.XXXXXX)
+mkdir -m 700 "$run/client"
+install -m 755 .build/debug/macus "$run/macus"
+codesign --force --sign - --entitlements Packaging/virtualization.entitlements "$run/macus"
+
+id=alpine-3.24.2-lts-1
+# Set archive to the absolute path of the matching downloaded .raw.tar.gz.
+MACUS_QUALIFICATION_PINS="$PWD/Integration/qualification/drafts/$id.json" \
+MACUS_QUALIFICATION_ARCHIVE="$archive" INCUS_CONF="$run/client" MACUS_BREW_FALLBACK=0 \
+  "$run/macus" --state-dir "$run/state" --incus "$(command -v incus)" \
+  --json --progress plain start --remote draft
+```
+
+Use a new run directory for each channel. A release build rejects both
+qualification variables before startup. The debug build requires a fresh state
+path and an empty sibling Incus client directory under `/private/tmp`.
+Acquisition checks the compressed archive and extracted disk against the pins.
+The NoCloud seed carries the expected image record. On first boot, record
+`stage=image state=verified`, the live kernel version, and whether a package or
+kernel-transition stage appeared in `serial.log`.
+
+For hardware acceptance, configure dedicated read-only and writable VirtioFS
+shares on the stopped test runtime, restart it, and run
+`Integration/scripts/acceptance.py` and `Integration/scripts/relay-stress.py`
+with that isolated state. Keep failed disks and transcripts. The normal catalog
+still points to the existing Alpine base. Adopting a draft requires separate
+hardware evidence and publication by a human.
