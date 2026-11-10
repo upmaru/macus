@@ -185,7 +185,113 @@
           "root_gib": 8,
           "rtc_adjustment": 0
         },
-        "nested_repeat_console_hard_lockup_cpu_0": true
+        "nested_repeat_console_hard_lockup_cpu_0": true,
+        "msi_its_diagnostic": {
+          "tested_at": "2026-11-10T11:18:17.557780+00:00",
+          "appliance": {
+            "kernel_version": "7.1.5-0-stable",
+            "server_version": "7.0.1",
+            "kernel_architecture": "aarch64"
+          },
+          "fixture": {
+            "debian_image_fingerprint": "0dc6ef78a5f2dcf211538cefe867d8b14a6438422e4435875659674b8b6c0138",
+            "memory_mib": 1024,
+            "root_gib": 8
+          },
+          "fresh_vm_cases": {
+            "kvm-2": {
+              "started_at": "2026-11-10T11:18:56.612802+00:00",
+              "vcpus": 2,
+              "raw_qemu": null,
+              "launch_exit_code": 0,
+              "image_fingerprint": "0dc6ef78a5f2dcf211538cefe867d8b14a6438422e4435875659674b8b6c0138",
+              "rtc_adjustment": "0",
+              "guest_agent_exec": false,
+              "hard_lockup": true,
+              "rcu_timer_warning": true,
+              "elapsed_seconds": 42.9,
+              "guest_agent_error": "Error: VM agent isn't currently running",
+              "qmp_cpu_types": [
+                "host-arm-cpu"
+              ],
+              "fixture_stopped": true,
+              "finished_at": "2026-11-10T11:20:05.525940+00:00"
+            },
+            "kvm-1": {
+              "started_at": "2026-11-10T11:20:05.526677+00:00",
+              "vcpus": 1,
+              "raw_qemu": null,
+              "launch_exit_code": 0,
+              "image_fingerprint": "0dc6ef78a5f2dcf211538cefe867d8b14a6438422e4435875659674b8b6c0138",
+              "rtc_adjustment": "0",
+              "guest_agent_exec": false,
+              "hard_lockup": false,
+              "rcu_timer_warning": false,
+              "elapsed_seconds": 100.7,
+              "guest_agent_error": "Error: VM agent isn't currently running",
+              "qmp_cpu_types": [
+                "host-arm-cpu"
+              ],
+              "fixture_stopped": true,
+              "finished_at": "2026-11-10T11:21:51.825546+00:00"
+            },
+            "tcg-2": {
+              "started_at": "2026-11-10T11:21:51.826432+00:00",
+              "vcpus": 2,
+              "raw_qemu": "-machine accel=tcg,gic-version=3 -cpu max",
+              "launch_exit_code": 0,
+              "image_fingerprint": "0dc6ef78a5f2dcf211538cefe867d8b14a6438422e4435875659674b8b6c0138",
+              "rtc_adjustment": "0",
+              "guest_agent_exec": true,
+              "hard_lockup": false,
+              "rcu_timer_warning": false,
+              "elapsed_seconds": 27.8,
+              "qmp_cpu_types": [
+                "max-arm-cpu"
+              ],
+              "fixture_stopped": true,
+              "finished_at": "2026-11-10T11:22:25.709610+00:00"
+            },
+            "kvm-2-no-its": {
+              "started_at": "2026-11-10T11:22:26.568299+00:00",
+              "vcpus": 2,
+              "raw_qemu": "-machine its=off",
+              "launch_exit_code": 0,
+              "image_fingerprint": "0dc6ef78a5f2dcf211538cefe867d8b14a6438422e4435875659674b8b6c0138",
+              "rtc_adjustment": "0",
+              "guest_agent_exec": true,
+              "hard_lockup": false,
+              "rcu_timer_warning": false,
+              "elapsed_seconds": 24.7,
+              "qmp_cpu_types": [
+                "host-arm-cpu"
+              ],
+              "fixture_stopped": true,
+              "finished_at": "2026-11-10T11:22:56.761057+00:00"
+            }
+          },
+          "same_instance_crossover": {
+            "default_its": {
+              "raw_qemu": null,
+              "launch_exit_code": 0,
+              "guest_agent_exec": false,
+              "guest_agent_error": "Error: VM agent isn't currently running",
+              "elapsed_seconds": 42.8,
+              "hard_lockup": true,
+              "fixture_stopped": true
+            },
+            "msi_disabled": {
+              "raw_qemu": "-machine msi=off",
+              "launch_exit_code": 0,
+              "guest_agent_exec": true,
+              "elapsed_seconds": 21.7,
+              "hard_lockup": false,
+              "guest_reports_pci_msi": false,
+              "fixture_stopped": true
+            }
+          },
+          "runtime_after_graceful_stop": "stopped"
+        }
       }
     }
   },

@@ -48,6 +48,17 @@ failed to become ready within 180 seconds. A fresh nested VM with the same
 Debian image and settings logged a CPU 0 hard lockup during guest boot and
 also missed the 180-second agent deadline.
 
+A follow-up on a fresh Stable appliance reproduced the two-vCPU KVM hard
+lockup with an RCU timer warning. One-vCPU KVM also failed to reach the agent.
+Two-vCPU QEMU software emulation reached the agent in 27.8 seconds. With
+`-machine its=off`, two-vCPU KVM reached the agent in 24.7 seconds. On that
+same VM, restoring the default QEMU configuration reproduced the lockup.
+Disabling MSI with `-machine msi=off` restored agent exec in 21.7 seconds.
+
+This isolates the failure to the virtual MSI/ITS path on the tested stack.
+The underlying upstream defect remains unidentified. These diagnostic
+overrides leave Stable's default nested KVM qualification open (task 4.3).
+
 The [evidence report](testing/prebuilt-draft-qualification.json) records the
 exact image and Macus digests, workload results and relay timings. The
 [runbook](../Integration/qualification/README.md#prebuilt-draft-appliances)
