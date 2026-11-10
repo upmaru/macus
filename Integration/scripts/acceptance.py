@@ -212,7 +212,9 @@ try:
     check('virtiofs_shares')
     capabilities = control('GET', '/capabilities')
     if capabilities['capabilities']['vm']:
-        run('launch', 'images:debian/13', name + '-vm', '--vm', '-c', 'limits.cpu=2', '-c', 'limits.memory=1GiB', '-c', 'security.secureboot=false')
+        # The production container profile has a 2 GiB root. The nested VM image is larger.
+        run('launch', 'images:debian/13', name + '-vm', '--vm', '-d', 'root,size=8GiB',
+            '-c', 'limits.cpu=2', '-c', 'limits.memory=1GiB', '-c', 'security.secureboot=false')
         deadline = time.monotonic() + 180
         while time.monotonic() < deadline:
             try:

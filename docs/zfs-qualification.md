@@ -23,6 +23,37 @@ disk/config change was requested. The intended stopped state is restored and no
 restoration question remains. The earlier cleanup deviation remains recorded;
 this does not establish historical disk-hash preservation for a15.
 
+## Prebuilt draft qualification, 2026-11-10
+
+Both locked drafts booted on a physical Apple Silicon Mac running macOS 27.0.1,
+using a signed Macus debug build and separate runtime state and Incus client
+configurations.
+
+| Appliance | Booted kernel | Incus | ZFS | Hardware qualification |
+| --- | --- | --- | --- | --- |
+| `alpine-3.24.2-lts-1` | `6.18.62-0-lts` | `7.0.1` | `2.4.4-1` | Passed |
+| `alpine-3.24.2-stable-1` | `7.1.5-0-stable` | `7.0.1` | `2.4.4-1` | Incomplete |
+
+On first boot, the offline verifier matched the exact image record and the
+digest of all 411 installed packages before storage initialization. Both guests
+reached Incus readiness on their pinned kernels without package installation or
+a kernel-transition reboot. Both passed standard Incus over Unix/vsock,
+container networking, OCI and system-container exec, ZFS snapshot restore and
+restart persistence, disk growth, and read-only and writable VirtioFS. Both
+relay stress runs drained all 400 pipelined responses with zero failed probes.
+
+The nested Debian 13 VM returned `aarch64` through the Incus guest agent on LTS.
+On Stable, the nested VM reached the Debian bootloader and the guest agent
+failed to become ready within 180 seconds. A fresh nested VM with the same
+Debian image and settings logged a CPU 0 hard lockup during guest boot and
+also missed the 180-second agent deadline.
+
+The [evidence report](testing/prebuilt-draft-qualification.json) records the
+exact image and Macus digests, workload results and relay timings. The
+[runbook](../Integration/qualification/README.md#prebuilt-draft-appliances)
+covers reproduction. Both appliance releases remain drafts. Catalog adoption
+is a separate step after publication.
+
 ## Package requalification, 2026-11-04
 
 Alpine published `linux-lts` and `zfs-lts` 6.18.60-r0 on 2026-11-01 and removed
