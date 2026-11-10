@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "started_at": "2026-11-10T19:15:04.922810+00:00",
+  "host": {
+    "model": "Mac16,5",
+    "chip": "Apple M4 Max",
+    "macos": "27.0.1",
+    "macos_build": "26A434"
+  },
+  "macus_binary_sha256": "65768ca9c5063823db971432bdca4a3c64365b29b2f71fcf8bc303620d586f0e",
+  "guest_image_fingerprint": "06021741e08dc81a8d9f3cbdd6c6c9d359e3a300c4e0d03b537fd67c9ff0cf56",
+  "vm": {
+    "vcpus": 2,
+    "memory_mib": 1024,
+    "root_disk_gib": 8,
+    "secure_boot": false,
+    "agent_deadline_seconds": 180
+  },
+  "fixed_files_sha256": {
+    "usr/bin/qemu-system-aarch64": "ad59e9c9f8cf5c2e5ba6a45a1bfa7c84a32831fd3f8b617c5c9ce3570f4e93bc",
+    "boot/EFI/BOOT/BOOTAA64.EFI": "94fd8f423b4386a91c9bc9dcf97b4bfd8b8907ccdb552d2bba9178874032a8ae",
+    "boot/limine/limine.conf": "50b006870903f897af7ece08852a76d763d3d239754af963a8272bdfa0cb1aaa",
+    "etc/local.d/kernel-matrix.start": "f5e4753f346e4c8f7831a5ee608b75fe56d2cfe72ec054e5a9d3f51a7af734f9",
+    "lib/apk/db/installed": "9c621541e0ac7b3d64397ceaa45cb61dfecc0333c1f6ce9cef0d10bf176b9197",
+    "usr/share/qemu/edk2-aarch64-code.fd": "47765fe344818cbc464b1c14ae658fb4b854f5c2ceffa982411731eb4865594d"
+  },
+  "finished_at": "2026-11-10T19:18:56.236144+00:00",
+  "case": {
+    "started_at": "2026-11-10T19:15:04.944448+00:00",
+    "expected_kernel": "7.1.8-macus-diag",
+    "status": "failed",
+    "outer": {
+      "kernel_version": "7.1.8-macus-diag",
+      "kernel_architecture": "aarch64",
+      "server_version": "7.0.1",
+      "storage_version": "2.4.4-1"
+    },
+    "guest_image_fingerprint": "06021741e08dc81a8d9f3cbdd6c6c9d359e3a300c4e0d03b537fd67c9ff0cf56",
+    "qemu_overrides": false,
+    "guest_agent_exec": false,
+    "guest_agent_elapsed_seconds": 180.0,
+    "last_agent_error": "Error: VM agent isn't currently running",
+    "qmp_cpu_types": [
+      "host-arm-cpu"
+    ],
+    "console_uefi_disk_boot": true,
+    "console_login_prompt": false,
+    "console_hard_lockup": false,
+    "observed_qemu_config": true,
+    "msi_or_its_disabled_in_qemu_config": false,
+    "nested_fixture_stopped": true,
+    "outer_fixture_stopped": true,
+    "isolated_service_unloaded": true,
+    "finished_at": "2026-11-10T19:18:56.235748+00:00",
+    "qemu_machine": {
+      "accel": "kvm",
+      "type": "virt",
+      "gic-version": "max"
+    },
+    "qemu_firmware_code_path": "/usr/share/AAVMF/AAVMF_CODE.fd",
+    "msi_configuration": "QEMU default, no MSI or ITS override",
+    "generated_qemu_differences_vs_stable_control": {
+      "instance_uuid": "different generated identifier",
+      "vsock_cid": "different generated identifier",
+      "automatic_hotplug_memory_ceiling": {
+        "stable": "3821M",
+        "diagnostic": "3826M"
+      }
+    },
+    "fixed_file_digests_rechecked_after_boot": true
+  },
+  "initial_outer_boot": {
+    "result": "Kernel booted and imported ZFS. The Incus service exited before nested launch.",
+    "recovery": "Stopped the disposable clone, added Incus debug logging and retried on the same disks.",
+    "incus_startup_failure_cause": "unidentified"
+  },
+  "scope": "Newer 7.1 kernel diagnostic using the prior stopped Stable snapshot and fixed workload inputs",
+  "macus_source_commit": "d7b8aec11778f04f7a2f4d7bb7d387c7b121b9dc",
+  "stable_release": "draft",
+  "debian_qualification": "open",
+  "baseline": {
+    "appliance_id": "alpine-3.24.2-stable-1",
+    "raw_sha256": "6d37778dfa9e0017402692f0f77c89b68b959fd4ae894b3f4d350d329e387fd3",
+    "description": "Cloned stopped root, Incus data, EFI variable store and seed before testing"
+  },
+  "firmware_inputs_sha256": {
+    "usr/share/AAVMF/AAVMF_CODE.fd": "ebd96f78d2d31c002ad1c4233df82c6bb5d3ded57452b47344690f58265a91b9",
+    "usr/share/AAVMF/AAVMF_VARS.fd": "3b6a07d0d404fab4e23b6d34bc6696a6a312dd92821332385e5af7c01c421351",
+    "usr/share/AAVMF/QEMU_EFI.fd": "2c2a77fc3a1da5833ba0a4e5f994732b5e79812b6dfc84bf8acb2e62f14b4e31",
+    "usr/share/AAVMF/QEMU_VARS.fd": "8b634c1e6bd11607850b69111f6c4dbd1583dbbd1460dac72dbacbdc1a4a130a"
+  },
+  "controls": {
+    "stable": {
+      "expected_kernel": "7.1.5-0-stable",
+      "status": "failed",
+      "guest_agent_exec": false,
+      "guest_agent_elapsed_seconds": 180.0
+    },
+    "lts": {
+      "expected_kernel": "6.18.62-0-lts",
+      "status": "passed",
+      "guest_agent_exec": true,
+      "guest_agent_elapsed_seconds": 14.5
+    }
+  },
+  "build": {
+    "environment": "native ARM64 Alpine v3.24 toolchain container in OrbStack",
+    "linux_source": "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.1.8.tar.xz",
+    "kernel_signer_fingerprint": "647F28654894E3BD457199BE38DBBDC86092693E",
+    "alpine_config_and_patch_checksums_verified": true,
+    "zfs_source_version": "2.4.4",
+    "zfs_archive_matches_alpine_recipe": true,
+    "config_notes": "Alpine stable ARM64 configuration resolved with olddefconfig for Linux 7.1.8. DWARF and BTF debug metadata were omitted.",
+    "inputs_and_artifacts_sha256": {
+      "linux-7.1.8.tar.xz": "ff01dcb449279d5b4cfccdb01fee639cf5ff1803f1749a77844dd33915422c49",
+      "aports/stable.aarch64.config": "c2dccc5cd411225bbfc28af2abf47245fe3c749c0a33532694a0f98fec482d48",
+      "aports/SHA512SUMS": "2b7f9bb62759db6c0f03b26ba263a72cd9ee265540fb2c3c7e376e3fe3cfec07",
+      "effective-kernel.config": "7f5705d014fd76b15f54e258b717b81ada9d527c63c8e51d7054cdeff96e0937",
+      "zfs-2.4.4.tar.gz": "2a3c70d55a37cc71618a95a60e81ad66530201eb118d37741dc92efcf848c8b1",
+      "vmlinuz-7.1.8-macus-diag": "7aec764b6475ebb53397c862fa88f84eee23268ac67bb35d92e5d9a3012a394b",
+      "initramfs-7.1.8-macus-diag": "3443ceed1243024744ae4cdd1824b31a399ff2971ad5372f9962be8c8c8188fd",
+      "modules-7.1.8-macus-diag.tar.gz": "80167de08fc888fb1f30d91339b656ac810ffbc74cbccdeeadd28a749a00cc75",
+      "kernel-builtin-metadata.tar.gz": "d254267884e23a84fa9fbdbc080275ac775874d63fbc3c669fe666e36f5c2348"
+    }
+  }
+}

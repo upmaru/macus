@@ -112,6 +112,32 @@ unidentified. Both copies were stopped and the failure state was retained.
 Stable remains a draft and the Debian qualification check is still open.
 See the [comparison evidence](testing/prebuilt-nested-kernel-comparison.json).
 
+### Linux 7.1.8 follow-up
+
+A third clone of the same disposable Stable snapshot booted
+`7.1.8-macus-diag` on the same Mac. The diagnostic kernel was compiled in an
+ARM64 Alpine container in OrbStack from signed upstream Linux 7.1.8 source,
+using Alpine's ARM64 Stable configuration and downstream patches with DWARF
+and BTF debug data omitted. It used matching OpenZFS 2.4.4 modules and a
+regenerated initramfs. The actual Macus test ran through Apple's
+Virtualization.framework.
+
+The first outer boot imported ZFS but the Incus service exited before any
+nested launch. Incus reached readiness on retry after daemon logging was
+enabled. It launched the same cached Ubuntu 24.04 ARM64 fingerprint as the
+controls. The QEMU and firmware hashes matched, and the generated config
+selected default KVM and left MSI and ITS at their defaults. The two vCPUs
+used the host ARM CPU type. Generated UUID, vsock CID and automatic memory hotplug ceiling
+differed from the Stable control, with the same 1 GiB boot memory.
+
+Ubuntu reached the UEFI disk boot entry, then timed out after 180 seconds
+without a login prompt or Incus agent response. The console showed no
+hard-lockup message. This 7.1.8 build reproduced the 7.1.5 readiness failure on
+the tested stack. The LTS control remains the passing case. Both VMs were
+stopped and the failed fixture was retained. Stable remains a draft and the
+Debian qualification check stays open.
+[Diagnostic evidence](testing/prebuilt-nested-kernel-7.1.8.json)
+
 ## Published LTS adoption, 2026-11-10
 
 The released `alpine-3.24.2-lts-1` asset matched the archive, disk and package
