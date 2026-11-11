@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "scope": "Debian 13 ARM64 outer VM with the Debian-packaged 7.1.8 kernel",
+  "host": {
+    "model": "Mac16,5",
+    "chip": "Apple M4 Max",
+    "macos": "27.0.1",
+    "macos_build": "26A434"
+  },
+  "outer_vm": {
+    "virtualization": "Apple Virtualization.framework",
+    "vcpus": 4,
+    "ram_mib": 4096,
+    "nested_virtualization": true,
+    "nested_workload_tools": "Alpine Incus and QEMU in a chroot"
+  },
+  "outer_fixture_stopped": true,
+  "prior_controls": {
+    "stable": {
+      "expected_kernel": "7.1.5-0-stable",
+      "status": "failed",
+      "guest_agent_exec": false,
+      "guest_agent_elapsed_seconds": 180.0
+    },
+    "lts": {
+      "expected_kernel": "6.18.62-0-lts",
+      "status": "passed",
+      "guest_agent_exec": true,
+      "guest_agent_elapsed_seconds": 14.5
+    },
+    "alpine_7_1_8": {
+      "expected_kernel": "7.1.8-macus-diag",
+      "status": "failed",
+      "guest_agent_elapsed_seconds": 180.0
+    }
+  },
+  "debian_backport": {
+    "archive": "https://snapshot.debian.org/archive/debian/20260822T025630Z/dists/trixie-backports/",
+    "archive_signing_key_fingerprint": "B8E5F13176D2A7A75220028078DBA3BC47EF2265",
+    "inrelease_sha256": "7b828d1f4c090b0aa6b43d072cf8ce0a4c00f5100fd1cb86fb3a3d9d38b1155f",
+    "signed_packages_index_sha256": "b36af70a1da2e4525a57a799ab615d6ecd0a14e16bb30cbf7e72e3081cbdc8d7",
+    "packages": [
+      {
+        "Package": "linux-base-7.1.8+deb13-arm64",
+        "Version": "7.1.8-1~bpo13+1",
+        "Filename": "pool/main/l/linux/linux-base-7.1.8+deb13-arm64_7.1.8-1~bpo13+1_arm64.deb",
+        "Size": "4523352",
+        "SHA256": "32ea8a5448a2a674068eb4a00eeee3920f845d159bc977b40b8b80ef56e03a2a"
+      },
+      {
+        "Package": "linux-binary-7.1.8+deb13-arm64",
+        "Version": "7.1.8-1~bpo13+1",
+        "Filename": "pool/main/l/linux-signed-arm64/linux-binary-7.1.8+deb13-arm64_7.1.8-1~bpo13+1_arm64.deb",
+        "Size": "11682716",
+        "SHA256": "2c65c65ac45e156c1178fb539ead67cd7ac17dfafa8a56df50aba7fabe69f60f"
+      },
+      {
+        "Package": "linux-image-7.1.8+deb13-arm64",
+        "Version": "7.1.8-1~bpo13+1",
+        "Filename": "pool/main/l/linux-signed-arm64/linux-image-7.1.8+deb13-arm64_7.1.8-1~bpo13+1_arm64.deb",
+        "Size": "1892",
+        "SHA256": "97efd0a88cc36d3766f55bfc705b91b5ff3984fe4eef7257f3357a51f5608fab"
+      },
+      {
+        "Package": "linux-modules-7.1.8+deb13-arm64",
+        "Version": "7.1.8-1~bpo13+1",
+        "Filename": "pool/main/l/linux/linux-modules-7.1.8+deb13-arm64_7.1.8-1~bpo13+1_arm64.deb",
+        "Size": "84451172",
+        "SHA256": "5ea1c8650299c6069aa650ccc1089bdc99dc6f7e699c41b15f58c0c104868853"
+      }
+    ],
+    "boot_artifacts_sha256": {
+      "kernel": "ceb360895e7ed9dcfc94f20aa323f7efacf73e3182734b5adcd63592819ff4c3",
+      "initramfs": "22711b685630ed7366eafc3e110e2dfbb63952d2f9cda51792442e499cb49b47",
+      "limine": "94fd8f423b4386a91c9bc9dcf97b4bfd8b8907ccdb552d2bba9178874032a8ae"
+    }
+  },
+  "first_boot_retry": "The first Incus start could not find ip. Retried with Alpine system executable paths in PATH and fresh chroot state.",
+  "differences_from_alpine_controls": [
+    "Debian kernel and systemd userspace",
+    "Incus directory storage pool in place of ZFS",
+    "VirtioFS diagnostic file share"
+  ],
+  "result": {
+    "started_at": "2026-11-11T08:23:36.006321+00:00",
+    "status": "failed",
+    "outer_kernel": "7.1.8+deb13-arm64",
+    "guest_image_fingerprint": "06021741e08dc81a8d9f3cbdd6c6c9d359e3a300c4e0d03b537fd67c9ff0cf56",
+    "outer_os": "Debian GNU/Linux 13 (trixie)",
+    "debian_kernel_package": "7.1.8-1~bpo13+1",
+    "fixed_files_sha256": {
+      "usr/bin/qemu-system-aarch64": "ad59e9c9f8cf5c2e5ba6a45a1bfa7c84a32831fd3f8b617c5c9ce3570f4e93bc",
+      "usr/share/qemu/edk2-aarch64-code.fd": "47765fe344818cbc464b1c14ae658fb4b854f5c2ceffa982411731eb4865594d",
+      "usr/share/AAVMF/AAVMF_CODE.fd": "ebd96f78d2d31c002ad1c4233df82c6bb5d3ded57452b47344690f58265a91b9",
+      "usr/share/AAVMF/AAVMF_VARS.fd": "3b6a07d0d404fab4e23b6d34bc6696a6a312dd92821332385e5af7c01c421351",
+      "usr/share/AAVMF/QEMU_EFI.fd": "2c2a77fc3a1da5833ba0a4e5f994732b5e79812b6dfc84bf8acb2e62f14b4e31",
+      "usr/share/AAVMF/QEMU_VARS.fd": "8b634c1e6bd11607850b69111f6c4dbd1583dbbd1460dac72dbacbdc1a4a130a"
+    },
+    "image_export_sha256": {
+      "ubuntu-24.04": "ffab407d92a0f9ba4fe82a2f2ace6ea15f585db69ac6be62106fdf1e05b034b5",
+      "ubuntu-24.04.root": "d1dd10461c6aa3a5fb19c12d27e3daab7079c9ba8ad955ac109d5a929f64f1aa"
+    },
+    "storage_driver": "dir",
+    "incus_server_version": "7.0.1",
+    "guest_agent_exec": false,
+    "vm": {
+      "vcpus": 2,
+      "ram_mib": 1024,
+      "root_disk_gib": 8,
+      "secure_boot": false,
+      "agent_deadline_seconds": 180
+    },
+    "running_qemu_sha256": "ad59e9c9f8cf5c2e5ba6a45a1bfa7c84a32831fd3f8b617c5c9ce3570f4e93bc",
+    "machine": {
+      "accel": "kvm",
+      "type": "virt",
+      "gic-version": "max",
+      "msi_its": "QEMU defaults, no override"
+    },
+    "guest_agent_elapsed_seconds": 180.0,
+    "last_agent_error": "Error: VM agent isn't currently running",
+    "qmp_cpu_types": [
+      "host-arm-cpu"
+    ],
+    "console": {
+      "uefi_disk_boot": true,
+      "login_prompt": false,
+      "hard_lockup": false
+    },
+    "nested_fixture_stopped": true,
+    "incus_stopped": true,
+    "finished_at": "2026-11-11T08:26:45.730056+00:00"
+  },
+  "stable_release": "draft",
+  "debian_qualification": "open"
+}

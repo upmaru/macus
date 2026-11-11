@@ -138,6 +138,28 @@ stopped and the failed fixture was retained. Stable remains a draft and the
 Debian qualification check stays open.
 [Diagnostic evidence](testing/prebuilt-nested-kernel-7.1.8.json)
 
+### Debian 13 with packaged Linux 7.1.8
+
+A disposable Debian 13 ARM64 VM booted on the same Apple M4 Max through
+Apple's Virtualization.framework with nesting enabled. It ran the
+`7.1.8+deb13-arm64` kernel from Debian's verified trixie-backports packages
+(`7.1.8-1~bpo13+1`). The first Incus startup could not find `ip`. The retry
+used the Alpine service's usual executable search path and fresh Incus state.
+
+The Debian VM ran the original Alpine Incus and QEMU userspace in a chroot
+with an Incus directory storage pool. The running QEMU binary and AAVMF
+firmware matched the Alpine controls by SHA-256. Incus imported the exact
+Ubuntu 24.04 ARM64 image fingerprint used in the controls. The generated
+machine config used KVM and `gic-version=max` with the default MSI and ITS
+settings. The nested VM used two vCPUs and 1 GiB RAM.
+
+Ubuntu reached the UEFI disk boot entry. At 180 seconds it had shown no
+login prompt or hard-lockup message, and its Incus guest agent had yet to
+respond. This reproduces the visible Alpine 7.1.8 symptom on Debian's
+packaged 7.1.8 kernel. Both VMs stopped and the diagnostic state was retained.
+Stable remains an unpublished draft and the nested Debian qualification check
+is open. [Diagnostic evidence](testing/prebuilt-nested-debian-7.1.8.json)
+
 ## Published LTS adoption, 2026-11-10
 
 The released `alpine-3.24.2-lts-1` asset matched the archive, disk and package
