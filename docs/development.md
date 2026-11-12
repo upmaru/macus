@@ -57,13 +57,12 @@ mise exec -- mix test
 ```
 
 `server/mix.lock` records released dependencies, including Phoenix 1.8.15,
-Plug.Cowboy 2.9.0, Cowboy 2.19.0, Mint 1.11.0 and TamaMCP 0.1.1. The current
-dependencies are released Hex packages. The revised plan requires a separate
-implemented immutable Opsmaru Git revision or released package; it is not in
-the lockfile yet. Production builds must never use an absolute sibling path
-or invent an unavailable package. Macus's own scaffold has no Ecto, HTML,
-assets, LiveView or generated nested AGENTS file. Embedded Opsmaru must start
-no Endpoint, Repo or listener. `_build/`, `deps/` and release outputs are
+Plug.Cowboy 2.9.0, Cowboy 2.19.0, Mint 1.11.0, TamaMCP 0.1.1 and
+`opsmaru_incus` 0.1.0. All dependencies are released Hex packages; Hex is the
+only distribution route for `opsmaru_incus`, so builds never use a Git revision
+or sibling path for it. Macus's own scaffold has no Ecto, HTML,
+assets, LiveView or generated nested AGENTS file. `opsmaru_incus` has no
+application callback and starts no process or listener. `_build/`, `deps/` and release outputs are
 ignored. Tests start the OTP tree in process without a listener or VM.
 
 The initial scaffold is passive: it resolves `MACUS_STATE_DIR`, then legacy
@@ -80,12 +79,12 @@ SFTP/NBD HTTP upgrades with TLS/Unix fixtures and the pinned official client.
 Its handlers are test-only; passing that trial does not complete the proxy or
 hardware acceptance.
 
-Shared client adoption starts with Opsmaru's `add-embedded-incus-foundation`.
-It owns safe library startup, connection/context values, codecs and complete
-native Incus client coverage. Later shared MCP tools, cache/journal/runner and
-optional connector work belongs to Opsmaru's subsequent milestones. Macus
-owns its gateway authentication/native proxy, private Swift runtime adapter
-and runtime/host tool integration. Avoid a duplicate portable client, task
+`:opsmaru_incus` (Hex) owns safe library embedding, connection/context values,
+codecs, native Incus client coverage, gateway relay mechanics and the shared
+operation descriptors and runner. Durable tasks and connector work belong to
+later milestones. Macus owns its gateway authentication/policy, private Swift
+runtime adapter, runtime operations and the `/mcp` `search`/`execute` tools;
+the separate tama-dex index library backs `search`. Avoid a duplicate portable client, task
 engine, Opsmaru endpoint or third service. The checked historical inventory
 and Cowboy trial are reference/consumer evidence, not proof that the dependency
 is implemented or integrated. See the current tasks for the adoption gates.

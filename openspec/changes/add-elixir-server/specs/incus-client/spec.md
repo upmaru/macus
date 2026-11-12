@@ -72,7 +72,7 @@ Macus SHALL retain shared dependency/upstream provenance and link its library be
 
 ### Requirement: Shared dependency without sibling checkout
 
-CI and installed Macus builds SHALL resolve the shared client through an immutable revision or released package and lockfile. An editable sibling path SHALL be development-only. Missing shared support MUST NOT trigger a Macus-only fallback implementation.
+CI and installed Macus builds SHALL resolve the shared client as the released `:opsmaru_incus` Hex package recorded with its checksum in the committed lockfile. Git revision or sibling path dependencies SHALL NOT be used. Missing shared support MUST NOT trigger a Macus-only fallback implementation.
 
 #### Scenario: Missing dependency method
 

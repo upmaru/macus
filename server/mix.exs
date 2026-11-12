@@ -46,7 +46,11 @@ defmodule Macus.MixProject do
       {:mint, "1.11.0"},
       {:plug_cowboy, "2.9.0"},
       {:cowboy, "2.19.0"},
-      {:tama_mcp, "0.1.1"}
+      {:tama_mcp, "0.1.1"},
+      # Shared Incus client, native gateway relay and operation descriptors.
+      # A pure library: no application callback, listener or process. Hex is
+      # its only distribution route; mix.lock records the exact checksum.
+      {:opsmaru_incus, "~> 0.1.0"}
     ]
   end
 

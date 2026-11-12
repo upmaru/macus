@@ -1,6 +1,6 @@
 # Tasks
 
-First milestone: a standalone Macus. Checked tasks record earlier scaffold/reference/transport/runtime evidence. Macus depends on the pure `:opsmaru_incus` library (`upmaru/opsmaru-incus`) for the Incus client (`add-embedded-incus-foundation`), native gateway mechanics (`add-embeddable-incus-gateway`) and shared Incus MCP tools (`add-incus-operations`); it does not depend on the `:opsmaru` central service. Durable MCP tasks are deferred. Central registration moved to `add-central-registration` on 2026-10-13. Gate dependent work on an actual implemented immutable revision, not a placeholder package.
+First milestone: a standalone Macus. Checked tasks record earlier scaffold/reference/transport/runtime evidence. Macus depends on the pure `:opsmaru_incus` library (`upmaru/opsmaru-incus`) for the Incus client (`add-embedded-incus-foundation`), native gateway mechanics (`add-embeddable-incus-gateway`) and shared Incus operation descriptors (`add-incus-operations`), all released on Hex as `:opsmaru_incus` 0.1.0; it does not depend on the `:opsmaru` central service. Durable MCP tasks are deferred. Central registration moved to `add-central-registration` on 2026-10-13. Dependent work is gated on the released Hex package locked in `server/mix.lock`, never a placeholder package; the `search` tool is additionally gated on the tama-dex index library.
 
 ## 1. Headless project and library dependency integration
 
@@ -9,7 +9,7 @@ First milestone: a standalone Macus. Checked tasks record earlier scaffold/refer
 - [x] 1.3 Add the runtime/incus/proxy/auth/mcp module boundaries, runtime configuration and ignores for build/dependency outputs; verify fixture-only application startup and Git's ignored-path behavior.
 - [x] 1.4 Reconcile `openspec/config.yaml`, development instructions and architecture docs with the approved dual-service scope and integrated Homebrew baseline; verify strict spec validation and documented root/server commands.
 - [x] 1.5 Prove the Cowboy adapter choice using isolated TLS-to-Unix fixtures and the pinned official Incus client; verify native SFTP/NBD handshakes, coalesced bytes, binary duplex traffic, backend half-close, authorization before backend access, cleanup, Phoenix coexistence and response-header rejection without claiming production proxy or hardware acceptance.
-- [ ] 1.6 Pin an implemented `:opsmaru_incus` revision from `upmaru/opsmaru-incus` (or a released package) and resolve compatible locked dependencies; verify a clean build without a sibling checkout, no fabricated package/version and recorded distinct opsmaru-incus provenance.
+- [x] 1.6 Pin an implemented `:opsmaru_incus` revision from `upmaru/opsmaru-incus` (or a released package) and resolve compatible locked dependencies; verify a clean build without a sibling checkout, no fabricated package/version and recorded distinct opsmaru-incus provenance.
 - [ ] 1.7 Configure the explicit private backend connection/context and optional host-supervised client workers for `:opsmaru_incus`; verify the dependency starts no process/listener or third service even with PHX_SERVER/PORT present, client work waits for trusted host readiness and restart retains the Swift runtime marker without central/MCP prerequisites.
 - [x] 1.8 Reconcile root context/development/architecture docs and source module ownership with this revision; verify they identify Macus gateway/runtime/proxy versus Opsmaru client/MCP/tasks and canonical checks retain the original hardware boundary.
 
@@ -65,16 +65,17 @@ Relay mechanics come from `Opsmaru.Incus.Gateway` (`add-embeddable-incus-gateway
 - [ ] 6.11 Verify shared migration/copy negotiation and remaining reference entries; retain reachable gateway-address selection and no guest-address policy bypass.
 - [ ] 6.12 Validate the pinned dependency's complete method/type manifest and update consumer API documentation; verify every supported entry has independent evidence and missing library support blocks completion rather than falling back to Macus-only methods.
 
-## 7. MCP transport, authorization and named tools
+## 7. MCP transport, authorization and search/execute tools
 
-Shared Incus tools come from `add-incus-operations` in opsmaru-incus. Tools are synchronous and return native operation identity; no durable task store, runner or task handles.
+Revision 2026-11-12: `/mcp` advertises exactly two tools, `search` and `execute`. Shared operation descriptors and `Opsmaru.Incus.Operations.run/3` come from `add-incus-operations` in opsmaru-incus, which ships no MCP binding. The separate tama-dex library (SQLite index, not yet published) indexes the combined catalogue for `search`. Operations are synchronous and return native operation identity; there is no durable task store, runner or task handle.
 
-- [ ] 7.1 Mount maintained TamaMCP transport at Macus /mcp with Macus credential verification and the `:opsmaru_incus` host binding (local connection/context and authorization); verify supported conformance, one endpoint, bounded bodies, synchronous tools only and no task advertisement.
-- [ ] 7.2 Implement/register Macus-owned runtime inspection/lifecycle/config tools and its host provider; verify Swift-equivalent behavior, stopped-state/confirmation rules and denial before provider/backend dispatch.
-- [ ] 7.3 Register the shared `:opsmaru_incus` Incus inspection tools through the Macus host binding; verify shared names/schemas, trusted project/backend binding and authorized visibility.
-- [ ] 7.4 Register shared mutation/guest-exec tools; verify native client delegation, acceptance versus completion, bounded results and no unrestricted host execution.
-- [ ] 7.5 Enforce shared destructive scopes/inputs and Macus runtime-specific safety; verify wrong scopes, missing confirmation and forged owner/backend values cannot mutate a backend.
-- [ ] 7.6 Publish the combined portable/runtime tool manifest and composition guide; verify duplicate-name compilation fails, shared schemas match the library and unsupported protocol/resource/stdin features remain absent.
+- [ ] 7.1 Mount maintained TamaMCP transport at Macus /mcp with Macus credential verification, advertising only `search` and `execute`; verify supported conformance, one endpoint, bounded bodies, synchronous tools only, no per-operation tools and no task advertisement.
+- [ ] 7.2 Define Macus-owned runtime inspection/lifecycle/config operations as descriptors (name, schemas, scope, confirmation) with their host provider; verify Swift-equivalent behavior, stopped-state/confirmation rules and denial before provider/backend dispatch.
+- [ ] 7.3 Build the combined catalogue from `Opsmaru.Incus.Operations.all/0` and the Macus runtime descriptors; verify duplicate names fail construction, shared names/schemas match the library unchanged and `Operations.unavailable/0` entries are excluded.
+- [ ] 7.4 Implement `Opsmaru.Incus.Operations.Host` for Macus (local `incus.sock` connection/context binding, authorization, deny-by-default image remotes and restricted input); verify forged owner/socket/URL input cannot select a backend and readiness gates dispatch.
+- [ ] 7.5 Implement `execute`: dispatch shared operations through `Operations.run/3` with the verified caller and scopes, and runtime operations through the runtime adapter; verify per-operation scope enforcement behind one tool, confirmation for destructive operations, acceptance versus completion, bounded results, uncertain outcomes without replay and no unrestricted host execution.
+- [ ] 7.6 Integrate tama-dex for `search`, filtered to the caller's verified scopes; verify bounded queries/results, returned schemas match the descriptors, tama-dex adds no endpoint/listener, its index lives in owner-private state and search results never bypass `execute` authorization. Blocked until tama-dex is released.
+- [ ] 7.7 Publish the combined operation manifest and the search/execute usage guide; verify documented operations match the catalogue and unsupported protocol/resource/stdin features remain absent.
 
 ## 8. Swift CLI and coordinated service startup
 
@@ -106,7 +107,7 @@ Shared Incus tools come from `add-incus-operations` in opsmaru-incus. Tools are 
 
 - [ ] 11.1 Extend opt-in acceptance for paired artifacts, pinned dependency, isolated state/credentials/client config and two service labels; verify no-opt-in invocation cannot start VZ or ordinary state.
 - [ ] 11.2 With hardware opt-in, prove first/repeated macus start, public runtime control and native HTTPS Incus registration; verify the `:opsmaru_incus` dependency starts no listener or third service and retain package/guest evidence separately.
-- [ ] 11.3 With hardware opt-in, prove native exec/console/events/binary transfers and composed shared/runtime MCP tools; verify denied credentials/scopes/confirmation cannot affect the guest.
+- [ ] 11.3 With hardware opt-in, prove native exec/console/events/binary transfers and MCP `search`/`execute` over shared and runtime operations; verify denied credentials/scopes/confirmation cannot affect the guest.
 - [ ] 11.4 With hardware opt-in, restart only Elixir and prove retained VM/workload identity; verify interrupted tool calls report native operation identity or uncertainty and no mutation replay.
 - [ ] 11.5 With remote opt-in, use another client to prove TLS identity, native enrollment and scoped combined MCP/runtime access including revocation; record remote evidence separately from loopback and Linux acceptance.
 - [ ] 11.6 With package/hardware opt-in, exercise the same two-job upgrade/rollback/removal preserving workloads/credentials; retain failed diagnostics and leave unavailable hardware/remote tasks incomplete.

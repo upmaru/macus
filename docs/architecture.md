@@ -7,8 +7,8 @@ Swift CLI / standard Incus / MCP clients
                   │ HTTPS
            Phoenix / Cowboy (server/)
             /      │       \
-     /runtime    /1.0*     /mcp (composed TamaMCP tools)
-         │         │       │ Opsmaru.Incus + Macus runtime tools
+     /runtime    /1.0*     /mcp (TamaMCP: search + execute)
+         │         │       │ Opsmaru.Incus.Operations + Macus runtime ops
    runtime.sock  incus.sock │
          │         │       │
    Swift VM actor  Swift duplex relay
@@ -18,10 +18,12 @@ Swift CLI / standard Incus / MCP clients
 
 Swift owns the VM and disks. Macus Elixir code owns gateway identity/trust,
 scoped bearer authorization, native HTTP/upgrade proxying and the private
-Swift runtime adapter. Opsmaru owns the portable Incus client, shared MCP
-tools and journal/store/runner implementation. It will run embedded in the
-existing Macus BEAM, using private state beneath `<state-dir>/server`, with
-its endpoint and Repo disabled. There is one public endpoint and the same
+Swift runtime adapter. The pure `:opsmaru_incus` Hex library owns the portable
+Incus client, native gateway relay mechanics and shared Incus operation
+descriptors. It runs inside the existing Macus BEAM with no application
+callback, listener or process. `/mcp` advertises only `search` and `execute`
+over one catalogue of shared and Macus runtime operations; the separate tama-dex
+index library (not yet published) backs `search`. There is one public endpoint and the same
 two independently supervised Swift/Elixir processes. The
 public gateway defaults to loopback HTTPS; LAN binding and advertised identity
 require explicit configuration. Authenticate before accessing either private
@@ -30,12 +32,11 @@ paths, binary streaming and upgrades remain native, with only the documented
 gateway identity/trust exceptions. Typed-client parity has separate upstream
 inventory evidence; proxy breadth is not client-port evidence.
 
-The first upstream milestone is `add-embedded-incus-foundation`: safe library
-embedding and the native client. It must be adopted through a real implemented
-immutable revision or released package. Later shared tools/tasks/connectors
-are separate Opsmaru milestones and cannot gate this first local integration.
-The current Macus lockfile does not include Opsmaru yet; no fallback client or
-duplicate task engine is implemented here. Historical Macus reference inputs
+`server/mix.lock` locks `:opsmaru_incus` 0.1.0 from Hex, which delivers the
+client, gateway and operations. Its coverage still reports
+`complete_port=false`, so no complete-client claim is made. Durable tasks and
+central connectors are later milestones. No fallback client or duplicate task
+engine is implemented here. Historical Macus reference inputs
 can be transferred with notices, while Macus-specific bridge, identity and
 runtime evidence remains in this repository.
 

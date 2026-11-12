@@ -9,12 +9,14 @@ context: |
   connection boundary. Swift runtime.sock and incus.sock remain private
   owner-only Unix transports with no TCP listeners. Preserve native Incus
   routes, streaming and upgrade protocols; gateway trust is distinct from
-  guest trust. Typed clients and named MCP tools delegate workload behavior
+  guest trust. Typed clients and MCP-executed operations delegate workload behavior
   to Incus. No external host VM runtime, SSH, GUI or workload orchestration.
   Macus depends on the pure :opsmaru_incus library (upmaru/opsmaru-incus)
-  for the Incus client, native gateway mechanics and shared Incus MCP tools;
+  (Hex) for the Incus client, native gateway mechanics and shared Incus
+  operation descriptors;
   it does not depend on the :opsmaru central service. The first milestone is
-  a standalone Macus with synchronous MCP tools and no durable MCP tasks.
+  a standalone Macus whose /mcp exposes only search and execute tools over
+  synchronous operations, with no durable MCP tasks.
   Central registration (macus connect, outbound connector) is the later
   add-central-registration change; Macus remains one local target and
   independently usable, and native Incus trust stays separate from any

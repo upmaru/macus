@@ -83,4 +83,4 @@ Normal CLI startup/setup SHALL use the existing Macus gateway and its bundled `:
 #### Scenario: Complete package setup
 
 - **WHEN** client setup operates against the complete ready Macus package
-- **THEN** the same public gateway provides native Incus and composed MCP connectivity without another service setup
+- **THEN** the same public gateway provides native Incus and MCP (`search`/`execute`) connectivity without another service setup

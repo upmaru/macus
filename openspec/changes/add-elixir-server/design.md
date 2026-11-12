@@ -21,7 +21,7 @@ Main specs still describe direct Unix client access; root context/docs were upda
 - Make the installed Phoenix server the normal connection boundary for local CLI, standard Incus clients and MCP clients.
 - Keep the VM, Incus workloads and client operations independent of the language used for the public server.
 - Support operator-configured remote HTTPS with explicit identity and scope enforcement before privileged backend access.
-- Consume the shared `:opsmaru_incus` client, gateway mechanics and Incus tools with upstream method evidence and independent Macus bridge/identity acceptance; keep one public endpoint.
+- Consume the shared `:opsmaru_incus` client, gateway mechanics and Incus operations with upstream method evidence and independent Macus bridge/identity acceptance; keep one public endpoint.
 - Reuse existing startup safety, budgets and machine-output contracts across the two-service installation.
 - Operate fully standalone; central registration is the later `add-central-registration` change.
 
@@ -38,31 +38,34 @@ Main specs still describe direct Unix client access; root context/docs were upda
 
 ### 1. Macus gateway uses the shared `:opsmaru_incus` library
 
-Keep the headless `:macus` Phoenix/Cowboy application in `server/`. It owns the public listener, gateway credentials and trust, host policy, the private Swift runtime adapter and Macus-specific MCP tools. Add an immutable dependency on `upmaru/opsmaru-incus` once the needed revision is implemented and verified, or a released package when available. Do not invent an unpublished version.
+Keep the headless `:macus` Phoenix/Cowboy application in `server/`. It owns the public listener, gateway credentials and trust, host policy, the private Swift runtime adapter, Macus runtime operations and the `search`/`execute` MCP tools. Depend on the released Hex package `{:opsmaru_incus, "~> 0.1.0"}` (published 2026-11-12). `server/mix.lock` records the exact version and checksum. Hex is the library's only distribution route, so do not pin Git revisions or sibling paths.
 
-`:opsmaru_incus` is a pure library with no application callback: depending on it starts no endpoint, listener or process. Macus uses three parts of it: the `Opsmaru.Incus` client over `incus.sock`, the `Opsmaru.Incus.Gateway` relay mounted on the Macus endpoint with Macus host policy, and the shared Incus operation/MCP tool modules composed into the Macus TamaMCP server. Macus does not depend on the `:opsmaru` central service.
+`:opsmaru_incus` is a pure library with no application callback: depending on it starts no endpoint, listener or process. Macus uses three parts of it: the `Opsmaru.Incus` client over `incus.sock`, the `Opsmaru.Incus.Gateway` relay mounted on the Macus endpoint with Macus host policy (`Opsmaru.Incus.Gateway.Host`), and the shared `Opsmaru.Incus.Operations` descriptors/runner reached through the Macus `search`/`execute` MCP tools. Macus does not depend on the `:opsmaru` central service.
 
 ```text
 server/lib/macus/
   application.ex       gateway supervision + library configuration
-  runtime/             private Swift API client and Macus runtime tools
+  runtime/             private Swift API client and Macus runtime operations
   host/                Macus capability/path adapter
   proxy/               gateway mount and Macus host policy/trust mediation
   auth/                gateway trust, bearer verification and administration
-  mcp/                 composed catalogue and host binding/authorization
+  mcp/                 operation catalogue, search/execute tools, operations host
 server/lib/macus_web/  one public Phoenix endpoint
 
-opsmaru_incus dependency
-  Opsmaru.Incus           portable client over configured incus.sock
-  Opsmaru.Incus.Gateway   native HTTP/WebSocket/raw-upgrade relay mechanics
-  Opsmaru.Incus.MCP       shared Incus tool modules (synchronous)
+opsmaru_incus dependency (Hex)
+  Opsmaru.Incus             portable client over configured incus.sock
+  Opsmaru.Incus.Gateway     native HTTP/WebSocket/raw-upgrade relay mechanics
+  Opsmaru.Incus.Operations  shared operation descriptors and synchronous run/3
+
+tama-dex (separate library, not yet published)
+  SQLite index of the combined catalogue for the `search` tool
 ```
 
-Resolve compatible locked Phoenix/Cowboy/TamaMCP dependencies against the library's ranged requirements. Local editable paths may be used deliberately during development, but CI/source installs and packaging must resolve a pinned Git revision or released package without an absolute sibling checkout.
+Resolve compatible locked Phoenix/Cowboy/TamaMCP dependencies against the library's ranged requirements. The library's isolated consumer fixture uses Macus's exact Phoenix/Plug.Cowboy/Cowboy/Mint/TamaMCP set. Adding it to `server/mix.lock` adds only `opsmaru_incus`, `mint_web_socket` and `yamerl`. CI, source installs and packaging resolve from Hex without a sibling checkout.
 
 Retain the Cowboy2 adapter established by the successful native SFTP/NBD fixture trial. The initial Bandit choice failed the native upgrade requirement; the documented Cowboy switch-protocol design and response-header guard remain unchanged.
 
-Alternative: implementing the client, proxy or tools in Macus duplicates what central Opsmaru also needs. The shared library holds them; Macus implements host integration.
+Alternative: implementing the client, proxy or Incus operations in Macus duplicates what central Opsmaru also needs. The shared library holds them; Macus implements host integration.
 
 ### 2. One public server, existing private bridges
 
@@ -92,9 +95,9 @@ Public routing:
 | --- | --- |
 | `/runtime` and `/runtime/*` | Allowlisted control methods mapped to `/v1/runtime` and its private routes |
 | `/`, `/1.0`, `/1.0/*` | Native Incus discovery/API, identity/trust mediation, HTTP bodies and upgrade streams |
-| `/mcp` | Maintained TamaMCP transport; composed `:opsmaru_incus` Incus tools plus Macus runtime tools, host auth and the library host binding |
+| `/mcp` | Maintained TamaMCP transport with exactly two tools, `search` and `execute`, over the combined `:opsmaru_incus` and Macus runtime operation catalogue; host auth and the library operations host |
 
-The `:opsmaru_incus` library runs inside this BEAM without its own endpoint, listener or process. Shared Incus tools use its client configured against incus.sock; Macus runtime tools use runtime.sock. Macus's local endpoint still serves one configured local target; central Opsmaru's separate MCP/REST endpoint can select multiple registered targets. Local Macus never accepts arbitrary independent target addresses.
+The `:opsmaru_incus` library runs inside this BEAM without its own endpoint, listener or process. Shared Incus operations use its client configured against incus.sock; Macus runtime operations use runtime.sock. Macus's local endpoint still serves one configured local target; central Opsmaru's separate MCP/REST endpoint can select multiple registered targets. Local Macus never accepts arbitrary independent target addresses.
 
 Public runtime inspection has no version in the path. Keep private Swift routes and snake_case models/version fields; preserve method, conflict and budget behavior. Public status projects connection metadata to `server_endpoint`/`incus_endpoint` and separate server/runtime readiness, omitting internal socket paths and secrets. This is an explicit public response change, not an undocumented alteration of private Swift status.
 
@@ -132,7 +135,7 @@ First prove the adapter choice using isolated TLS-to-Unix fixtures: binary duple
 
 Retain Cowboy's `invalid_response_headers: :error_terminate` guard explicitly. The selected Cowboy release includes the documented server-side mitigation for Cowlib CVE-2026-43966; verify rejection of CR/LF-bearing upgrade response headers. Native protocol names are allowlisted and application code must not feed unchecked input into structured-field header encoders. A successful fixture does not establish that the transitive Cowlib release itself is fixed.
 
-Dispatch Incus and MCP routes before global `Plug.Parsers`; the TamaMCP Plug owns bounded MCP body validation. Runtime control retains its own documented bounds and private single-request behavior. All paths must preserve queries (including project, target and operation secrets), ETags, binary data and relevant connection teardown. Transport secrets in upgrade URLs are redacted from logs.
+Dispatch Incus and MCP routes before global `Plug.Parsers`. The TamaMCP Plug owns bounded MCP body validation, and `Opsmaru.Incus.Gateway.Plug` refuses requests whose body a parser has already consumed. Runtime control retains its own documented bounds and private single-request behavior. All paths must preserve queries (including project, target and operation secrets), ETags, binary data and relevant connection teardown. Transport secrets in upgrade URLs are redacted from logs.
 
 Use independent supervised connection workers with bounded queues/buffers and stream quotas. A worker can wait for socket readiness without serializing all requests through one GenServer. Control/status and authentication stay responsive under idle or slow streams. Backend failure closes affected streams and leaves Swift/Incus data intact. No generic retry of mutating requests after an ambiguous disconnect.
 
@@ -152,11 +155,22 @@ Macus acceptance proves its configured bridge, verified identity/owner context, 
 
 Alternative: implementing a few Macus-only REST calls would both duplicate the shared backend and fail the original complete-port contract. The shared library preserves that contract; this change verifies and consumes it.
 
-### 6. Compose shared and Macus tools at one MCP endpoint
+### 6. Search and execute operations at one MCP endpoint
 
-`:opsmaru_incus` (`add-incus-operations`) supplies the shared Incus operation descriptors and their TamaMCP tool modules. Macus assembles a compile-time catalogue with those modules plus Macus's private-runtime tools in its own TamaMCP server and mounts the maintained Streamable HTTP Plug at `/mcp` on its existing endpoint. Duplicate names fail compilation; no dynamic plugin loader or second MCP service is introduced.
+**Revision 2026-11-12:** `:opsmaru_incus` 0.1.0 ships operation descriptors and `Opsmaru.Incus.Operations.run/3` but no MCP binding (its optional TamaMCP tool modules were removed on 2026-11-04). Macus therefore does not register one MCP tool per operation. `/mcp` advertises exactly two tools, `search` and `execute`, and the separate tama-dex library handles indexing and search.
 
-| Tool family | Owner / scope / delegation |
+`:opsmaru_incus` (`add-incus-operations`) supplies the shared Incus operation descriptors (`all/0`, `fetch/1`, `describe/1`) and their synchronous runner (`run/3`). Macus defines its private-runtime operations in the same descriptor shape: name, title, description, input/output schema, required scope and confirmation rule. At startup Macus builds one catalogue from the exported shared descriptors and its runtime descriptors. Duplicate names fail construction, and descriptors in `Operations.unavailable/0` are excluded. tama-dex indexes that catalogue (planned 2026-11-04 as a SQLite index of the operation specs). Macus mounts the maintained TamaMCP Streamable HTTP Plug at `/mcp` on its existing endpoint with two Macus-owned tools:
+
+| Tool | Behavior |
+| --- | --- |
+| `search` | Bounded query over the index. Returns matching operation names, descriptions, schemas, required scope and confirmation rule, filtered to the caller's verified scopes. |
+| `execute` | Takes `operation` and `arguments`. A shared operation runs through `Opsmaru.Incus.Operations.run/3` with `host: Macus.MCP.IncusHost`, the verified caller and verified scopes. A Macus runtime operation runs through the runtime adapter after the same scope, schema and confirmation checks. |
+
+`run/3` enforces each operation's own scope, so access to `execute` does not grant every operation. Search filtering limits discovery, but `execute` remains the authorization point. No per-operation MCP tools, dynamic plugin loader or second MCP service are introduced.
+
+tama-dex has no repository or release yet, so the `search` integration task stays open. Its SQLite index is not state for `:opsmaru_incus`, which holds no repository or runtime state. Macus must not grow its own search engine to fill the gap. `execute` and the catalogue do not depend on it.
+
+| Operation family | Owner / scope / delegation |
 | --- | --- |
 | Runtime status/config/progress/health/capabilities | Macus; `runtime.read`; Swift runtime adapter |
 | Runtime create/start/stop/restart/config replacement | Macus; `runtime.write`; existing lifecycle API |
@@ -166,13 +180,13 @@ Alternative: implementing a few Macus-only REST calls would both duplicate the s
 | Bounded guest exec | opsmaru-incus; `incus.exec`; explicitly selected instance |
 | Workload deletion/destructive restore | opsmaru-incus; `incus.delete`; explicit destructive inputs |
 
-Macus's authorization adapter verifies its own bearer credentials and normalizes principal, scopes and expiry. Macus implements the library's host binding: for an authenticated caller it returns the local `incus.sock` connection and context and authorizes the operation. Request fields cannot substitute another owner, backend URL or host path. Tool execution waits for host identity readiness; dependency load order cannot bypass gateway policy. Schemas carry no target ID; Macus has one local target. Macus-specific tools retain the stopped-state/configuration and explicit confirmation rules of the Swift runtime.
+Macus's authorization adapter verifies its own bearer credentials and normalizes principal, scopes and expiry. Macus implements `Opsmaru.Incus.Operations.Host`: `binding/2` returns the local `incus.sock` connection and context for an authenticated caller, `authorize/3` applies Macus policy to the validated input, and `image_remote/2`/`allow_restricted?/3` deny by default unless Macus configures approved remotes. Request fields cannot substitute another owner, backend URL, socket or host path. Tool execution waits for host identity readiness; dependency load order cannot bypass gateway policy. Schemas carry no target ID; Macus has one local target. Macus-specific tools retain the stopped-state/configuration and explicit confirmation rules of the Swift runtime.
 
 Register a Macus host adapter for passive Swift/runtime capabilities and directory-share prerequisites. The current Swift configuration update requires a stopped VM; unresolved new shares report that prerequisite rather than causing an implicit restart. This milestone does not provision worktrees, install skills or create environment images.
 
-Tools execute synchronously. Incus mutations return the native operation identity and completed/running/failed/uncertain status after a bounded wait; runtime lifecycle tools report the Swift runtime's progress and readiness the same way. Callers poll operation and runtime status tools for later state. No durable MCP task store, runner, journal or task handles are introduced; possibly accepted mutations are never retried automatically. A durable task layer can be added later around the same tools.
+Operations execute synchronously. Incus mutations return the native operation identity and completed/running/failed/uncertain status after a bounded wait; runtime lifecycle tools report the Swift runtime's progress and readiness the same way. Callers poll later state by executing the operation and runtime status operations. No durable MCP task store, runner, journal or task handles are introduced; possibly accepted mutations are never retried automatically. A durable task layer can be added later around the same tools.
 
-No generic host-shell tool, arbitrary HTTP tool, unsupported MCP resources/stdin transport, external database or clustered scheduler is introduced. Macus's authenticated Incus gateway retains its native API independently of the selected MCP catalogue.
+No generic host-shell operation, arbitrary HTTP operation, unsupported MCP resources/stdin transport, external database or clustered scheduler is introduced. Macus's authenticated Incus gateway retains its native API independently of the selected MCP catalogue.
 
 ### 7. Combined package, separate processes and startup ownership
 
@@ -230,7 +244,7 @@ Central registration, `macus connect`/`connection status`/`disconnect`, the outb
 
 ## Migration Plan
 
-1. Implement the needed `upmaru/opsmaru-incus` revisions (client first; gateway and Incus operations as their changes land), obtain actual immutable references, then integrate them on `feature/elixir-server`. Macus gateway/runtime work may proceed independently against the client alone. Preserve completed tasks; new dependency/ownership tasks remain unchecked. Pass canonical consumer checks and installed-package evidence before deployment claims.
+1. Integrate the released `:opsmaru_incus` Hex package (0.1.0 delivers the client, gateway and Incus operations) on `feature/elixir-server`. Gateway, runtime, client and `execute` work proceed against it. `search` waits for tama-dex. Preserve completed tasks; new dependency/ownership tasks remain unchecked. Pass canonical consumer checks and installed-package evidence before deployment claims.
 2. Keep existing VM state and Swift internal APIs. Install a complete matching package passively; do not create credentials or activate services during package installation.
 3. Before replacing an existing installed version, stop the runtime explicitly and unload both owned services that exist. Retain disks, logs and gateway credentials. Do not auto-unload foreign or legacy registrations.
 4. On explicit `macus start`, initialize gateway state only if absent, activate both verified jobs and connect through the public server. An existing named `unix:` remote remains a conflict: present an explicit owner-controlled transition or select a different remote name. Do not hand-edit or silently overwrite Incus client configuration.
@@ -240,5 +254,6 @@ Central registration, `macus connect`/`connection status`/`disconnect`, the outb
 ## Open Questions
 
 - The exact first deployment's LAN hostname, operator-supplied certificate and advertised address are configuration inputs, not fixed product requirements.
-- Resolve a real immutable opsmaru-incus revision and compatible lockfile during dependency integration. The upstream reference inventory and public embedding/coverage obligations remain fixed; no absent release or placeholder revision is assumed.
+- Resolved 2026-11-12: `:opsmaru_incus` 0.1.0 from Hex, locked in `server/mix.lock`. Its coverage still reports `complete_port=false`, so complete-client claims (task 6.12) stay blocked on later library releases.
+- tama-dex ownership: who builds and refreshes the SQLite index (Macus at startup from its catalogue, or tama-dex from a published operation document), where the index file lives, and whether `search` is implemented in Macus over a tama-dex query API or supplied by tama-dex. Whatever the answer, tama-dex adds no endpoint or listener, and search results never bypass `execute` authorization. A possible `Operations.openapi/0` export in a later opsmaru_incus release is not yet decided; do not design against its shape.
 - Cross-machine LAN acceptance requires an owner-supplied isolated remote test client. Until that evidence is available, mark that acceptance task incomplete rather than infer it from loopback success.

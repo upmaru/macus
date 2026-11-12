@@ -62,5 +62,5 @@ Shared compute operations SHALL use the explicitly configured existing incus.soc
 
 #### Scenario: Shared inspection through Macus
 
-- **WHEN** a composed shared tool inspects an Incus instance
+- **WHEN** a shared operation executed through `execute` inspects an Incus instance
 - **THEN** its library client uses the same native relay as the gateway and no additional host-to-guest bridge is created

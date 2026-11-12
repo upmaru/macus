@@ -2,50 +2,78 @@
 
 ## Purpose
 
-Composes the shared `:opsmaru_incus` Incus tools with Macus runtime tools through one authenticated MCP endpoint with synchronous execution, retaining macOS runtime safety.
+Exposes shared `:opsmaru_incus` Incus operations and Macus runtime operations to agents through one authenticated MCP endpoint that advertises exactly two tools, `search` and `execute`, with synchronous execution and macOS runtime safety.
 
 ## ADDED Requirements
 
 ### Requirement: Maintained MCP protocol integration
 
-Macus SHALL expose one /mcp endpoint composing shared Incus tools with Macus-owned runtime tools through the maintained protocol implementation. The shared library MUST NOT start another endpoint. Unsupported protocol/transport features MUST NOT be advertised, and authentication SHALL precede discovery and execution.
+Macus SHALL expose one /mcp endpoint through the maintained protocol implementation. The shared library MUST NOT start another endpoint, listener or process, and the operation index library (tama-dex) MUST NOT start another endpoint or listener. Unsupported protocol/transport features MUST NOT be advertised, and authentication SHALL precede tool discovery and execution.
 
 #### Scenario: Unsupported protocol
 
 - **WHEN** a client requests a protocol version or feature unsupported by the pinned dependency
 - **THEN** the server returns the dependency's bounded protocol failure rather than inventing compatibility
 
-### Requirement: Scoped inspection and mutation tools
+### Requirement: Two-tool search and execute surface
 
-Macus runtime tools and shared native Incus tools SHALL enforce read, write, exec and destructive scopes during discovery and execution. Shared tool names/schemas/results SHALL match their library contract. Unknown or forbidden tools SHALL fail before backend/provider access; no unrestricted host command tool SHALL exist.
+The /mcp endpoint SHALL advertise exactly two tools: `search`, which finds operations in the combined catalogue, and `execute`, which runs one named operation with arguments. Individual operations SHALL NOT be advertised as separate MCP tools. Indexing and query matching SHALL be delegated to the separate tama-dex operation index library; Macus SHALL NOT implement its own search engine. `search` SHALL return operation names, descriptions, input/output schemas, required scope and confirmation rules taken from the operation descriptors.
+
+#### Scenario: Tool discovery
+
+- **WHEN** an authenticated caller lists tools at the Macus endpoint
+- **THEN** only `search` and `execute` are returned, regardless of how many operations the catalogue holds
+
+#### Scenario: Operation lookup
+
+- **WHEN** an authorized caller searches for an operation such as listing instances
+- **THEN** the result names matching operations with the schemas and confirmation rules needed to call `execute`
+
+### Requirement: Combined operation catalogue
+
+Macus SHALL build one catalogue from the exported `:opsmaru_incus` operation descriptors and Macus-owned runtime operation descriptors, and index it with tama-dex. Shared descriptors SHALL be used as published, without renaming or schema changes. Duplicate operation names SHALL fail catalogue construction. Operations the library reports as unavailable SHALL NOT be indexed or executable.
+
+#### Scenario: Duplicate operation name
+
+- **WHEN** a Macus runtime operation uses a name already exported by the shared library
+- **THEN** catalogue construction fails before the endpoint serves requests
+
+#### Scenario: Unavailable shared operation
+
+- **WHEN** the shared library lists an operation as unavailable
+- **THEN** `search` does not return it and `execute` rejects it without backend access
+
+### Requirement: Scoped search and execution
+
+Search results SHALL include only operations the caller's verified scopes permit. `execute` SHALL enforce the named operation's own scope even though one tool fronts every operation: shared operations SHALL run through `Opsmaru.Incus.Operations.run/3` with the caller's verified scopes, and Macus runtime operations SHALL apply the same check. Unknown or forbidden operations SHALL fail before backend/provider access; no unrestricted host command operation SHALL exist.
 
 #### Scenario: Read-only identity
 
 - **WHEN** an authenticated identity has only inspection scopes
-- **THEN** it can discover and execute authorized inspection tools but cannot discover or execute mutation tools
+- **THEN** `search` returns only inspection operations and `execute` refuses a mutation operation before any backend request
 
 #### Scenario: Canonical workload mutation
 
-- **WHEN** an authorized tool creates, changes, snapshots or deletes an Incus workload
+- **WHEN** an authorized `execute` call creates, changes, snapshots or deletes an Incus workload
 - **THEN** it delegates to the native Incus client and returns standard operation identity without creating a second workload manager
 
 ### Requirement: Explicit destructive inputs
 
-Runtime deletion, workload deletion, destructive restore and forced stop SHALL require explicit destructive input and permission. Runtime deletion SHALL retain the private API's stopped-state and confirmation requirements. Broad deletion based on inferred consent or unvalidated model text MUST NOT occur.
+Runtime deletion, workload deletion, destructive restore and forced stop SHALL require explicit destructive input and permission. Shared destructive operations SHALL require `confirm` to repeat the affected resource exactly, as defined by the library. Runtime deletion SHALL retain the private API's stopped-state and confirmation requirements. Broad deletion based on inferred consent or unvalidated model text MUST NOT occur.
 
 #### Scenario: Missing confirmation
 
-- **WHEN** a deletion tool lacks its required explicit confirmation
+- **WHEN** an `execute` call for a deletion operation lacks its required explicit confirmation
 - **THEN** validation rejects it before any guest or runtime mutation
 
 ### Requirement: Truthful synchronous tool behavior
 
-Shared Incus and Macus runtime tools SHALL execute synchronously within bounded waits and report native operation or runtime identity with completed, running, failed or uncertain status. Callers SHALL be able to poll later state through the operation and runtime status tools. Durable MCP task handles MUST NOT be advertised, and accepted operations MUST NOT be described as completed.
+`execute` SHALL run shared Incus and Macus runtime operations synchronously within bounded waits and report native operation or runtime identity with completed, running, failed or uncertain status. Callers SHALL be able to poll later state by executing the operation and runtime status operations. Durable MCP task handles MUST NOT be advertised, and accepted operations MUST NOT be described as completed.
 
 #### Scenario: Long-running creation
 
-- **WHEN** an instance creation is still running when the tool's bounded wait expires
-- **THEN** the tool returns the native operation identity as running and the caller can poll it without a durable task handle
+- **WHEN** an instance creation is still running when its bounded wait expires
+- **THEN** `execute` returns the native operation identity as running and the caller can poll it without a durable task handle
 
 #### Scenario: Lost mutation response
 
@@ -54,38 +82,29 @@ Shared Incus and Macus runtime tools SHALL execute synchronously within bounded 
 
 ### Requirement: Bounded results and execution
 
-Tool inputs, outputs, concurrency and deadlines SHALL have documented bounds. Exec tools SHALL run only inside an explicitly selected Incus instance and bound captured output. Tool errors SHALL preserve useful native codes without revealing credentials, private host files or unrestricted guest logs.
+`search` and `execute` inputs, outputs, concurrency and deadlines SHALL have documented bounds; shared operations retain the library's per-operation bounds. Exec operations SHALL run only inside an explicitly selected Incus instance and bound captured output. Errors SHALL preserve useful native codes without revealing credentials, private host files or unrestricted guest logs.
 
 #### Scenario: Output limit reached
 
-- **WHEN** a command produces more output than a tool's declared capture limit
+- **WHEN** a command produces more output than an operation's declared capture limit
 - **THEN** the result identifies truncation or the bounded failure and the server remains responsive to other clients
 
 ### Requirement: Protocol and backend acceptance
 
-MCP acceptance SHALL exercise the dependency's applicable conformance fixtures plus Macus tool schemas, scope checks, explicit confirmations and truthful operation results. Mock protocol success SHALL remain distinct from actual runtime and guest workload acceptance.
+MCP acceptance SHALL exercise the dependency's applicable conformance fixtures, the two-tool surface, search result filtering, operation schemas, scope checks, explicit confirmations and truthful operation results. Mock protocol success SHALL remain distinct from actual runtime and guest workload acceptance.
 
 #### Scenario: Conformance without guest
 
 - **WHEN** MCP fixture tests pass against fake runtime and Incus endpoints
 - **THEN** protocol evidence is recorded and hardware-backed mutation acceptance remains incomplete
 
-### Requirement: Shared and host catalogue composition
-
-Macus SHALL register shared tool modules and its runtime extensions in one catalogue. Duplicate tool names SHALL fail construction. No other MCP endpoint or catalogue SHALL be required.
-
-#### Scenario: Combined discovery
-
-- **WHEN** an authorized caller discovers tools at the Macus endpoint
-- **THEN** allowed shared Incus and Macus runtime tools appear together behind one authentication boundary
-
 ### Requirement: Trusted host and owner binding
 
-Macus SHALL supply the shared tools, through their host binding, with the verified principal, scopes and its configured local Incus connection and context. Caller-selected URLs, forged owner fields and unregistered host providers MUST NOT override trusted configuration.
+Macus SHALL implement the shared library's operation host contract with the verified principal, scopes and its configured local Incus connection and context. Caller-selected URLs, sockets, forged owner fields and unregistered host providers MUST NOT override trusted configuration.
 
 #### Scenario: Forged backend selection
 
-- **WHEN** a tool request supplies another owner or unregistered backend address
+- **WHEN** an `execute` call supplies another owner or unregistered backend address
 - **THEN** no shared or host operation is dispatched using that forged binding
 
 ### Requirement: Host-specific runtime capabilities

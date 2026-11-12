@@ -2,10 +2,11 @@
 
 Headless Phoenix/Cowboy OTP application `:macus`. Swift owns the VM and
 private Unix sockets; this application supplies the public gateway.
-Macus owns runtime/auth/proxy/host integration. The revised plan consumes
-Opsmaru's shared client and later MCP/task services in this same BEAM, without
-its endpoint/Repo or another job. That verified dependency is not available
-in this lockfile yet; no duplicate fallback is implemented here.
+Macus owns runtime/auth/proxy/host integration. It consumes the pure
+`:opsmaru_incus` Hex library (Incus client, gateway relay and operation
+descriptors) in this same BEAM, with no listener, process or extra job. `/mcp`
+exposes only `search` and `execute` tools; no duplicate fallback client is
+implemented here.
 See [the development guide](../docs/development.md) and
 [the implementation plan](../openspec/changes/add-elixir-server/tasks.md).
 
