@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-11-04",
+  "scope": "Production-seed boot of the 6.18.60-r0 kernel/ZFS pin on disposable state. Not the full Integration/qualification/run-zfs.py storage suite.",
+  "commit": "a070b18",
+  "host": {
+    "model": "Mac16,5",
+    "cpu": "Apple M4 Max",
+    "memory_gib": 64,
+    "macos": "27.0.1 (26A434)",
+    "virtualization": "Native Virtualization.framework; ad-hoc signed debug macus with Packaging/virtualization.entitlements"
+  },
+  "state": {
+    "state_dir": "fresh disposable directory outside the default ~/.tama/incus-mac (short path for the 103-byte Unix socket limit)",
+    "appliance": "Integration/scripts/prepare-appliance.py from the signature-verified Alpine 3.24.2 cloud-init metal r0 raw image",
+    "raw_sha256": "47c0b69be2a3458c2a1ff11519e8f4b3f6565a73e89a2fe2294ed0ca3e496516",
+    "config": {"cpu_count": 4, "memory_mib": 4096, "data_disk_gib": 32, "nested_virtualization": true}
+  },
+  "first_boot": {
+    "kernel_before": "6.18.52-0-lts",
+    "apk_transactions": [
+      "Upgrading linux-lts (6.18.52-r0 -> 6.18.60-r0)",
+      "Installing zfs-libs (2.4.4-r0)",
+      "Installing zfs (2.4.4-r0)",
+      "Installing zfs-lts (6.18.60-r0)",
+      "Installing zfs-openrc (2.4.4-r0)"
+    ],
+    "initramfs": "creating /boot/initramfs-lts for 6.18.60-0-lts",
+    "observations": [
+      "MACUS_OBSERVATION v1 stage=packages",
+      "MACUS_OBSERVATION v1 stage=kernel_transition state=expected_reboot",
+      "TAMA_ZFS_KERNEL_REBOOT_REQUIRED"
+    ],
+    "qualified_revision_unavailable": false
+  },
+  "second_boot": {
+    "start_http_status": 200,
+    "runtime_state": "ready",
+    "reboot_allowance": "consumed once by the daemon's automatic restart",
+    "incus_environment": {
+      "kernel_version": "6.18.60-0-lts",
+      "kernel_architecture": "aarch64",
+      "os": "Alpine Linux 3.24.2",
+      "server_version": "7.0.1",
+      "storage": "zfs",
+      "storage_version": "2.4.4-1"
+    },
+    "client_version": "7.5.1",
+    "default_pool": {
+      "driver": "zfs",
+      "source": "tama-data/workloads",
+      "volume.zfs.reserve_space": "true",
+      "volume.zfs.use_refquota": "true",
+      "zfs.export": "false",
+      "state": "CREATED"
+    },
+    "default_profile_root": {"pool": "default", "size": "2GiB"}
+  },
+  "graceful_stop": {"http_status": 200, "runtime_state": "stopped", "export_marker_checked": false},
+  "not_exercised": [
+    "Integration/qualification/run-zfs.py lifecycle, snapshot, quota, growth, nested VM and space-exhaustion checks",
+    "Workload launch or exec",
+    "Restart after stop (pool re-import)",
+    "TAMA_ZFS_EXPORT_OK marker, which is written to the guest's /var/log/tama-storage.log and not serial.log",
+    "macus start through the shipped catalog and launch agent"
+  ]
+}

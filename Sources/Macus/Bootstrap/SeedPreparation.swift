@@ -6,12 +6,13 @@ enum SeedPreparation {
     ("bridge.py", "/usr/local/libexec/tama-bridge.py", "0755"),
     ("storage.sh", "/usr/local/libexec/tama-storage.sh", "0755"),
     ("bootstrap.sh", "/usr/local/libexec/tama-bootstrap.sh", "0755"),
+    ("verify-appliance-image.sh", "/usr/local/libexec/tama-verify-appliance-image.sh", "0755"),
     ("tama-storage.initd", "/etc/init.d/tama-storage", "0755"),
     ("tama-bridge.initd", "/etc/init.d/tama-bridge", "0755"),
     ("tama-bootstrap.initd", "/etc/init.d/tama-bootstrap", "0755"),
   ]
 
-  static func userData() throws -> String {
+  static func userData(entry: ApplianceCatalogEntry? = nil) throws -> String {
     var text =
       "#cloud-config\noutput: {all: \"| tee -a /var/log/cloud-init-output.log /dev/hvc0\"}\nusers: []\nssh_pwauth: false\ndisable_root: true\nwrite_files:\n"
     for entry in entries {
@@ -21,6 +22,10 @@ enum SeedPreparation {
       text += body.split(separator: "\n", omittingEmptySubsequences: false).map {
         "      \($0)\n"
       }.joined()
+    }
+    if let entry, let identity = entry.prebuiltIdentity {
+      text += "  - path: /etc/macus-appliance-expected\n    permissions: \"0600\"\n    content: |\n"
+      text += identity.record(id: entry.id).split(separator: "\n").map { "      \($0)\n" }.joined()
     }
     text +=
       "bootcmd:\n  - [sh, -c, \"(sleep 20; rc-status default; cat /var/log/tama-storage.log; test ! -f /var/log/tama-bridge.log || cat /var/log/tama-bridge.log) > /dev/hvc0 2>&1 &\"]\n"
@@ -51,7 +56,7 @@ enum SeedPreparation {
       try write(
         "version: 1\nconfig:\n  - type: physical\n    name: eth0\n    subnets:\n      - type: dhcp\n",
         seed.appendingPathComponent("network-config"))
-      try write(userData(), seed.appendingPathComponent("user-data"))
+      try write(userData(entry: entry), seed.appendingPathComponent("user-data"))
       if FileManager.default.fileExists(atPath: iso.path) {
         try FileManager.default.removeItem(at: iso)
       }
@@ -116,7 +121,7 @@ enum SeedPreparation {
       "source": [
         "archive": entry.archiveName,
         "archive_sha512": entry.archiveSHA512,
-        "signing_fingerprint": entry.signerFingerprint,
+        "upstream_signing_fingerprint": entry.upstream.signerFingerprint,
         "raw_sha256": entry.rawSHA256,
       ],
     ]

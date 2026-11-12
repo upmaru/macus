@@ -8,7 +8,14 @@ Debug/release builds with warnings-as-errors, 26 Swift Testing tests plus four g
 
 GitHub Actions runs these checks on the macOS ARM64 `xcode-27` runner with pinned checkout/setup-node actions and OpenSpec 1.14.0. [The Alpine implementation workflow run passed](https://github.com/kritama/tama-incus-mac/actions/runs/37146208220). CI does not boot VZ or establish hardware acceptance; final PR-head checks are recorded on GitHub.
 
-## Alpine appliance
+## Prebuilt LTS appliance
+
+The [qualification record](zfs-qualification.md#prebuilt-draft-qualification-2026-11-10)
+covers local hardware acceptance for the published LTS image and the open Stable
+checks. [Published LTS adoption](zfs-qualification.md#published-lts-adoption-2026-11-10)
+covers a separate download and first boot through the shipped catalog.
+
+## Original Alpine appliance
 
 The signed native Swift process boots the verified Alpine ARM64 raw image through Apple VZ EFI, provisions signed stable-branch APK packages, starts OpenRC services and exposes Incus through Unix-to-vsock sockets. No SSH or Mac VM CLI is used. The host reports nested virtualization support, and the Linux guest exposes usable KVM.
 
@@ -151,3 +158,17 @@ The startup screen checker requires all nine resolved rows exactly once, includi
 the five skipped-resource labels and each native elapsed-time suffix. Negative
 regressions remove, duplicate, clip, mislabel or remove timing from every skipped
 row, ensuring a `9/9` footer alone cannot satisfy presentation acceptance.
+
+## Flow-controlled relay — 2026-11-08 UTC
+
+The flow-controlled Incus relay passed [opt-in hardware acceptance](testing/flow-relay-acceptance.json) on an isolated appliance booted by a release build of Macus `1085025` on a Mac16,5 with macOS 27.0.1. The guest reported `flow_relay_version` 1.
+
+- **Idle streams:** 80 open Incus streams; all 60 control, health and Incus probes succeeded, with a maximum of 13 ms.
+- **Stalled reader:** 400 pipelined `/1.0` responses were left unread for 10 seconds. All 144 probes on new and existing Incus connections, runtime status and guest health answered, with a maximum of 62 ms, and the stream then drained all 400 responses.
+- **Bidirectional relay:** a 1.04 GiB image export was streamed directly into an image import on a second connection in 5.35 s, about 194 MiB/s with both directions crossing the vsock device at once. The import succeeded with the same fingerprint, and 24 concurrent new-connection probes answered within 6 ms.
+
+**Deviation:** Alpine v3.24 no longer serves the committed `linux-lts`/`zfs-lts` 6.18.60-r0 pair, so this run used an uncommitted payload pinned to 6.18.62-r0. The relay does not depend on the kernel version, but that kernel/ZFS pair is unqualified and this run is not ZFS evidence. A relay-mode `incus copy` between two remote names for the same socket completed server-side and is not counted.
+
+**Follow-up:** after this run, review found a guest close race. The guest sent END before recording it, so a host that had already ended could close in between and make the guest abort with host bytes still queued for Incus. The guest now records END before sending it. Payload revision `11acf521…` contains the fix, which is covered by a deterministic bridge unit test. The hardware run above used the earlier payload and has not been repeated with this revision.
+
+On 2026-11-09, the same appliance also served the opsmaru-incus real-Incus gateway gate. That run passed all twelve relay/pull/push copies and all six instance moves through the vsock relay. It is opsmaru-incus evidence, not Macus hardware qualification.

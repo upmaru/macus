@@ -156,9 +156,26 @@ Create `feature/<name>` from `develop` and merge completed, validated features b
 
 Use normal Git commands or a Git Flow client with these branch names. Local `gitflow.*` configuration records `main`, `develop`, `feature/`, `release/`, `hotfix/` and `support/`; the repository does not require a Git Flow CLI.
 
-## Alpine appliance preparation
+## Prebuilt Alpine appliances
 
-The pinned base is **Alpine 3.24.2 aarch64 cloud-init metal r0**, which includes ARM64 EFI and the Linux kernel/modules needed by VZ and Incus. Download the official raw archive, SHA-512 file and detached signature, plus the signing key linked from [Alpine's cloud image page](https://alpinelinux.org/cloud/). GnuPG is a preparation dependency; runtime operation needs no GnuPG or host VM tool.
+A fresh `macus start` downloads the published LTS image pinned in
+`Integration/catalog/alpine-3.24.2.json`. Macus verifies the archive and raw
+disk, then passes the expected image record into the NoCloud seed. The guest
+verifies the installed packages and running kernel offline before initializing
+storage and starting Incus. Existing runtimes continue to use their own disks.
+
+[macus-appliance](https://github.com/upmaru/macus-appliance) builds and stages
+separate LTS and Stable images as drafts. For each new image ID, follow the
+[local hardware runbook](../Integration/qualification/README.md#prebuilt-draft-appliances)
+before publication. After publication, record the matching public URL, measured
+sizes, digests, upstream and build provenance, and qualified package pins in
+the catalog. Run `python3 Integration/scripts/check-catalog.py --write` to
+update the embedded entry, then verify a fresh isolated start through the
+published URL. LTS is currently the sole shipped channel.
+
+## Manual upstream Alpine preparation
+
+The upstream base is **Alpine 3.24.2 aarch64 cloud-init metal r0**, which includes ARM64 EFI and the Linux kernel/modules needed by VZ and Incus. Download the official raw archive, SHA-512 file and detached signature, plus the signing key linked from [Alpine's cloud image page](https://alpinelinux.org/cloud/). GnuPG is a preparation dependency; runtime operation needs no GnuPG or host VM tool.
 
 ```sh
 mkdir -p .integration/cache
@@ -182,7 +199,7 @@ python3 Integration/scripts/prepare-appliance.py \
 
 Verification uses an isolated GnuPG keyring and pins the official cloud signer fingerprint `F26ADFADBAE702EF7AF637459DA7EF23BFFCDF22`. It refuses checksum/signature mismatches, unexpected archive members and replacement of a different existing raw image. Preparation records archive provenance and the raw SHA-256 in the manifest, and uses macOS `hdiutil` for the NoCloud ISO. Output and source must be on the same volume for the immutable raw hard link. No qcow conversion is used.
 
-`macus start` uses the same pinned archive through the shipped catalog in `Integration/catalog/alpine-3.24.2.json`. Refresh that catalog only after the signature command above succeeds, then record the measured archive size, raw size and digests. Do not invent checksums or trust a checksum downloaded beside the image by itself. Embedded guest scripts come from `Integration/guest`:
+Embedded guest scripts come from `Integration/guest`. Check the generated payload and catalog from the repository root.
 
 ```sh
 python3 Integration/scripts/sync-guest-payload.py --check
@@ -191,7 +208,7 @@ python3 Integration/scripts/check-catalog.py
 
 Neither command creates state or boots a VM. A partial download or corrupt cache is discarded or moved aside and rehashed before reuse. It is not booted. Runtime disks are not replaced to recover a bad cache.
 
-In another terminal, create/start through the [control API](api.md) using `.integration/appliance/config.json`. First boot waits for IPv4 DHCP, installs maintained Incus LTS (at least 7.0.1), its OpenRC/VM packages and explicit OCI dependencies from the signed Alpine v3.24 main/community repositories, initializes persistent storage and starts OpenRC services. The helper waits for Incus startup cleanup/autostart readiness on every boot; responding to `/1.0` alone is insufficient. CA installation uses the official HTTP repository with normal APK signature verification before switching all remaining package operations to HTTPS. There are no edge repositories or unsigned-package exceptions. New appliances set `images.auto_update_interval=0`; image refreshes remain explicit standard Incus operations while the selected LTS shutdown/cache behavior is verified. Existing Incus configurations are preserved. Resolved packages are recorded in `/var/log/tama-appliance-packages.txt` and private host `serial.log`. Incus manages QEMU/KVM inside Linux; the Mac invokes no VM CLI. SSH is disabled.
+In another terminal, create and start the manually prepared base through the [control API](api.md) using `.integration/appliance/config.json`. Its legacy first boot waits for IPv4 DHCP, installs maintained Incus LTS (at least 7.0.1), its OpenRC/VM packages and explicit OCI dependencies from the signed Alpine v3.24 main/community repositories, initializes persistent storage and starts OpenRC services. The helper waits for Incus startup cleanup/autostart readiness on every boot; responding to `/1.0` alone is insufficient. CA installation uses the official HTTP repository with normal APK signature verification before switching all remaining package operations to HTTPS. There are no edge repositories or unsigned-package exceptions. New appliances set `images.auto_update_interval=0`; image refreshes remain explicit standard Incus operations while the selected LTS shutdown/cache behavior is verified. Existing Incus configurations are preserved. Resolved packages are recorded in `/var/log/tama-appliance-packages.txt` and private host `serial.log`. Incus manages QEMU/KVM inside Linux; the Mac invokes no VM CLI. SSH is disabled.
 
 Use a new appliance ID and a new state directory when changing the base image. Existing root/data disks are preserved; there is no automatic Debian-to-Alpine migration. A pre-provisioned appliance can omit `seed_path` (JSON null) while retaining the manifest/vsock contract. The host verifies the source and staged raw SHA-256 before boot; writable root/data disks live under `<state-dir>/runtime`.
 
@@ -220,14 +237,18 @@ python3 Integration/scripts/acceptance.py \
   --report .integration/zfs-acceptance.json
 ```
 
-The opt-in idle-stream regression holds 80 incomplete Incus requests open while probing control status, guest health and normal Incus API requests. Run it against an already ready isolated runtime before workload acceptance:
+The opt-in relay regression first holds 80 incomplete Incus requests open while probing control status, guest health and normal Incus API requests. It then leaves one stream of 400 pipelined `/1.0` responses unread for 10 seconds. During that time, new and existing Incus connections, runtime status and guest health must each answer within 1 second, and the stalled stream must then drain completely. Pass `--export-image FINGERPRINT` to also record export throughput for a local image. Run it against an already ready isolated runtime before workload acceptance:
 
 ```sh
 python3 Integration/scripts/relay-stress.py \
   --state-dir "$PWD/.integration/state" --report .integration/relay-stress.json
 ```
 
-Host relays use nonblocking readiness notifications with at most 64 KiB buffered per direction. A fatal listener failure exits the entire guest helper so OpenRC can restart it; transient accept failures retry. Guest health becomes available only after the relay listener starts.
+Host relays use nonblocking readiness notifications. Virtualization.framework services the whole virtio-vsock device on one serial queue, and that queue blocks while writing guest bytes into any host connection descriptor that is full. A host relay that stops reading one guest connection therefore stalls every vsock connection, including new connection requests and health probes.
+
+The guest bridge serves only a flow-controlled relay on vsock port 8443, and its health reports `flow_relay_version: 1`. Each connection carries DATA, CREDIT and END frames. Each direction has a fixed 256 KiB window, and credit is granted only after bytes reach the local peer. As a result, the host drains every guest descriptor while buffering at most one window per direction. The guest bridge is installed once at first boot, so appliances provisioned with an older payload still serve unframed bytes on 8443 and omit the health field. Macus refuses to become ready for them and reports that the appliance must be recreated; it deletes no runtime data. Recreating an appliance deletes its Incus data, so export anything you need first.
+
+A fatal listener failure exits the entire guest helper so OpenRC can restart it; transient accept failures retry. Guest health becomes available only after the relay listener starts.
 
 Swift tests run with explicit `--no-parallel` so unrelated subprocess fixture startup does not consume another test's short deadline on CI. Concurrency and cancellation tests still launch their own concurrent work and keep their original timing assertions.
 
@@ -235,7 +256,7 @@ Unit tests never boot VMs. `Integration/scripts/check.sh` runs debug/release bui
 
 ## ZFS qualification
 
-Fresh appliances provision ZFS when the data disk is blank, the data disk is at least 4 GiB, and guest MemTotal is at least 3670016 KiB. The hardware-qualified host configuration is 4096 MiB RAM. The guest check does not reject every host configuration below 4096 MiB. The qualified package pair is Alpine v3.24 `linux-lts`/`zfs-lts` 6.18.55-r0 and ZFS 2.4.4-r0. Bootstrap registers `tama-bootstrap` before a kernel mismatch powers off, so the next boot continues without another cloud-init runcmd. The current boot also emits `MACUS_OBSERVATION v1 stage=kernel_transition state=expected_reboot`. `macus start` and a compatible daemon consume one durable allowance and restart that runtime within the remaining deadline. A stale log line, a second request, or a daemon restart does not replenish the allowance. If automatic recovery fails, inspect `serial.log` and run `macus runtime start` again. Do not delete the runtime for this expected update. The first EFI kernel update removes unused `/boot/dtbs-lts` because the cloud image's EFI partition otherwise lacks staging space. A label alone is not a recognized ext4 appliance; repair and writable mount happen only after a read-only `noload` inspection finds the Incus layout. The appliance does not change Incus-owned workload datasets. Workload reservations are requested through Incus pool configuration. Filesystem creation-time reservations are hardware-measured; zvol refreservation remains none. Mixed workloads were measured on 8–11 GiB data disks, not at the 4 GiB guest floor. A storage failure is logged in `/var/log/tama-storage.log` and readiness stays withheld; do not format or replace the disk to clear it. See the [qualification results](zfs-qualification.md).
+Fresh appliances provision ZFS when the data disk is blank, the data disk is at least 4 GiB, and guest MemTotal is at least 3670016 KiB. The hardware-qualified host configuration is 4096 MiB RAM. The guest check does not reject every host configuration below 4096 MiB. The current LTS image pins Alpine v3.24 `linux-lts` and `zfs-lts` at 6.18.62-r0 with ZFS userland 2.4.4-r0. The prebuilt image boots its pinned kernel directly. Legacy bootstraps from the upstream Alpine base retain the expected kernel reboot handling described in the [control API](api.md). A label alone is not a recognized ext4 appliance; repair and writable mount happen only after a read-only `noload` inspection finds the Incus layout. The appliance does not change Incus-owned workload datasets. Workload reservations are requested through Incus pool configuration. Filesystem creation-time reservations are hardware-measured; zvol refreservation remains none. Mixed workloads were measured on 8–11 GiB data disks, not at the 4 GiB guest floor. A storage failure is logged in `/var/log/tama-storage.log` and readiness stays withheld; do not format or replace the disk to clear it. See the [qualification results](zfs-qualification.md).
 
 ## Recovery and safety
 

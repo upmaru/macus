@@ -119,17 +119,16 @@ Interactive startup counts **resolved stages out of nine**, counting complete
 and skipped stages once. This is not a time percentage or ETA. Only a successful
 live-ready and connected startup result confirms completion. Acquisition can
 show a separate measured byte percentage when the total is positive; unknown
-length downloads show bytes and elapsed time. Waits name the observed stage and
-expected kernel reboot. Noora's 30-cell download bar is used where it fits;
+length downloads show bytes and elapsed time. Waits name the observed stage. A fresh prebuilt LTS start shows image
+verification before storage preparation. Noora's 30-cell download bar is used where it fits;
 compact text or plain output handles narrow, unknown or resized widths.
 
 Illustrative progress (fixtures, not a VM run):
 
 ```text
 ✔︎ Host checked [0.1s]
-✔︎ Skipped download (using existing appliance) [0.0s]
-⠋ Waiting for expected kernel reboot (1m 12s) | [#####----] 5/9 stages
-⠋ Downloading appliance 128.0 MiB / 256.0 MiB, 50% (3s)
+⠋ Downloading appliance 128.0 MiB / 785.4 MiB, 16% (3s)
+⠋ Provisioning Linux (1m 12s) | Verifying installed appliance image
 ```
 
 Stages use Noora’s native progress-step component: completed stages retain a

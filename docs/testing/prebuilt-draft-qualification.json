@@ -1,0 +1,302 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-10",
+  "macus_source_commit": "d7b8aec11778f04f7a2f4d7bb7d387c7b121b9dc",
+  "macus_signed_debug_binary_sha256": "65768ca9c5063823db971432bdca4a3c64365b29b2f71fcf8bc303620d586f0e",
+  "host": {
+    "model": "Mac16,5",
+    "chip": "Apple M4 Max",
+    "memory_gib": 64,
+    "architecture": "arm64",
+    "macos": "27.0.1 (26A434)",
+    "virtualization": "Apple Virtualization.framework",
+    "incus_client": "7.5.1"
+  },
+  "images": {
+    "lts": {
+      "id": "alpine-3.24.2-lts-1",
+      "draft_url": "https://github.com/upmaru/macus-appliance/releases/tag/untagged-a1570a467cd6bd50f127",
+      "image_source_commit": "2814fe68917380dd748b8e3a4433d76f56f04835",
+      "archive_sha512": "596ff56397d38f7d276acf485445b588b86125d33523a2f7d26d989af30f90fe2f23686bcc8bb72dee709a1f1c7a365f3427626153c639526263f3390b41cf6c",
+      "raw_sha256": "23c5786327bc272b2a493eeafc9cb367dc4d4f471a46e4154f6c0946fa332380",
+      "manifest_sha256": "50f32997ef0584476459fb961c8317aef8d5bc6ca68206929a69a986ce45130e",
+      "manifest_packages": 411,
+      "hardware_qualification": "passed",
+      "first_boot": {
+        "started_at": "2026-11-10T10:45:30.749067+00:00",
+        "image_verified_before_storage": true,
+        "package_install_stage_seen": false,
+        "kernel_transition_stage_seen": false,
+        "efi_store_bytes": 131072,
+        "kernel_version": "6.18.62-0-lts",
+        "kernel_architecture": "aarch64",
+        "server_version": "7.0.1",
+        "storage": "zfs",
+        "storage_version": "2.4.4-1"
+      },
+      "workload_acceptance": {
+        "started_at": "2026-11-10T10:51:33.850940+00:00",
+        "finished_at": "2026-11-10T10:53:23.319277+00:00",
+        "status": "passed",
+        "checks": {
+          "linux_incus_ready": true,
+          "alpine_guest": true,
+          "zfs_default_and_profile": {
+            "driver": "zfs",
+            "source": "tama-data/workloads"
+          },
+          "standard_client_unix_vsock": true,
+          "system_container_exec_websocket": true,
+          "custom_volume_snapshot_restore": true,
+          "older_snapshot_restore_refused_and_copy_preserved": true,
+          "container_outbound_network": true,
+          "oci_workload_exec_websocket": true,
+          "oci_cached_artifact_before_restart": true,
+          "outer_restart_persistence": true,
+          "host_data_disk_growth": true,
+          "guest_storage_capacity_growth": {
+            "pool": "default",
+            "before_bytes": 32745979904,
+            "after_bytes": 33786093568
+          },
+          "growth_preserves_instance_data": true,
+          "offline_data_disk_growth": true,
+          "virtiofs_readonly_readonly": true,
+          "virtiofs_writable_writable": true,
+          "virtiofs_shares": true,
+          "nested_vm_guest_agent_exec": true,
+          "cached_oci_image_reuse_after_restart": true
+        }
+      },
+      "relay_stress": {
+        "tested_at": "2026-11-10T10:53:23.367468+00:00",
+        "idle_incus_streams": 80,
+        "successful_control_health_and_incus_requests": 60,
+        "maximum_response_seconds": 0.009752084035426378,
+        "median_response_seconds": 0.0036420414689928293,
+        "stalled_reader": {
+          "pipelined_requests": 400,
+          "stall_seconds": 10.0,
+          "flow_relay_version": 1,
+          "probes": 148,
+          "failure_count": 0,
+          "failures": [],
+          "maximum_response_seconds": 0.009009874891489744,
+          "drained_bytes": 5872019,
+          "drained_responses": 400,
+          "drain_error": null,
+          "passed": true
+        },
+        "status": "passed"
+      },
+      "runtime_after_graceful_stop": "stopped"
+    },
+    "stable": {
+      "id": "alpine-3.24.2-stable-1",
+      "draft_url": "https://github.com/upmaru/macus-appliance/releases/tag/untagged-9b6cfb8d3a02c51d28ed",
+      "image_source_commit": "2814fe68917380dd748b8e3a4433d76f56f04835",
+      "archive_sha512": "3111003ac2db937acbf0824e7aa0c8416f8972c7948dd9211fe6ed555f514f01bbef8677a075ef512ee45d3709f38e6a9d2310a3b4e5d7329e736a3b5ae7b36a",
+      "raw_sha256": "6d37778dfa9e0017402692f0f77c89b68b959fd4ae894b3f4d350d329e387fd3",
+      "manifest_sha256": "ae065418241949cd75dd0b3ae807ce8232d0cc9fee2aee916e8a436531f459fa",
+      "manifest_packages": 411,
+      "hardware_qualification": "incomplete",
+      "first_boot": {
+        "started_at": "2026-11-10T10:47:54.427499+00:00",
+        "image_verified_before_storage": true,
+        "package_install_stage_seen": false,
+        "kernel_transition_stage_seen": false,
+        "efi_store_bytes": 131072,
+        "kernel_version": "7.1.5-0-stable",
+        "kernel_architecture": "aarch64",
+        "server_version": "7.0.1",
+        "storage": "zfs",
+        "storage_version": "2.4.4-1"
+      },
+      "workload_acceptance": {
+        "started_at": "2026-11-10T10:54:04.291395+00:00",
+        "finished_at": "2026-11-10T10:58:37.233951+00:00",
+        "status": "failed",
+        "checks": {
+          "linux_incus_ready": true,
+          "alpine_guest": true,
+          "zfs_default_and_profile": {
+            "driver": "zfs",
+            "source": "tama-data/workloads"
+          },
+          "standard_client_unix_vsock": true,
+          "system_container_exec_websocket": true,
+          "custom_volume_snapshot_restore": true,
+          "older_snapshot_restore_refused_and_copy_preserved": true,
+          "container_outbound_network": true,
+          "oci_workload_exec_websocket": true,
+          "oci_cached_artifact_before_restart": true,
+          "outer_restart_persistence": true,
+          "host_data_disk_growth": true,
+          "guest_storage_capacity_growth": {
+            "pool": "default",
+            "before_bytes": 32746323968,
+            "after_bytes": 33786437632
+          },
+          "growth_preserves_instance_data": true,
+          "offline_data_disk_growth": true,
+          "virtiofs_readonly_readonly": true,
+          "virtiofs_writable_writable": true,
+          "virtiofs_shares": true
+        },
+        "error": "Nested VM guest agent did not become ready"
+      },
+      "relay_stress": {
+        "tested_at": "2026-11-10T10:58:49.059862+00:00",
+        "idle_incus_streams": 80,
+        "successful_control_health_and_incus_requests": 60,
+        "maximum_response_seconds": 0.004596041981130838,
+        "median_response_seconds": 0.002631917130202055,
+        "stalled_reader": {
+          "pipelined_requests": 400,
+          "stall_seconds": 10.0,
+          "flow_relay_version": 1,
+          "probes": 152,
+          "failure_count": 0,
+          "failures": [],
+          "maximum_response_seconds": 0.0034376252442598343,
+          "drained_bytes": 5872419,
+          "drained_responses": 400,
+          "drain_error": null,
+          "passed": true
+        },
+        "status": "passed"
+      },
+      "runtime_after_graceful_stop": "stopped",
+      "followup": {
+        "started_at": "2026-11-10T10:58:49.023839+00:00",
+        "nested_guest_agent_timeout_seconds": 180,
+        "relay_exit_code": 0,
+        "cached_oci_image_reuse_after_restart": true,
+        "nested_repeat_launch_exit_code": 0,
+        "nested_repeat_guest_agent_exec": false,
+        "nested_repeat_error": "Error: VM agent isn't currently running",
+        "nested_first_console_reached_debian_initrd": true,
+        "nested_repeat_console_reached_debian_initrd": true,
+        "finished_at": "2026-11-10T11:02:12.312676+00:00",
+        "nested_debian_image_fingerprint": "0dc6ef78a5f2dcf211538cefe867d8b14a6438422e4435875659674b8b6c0138",
+        "nested_vm_configuration": {
+          "vcpus": 2,
+          "memory_mib": 1024,
+          "root_gib": 8,
+          "rtc_adjustment": 0
+        },
+        "nested_repeat_console_hard_lockup_cpu_0": true,
+        "msi_its_diagnostic": {
+          "tested_at": "2026-11-10T11:18:17.557780+00:00",
+          "appliance": {
+            "kernel_version": "7.1.5-0-stable",
+            "server_version": "7.0.1",
+            "kernel_architecture": "aarch64"
+          },
+          "fixture": {
+            "debian_image_fingerprint": "0dc6ef78a5f2dcf211538cefe867d8b14a6438422e4435875659674b8b6c0138",
+            "memory_mib": 1024,
+            "root_gib": 8
+          },
+          "fresh_vm_cases": {
+            "kvm-2": {
+              "started_at": "2026-11-10T11:18:56.612802+00:00",
+              "vcpus": 2,
+              "raw_qemu": null,
+              "launch_exit_code": 0,
+              "image_fingerprint": "0dc6ef78a5f2dcf211538cefe867d8b14a6438422e4435875659674b8b6c0138",
+              "rtc_adjustment": "0",
+              "guest_agent_exec": false,
+              "hard_lockup": true,
+              "rcu_timer_warning": true,
+              "elapsed_seconds": 42.9,
+              "guest_agent_error": "Error: VM agent isn't currently running",
+              "qmp_cpu_types": [
+                "host-arm-cpu"
+              ],
+              "fixture_stopped": true,
+              "finished_at": "2026-11-10T11:20:05.525940+00:00"
+            },
+            "kvm-1": {
+              "started_at": "2026-11-10T11:20:05.526677+00:00",
+              "vcpus": 1,
+              "raw_qemu": null,
+              "launch_exit_code": 0,
+              "image_fingerprint": "0dc6ef78a5f2dcf211538cefe867d8b14a6438422e4435875659674b8b6c0138",
+              "rtc_adjustment": "0",
+              "guest_agent_exec": false,
+              "hard_lockup": false,
+              "rcu_timer_warning": false,
+              "elapsed_seconds": 100.7,
+              "guest_agent_error": "Error: VM agent isn't currently running",
+              "qmp_cpu_types": [
+                "host-arm-cpu"
+              ],
+              "fixture_stopped": true,
+              "finished_at": "2026-11-10T11:21:51.825546+00:00"
+            },
+            "tcg-2": {
+              "started_at": "2026-11-10T11:21:51.826432+00:00",
+              "vcpus": 2,
+              "raw_qemu": "-machine accel=tcg,gic-version=3 -cpu max",
+              "launch_exit_code": 0,
+              "image_fingerprint": "0dc6ef78a5f2dcf211538cefe867d8b14a6438422e4435875659674b8b6c0138",
+              "rtc_adjustment": "0",
+              "guest_agent_exec": true,
+              "hard_lockup": false,
+              "rcu_timer_warning": false,
+              "elapsed_seconds": 27.8,
+              "qmp_cpu_types": [
+                "max-arm-cpu"
+              ],
+              "fixture_stopped": true,
+              "finished_at": "2026-11-10T11:22:25.709610+00:00"
+            },
+            "kvm-2-no-its": {
+              "started_at": "2026-11-10T11:22:26.568299+00:00",
+              "vcpus": 2,
+              "raw_qemu": "-machine its=off",
+              "launch_exit_code": 0,
+              "image_fingerprint": "0dc6ef78a5f2dcf211538cefe867d8b14a6438422e4435875659674b8b6c0138",
+              "rtc_adjustment": "0",
+              "guest_agent_exec": true,
+              "hard_lockup": false,
+              "rcu_timer_warning": false,
+              "elapsed_seconds": 24.7,
+              "qmp_cpu_types": [
+                "host-arm-cpu"
+              ],
+              "fixture_stopped": true,
+              "finished_at": "2026-11-10T11:22:56.761057+00:00"
+            }
+          },
+          "same_instance_crossover": {
+            "default_its": {
+              "raw_qemu": null,
+              "launch_exit_code": 0,
+              "guest_agent_exec": false,
+              "guest_agent_error": "Error: VM agent isn't currently running",
+              "elapsed_seconds": 42.8,
+              "hard_lockup": true,
+              "fixture_stopped": true
+            },
+            "msi_disabled": {
+              "raw_qemu": "-machine msi=off",
+              "launch_exit_code": 0,
+              "guest_agent_exec": true,
+              "elapsed_seconds": 21.7,
+              "hard_lockup": false,
+              "guest_reports_pci_msi": false,
+              "fixture_stopped": true
+            }
+          },
+          "runtime_after_graceful_stop": "stopped"
+        }
+      }
+    }
+  },
+  "acceptance_runner_corrections": [
+    "The Incus CLI requires storage volume snapshot restore.",
+    "The Debian 13 VM image has a 4 GiB root. The nested VM fixture now requests its own 8 GiB root, independently of the default 2 GiB container profile."
+  ]
+}

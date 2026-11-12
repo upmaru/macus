@@ -4,7 +4,13 @@ umask 077
 boot=${TAMA_BOOT_ROOT:-}
 storage_script=${TAMA_STORAGE_SCRIPT:-/usr/local/libexec/tama-storage.sh}
 echo 'TAMA_ALPINE_PROVISIONING'
-echo 'MACUS_OBSERVATION v1 stage=packages'
+prebuilt=false
+if [ -e "$boot/etc/macus-appliance-expected" ] || [ -e "$boot/etc/macus-appliance-image" ]; then
+    sh "$boot/usr/local/libexec/tama-verify-appliance-image.sh"
+    prebuilt=true
+else
+    echo 'MACUS_OBSERVATION v1 stage=packages'
+fi
 # Cloud-init runcmd runs once. Register continuation before any kernel reboot.
 if [ -x "$boot/etc/init.d/tama-bootstrap" ]; then
     rc-update add tama-bootstrap default
@@ -25,7 +31,7 @@ if [ -f "$boot/var/lib/tama-bootstrap-complete" ]; then
 fi
 ip address
 ip route
-cat "$boot/etc/resolv.conf"
+if [ -r "$boot/etc/resolv.conf" ]; then cat "$boot/etc/resolv.conf"; fi
 rc-service networking status || rc-service networking start
 cat "$boot/etc/network/interfaces"
 cat "$boot/etc/dhcpcd.conf"
@@ -39,7 +45,7 @@ ipv4only
 EOF
 fi
 # IPv6 router advertisements can make OpenRC networking appear ready before
-# Apple NAT's IPv4 DHCP lease. Wait for an IPv4 route before fetching packages.
+# Apple NAT's IPv4 DHCP lease. Wait for the route required by Incus.
 dhcpcd -4 -w -t 45 eth0
 network_ready=false
 for i in $(seq 1 45); do
@@ -54,9 +60,12 @@ ip -4 route
     echo 'Expected Alpine Linux 3.24; refusing mixed distribution provisioning' >&2
     exit 1
 }
+mkdir -p "$boot/etc/modprobe.d" "$boot/var/log" "$boot/var/lib"
+# The currently shipped Alpine catalog still names the upstream image.
+if [ "$prebuilt" = false ]; then
 # The minimal cloud base may lack the TLS CA bundle. Bootstrap it using APK's
 # trusted Alpine signatures, then use HTTPS for all remaining package operations.
-mkdir -p "$boot/run" "$boot/etc/apk" "$boot/etc/modprobe.d" "$boot/var/log" "$boot/var/lib"
+mkdir -p "$boot/run" "$boot/etc/apk"
 cat > "$boot/run/tama-ca-repositories" <<'EOF'
 http://dl-cdn.alpinelinux.org/alpine/v3.24/main
 EOF
@@ -80,9 +89,9 @@ apk --timeout 30 add --no-cache \
 # The cloud image EFI partition needs the unused DTB tree removed before this kernel update.
 if [ -d "$boot/boot/dtbs-lts" ]; then rm -rf "$boot/boot/dtbs-lts"; fi
 if ! apk --timeout 30 add --no-cache \
-    linux-lts=6.18.55-r0 zfs=2.4.4-r0 zfs-libs=2.4.4-r0 zfs-lts=6.18.55-r0 zfs-openrc=2.4.4-r0; then
+    linux-lts=6.18.60-r0 zfs=2.4.4-r0 zfs-libs=2.4.4-r0 zfs-lts=6.18.60-r0 zfs-openrc=2.4.4-r0; then
     echo 'MACUS_OBSERVATION v1 stage=failed code=qualified_revision_unavailable' >&2
-    echo 'TAMA_ZFS_QUALIFIED_REVISION_UNAVAILABLE: Alpine v3.24 no longer provides linux-lts=6.18.55-r0 zfs=2.4.4-r0; refusing to substitute' >&2
+    echo 'TAMA_ZFS_QUALIFIED_REVISION_UNAVAILABLE: Alpine v3.24 no longer provides linux-lts=6.18.60-r0 zfs=2.4.4-r0; refusing to substitute' >&2
     exit 1
 fi
 apk info -v | grep '^linux-lts-' | sed 's/^linux-lts-//;s/-r/-/;s/$/-lts/' > "$boot/etc/tama-zfs-qualified-kernel"
@@ -92,6 +101,7 @@ if [ "$(uname -r)" != "$(cat "$boot/etc/tama-zfs-qualified-kernel")" ]; then
     sync
     poweroff
     exit 0
+fi
 fi
 printf 'options zfs zfs_arc_max=536870912\n' > "$boot/etc/modprobe.d/tama-zfs.conf"
 apk info -v > "$boot/var/log/tama-appliance-packages.txt"

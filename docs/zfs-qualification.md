@@ -23,6 +23,88 @@ disk/config change was requested. The intended stopped state is restored and no
 restoration question remains. The earlier cleanup deviation remains recorded;
 this does not establish historical disk-hash preservation for a15.
 
+## Prebuilt draft qualification, 2026-11-10
+
+Both locked drafts booted on a physical Apple Silicon Mac running macOS 27.0.1,
+using a signed Macus debug build and separate runtime state and Incus client
+configurations.
+
+| Appliance | Booted kernel | Incus | ZFS | Hardware qualification |
+| --- | --- | --- | --- | --- |
+| `alpine-3.24.2-lts-1` | `6.18.62-0-lts` | `7.0.1` | `2.4.4-1` | Passed |
+| `alpine-3.24.2-stable-1` | `7.1.5-0-stable` | `7.0.1` | `2.4.4-1` | Incomplete |
+
+On first boot, the offline verifier matched the exact image record and the
+digest of all 411 installed packages before storage initialization. Both guests
+reached Incus readiness on their pinned kernels without package installation or
+a kernel-transition reboot. Both passed standard Incus over Unix/vsock,
+container networking, OCI and system-container exec, ZFS snapshot restore and
+restart persistence, disk growth, and read-only and writable VirtioFS. Both
+relay stress runs drained all 400 pipelined responses with zero failed probes.
+
+The nested Debian 13 VM returned `aarch64` through the Incus guest agent on LTS.
+On Stable, the nested VM reached the Debian bootloader and the guest agent
+failed to become ready within 180 seconds. A fresh nested VM with the same
+Debian image and settings logged a CPU 0 hard lockup during guest boot and
+also missed the 180-second agent deadline.
+
+A follow-up on a fresh Stable appliance reproduced the two-vCPU KVM hard
+lockup with an RCU timer warning. One-vCPU KVM also failed to reach the agent.
+Two-vCPU QEMU software emulation reached the agent in 27.8 seconds. With
+`-machine its=off`, two-vCPU KVM reached the agent in 24.7 seconds. On that
+same VM, restoring the default QEMU configuration reproduced the lockup.
+Disabling MSI with `-machine msi=off` restored agent exec in 21.7 seconds.
+
+This isolates the failure to the virtual MSI/ITS path on the tested stack.
+The underlying upstream defect remains unidentified. These diagnostic
+overrides leave Stable's default nested KVM qualification open (task 4.3).
+
+The [evidence report](testing/prebuilt-draft-qualification.json) records the
+exact image and Macus digests, workload results and relay timings. The
+[runbook](../Integration/qualification/README.md#prebuilt-draft-appliances)
+covers reproduction. Stable remains a draft and its default nested KVM
+qualification is still open.
+
+## Published LTS adoption, 2026-11-10
+
+The released `alpine-3.24.2-lts-1` asset matched the archive, disk and package
+manifest digests from draft qualification. On the same Apple M4 Max host, a
+signed release build of Macus started with empty runtime and Incus client
+state. It downloaded all 823,516,002 bytes from the public release, verified
+the archive and 4 GiB raw disk, and reached live Incus readiness in 129.3 seconds.
+The guest verified the installed image before storage initialization and booted
+`6.18.62-0-lts` with Incus 7.0.1 and a ZFS default pool. There was no package
+installation or kernel-transition reboot. The isolated runtime stopped cleanly
+and its launchd service was unloaded.
+
+[Published appliance release](https://github.com/upmaru/macus-appliance/releases/tag/alpine-3.24.2-lts-1) ·
+[Adoption evidence](testing/published-lts-adoption.json)
+
+## Package requalification, 2026-11-04
+
+Alpine published `linux-lts` and `zfs-lts` 6.18.60-r0 on 2026-11-01 and removed
+6.18.55-r0 from v3.24 `main/aarch64`. The pinned bootstrap then refused every fresh
+start with `TAMA_ZFS_QUALIFIED_REVISION_UNAVAILABLE`. The legacy bootstrap pin, then-current catalog and embedded guest payload named
+`linux-lts`/`zfs-lts` 6.18.60-r0. `zfs`, `zfs-libs` and `zfs-openrc` stay at
+2.4.4-r0. On 2026-11-04 the live v3.24 aarch64 APKINDEX listed exactly these
+revisions, with Incus 7.0.1-r2.
+
+A production-seed boot on disposable state ([evidence](testing/zfs-requalification-6.18.60.json)),
+on the same Mac16,5 / macOS 27.0.1 host with 4096 MiB RAM and a 32 GiB data disk,
+upgraded `linux-lts` 6.18.52-r0 to 6.18.60-r0 and installed `zfs-lts` 6.18.60-r0
+with ZFS 2.4.4-r0. It then logged `TAMA_ZFS_KERNEL_REBOOT_REQUIRED`. The daemon used
+its single reboot allowance and the start returned ready. Incus 7.0.1 reported kernel
+`6.18.60-0-lts`, storage `zfs` 2.4.4-1, and a `default` pool on `tama-data/workloads`
+with `volume.zfs.reserve_space=true`. The default profile had a 2 GiB root on that pool.
+A graceful stop returned `stopped`.
+
+**This is boot-level evidence only.** The run did not repeat the `run-zfs.py` storage
+suite: lifecycle, snapshots, quotas, growth, nested VMs and space exhaustion. It
+launched no workload, did not restart to re-import the pool, and did not check
+`TAMA_ZFS_EXPORT_OK`. The 2026-10-05 and 2026-10-06 results below were measured on
+6.18.55-r0 and are not rewritten. Already-completed appliances keep their recorded
+kernel and are not reprovisioned by this change.
+
 ## Hardware and package provenance
 
 Historical 2026-10-05 prototype record. It is not the current production-task status.

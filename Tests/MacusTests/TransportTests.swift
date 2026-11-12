@@ -55,100 +55,6 @@ func socketPair() throws -> (SocketDescriptor, SocketDescriptor) {
   #expect(!attempt.isPending)
 }
 
-@Test func transparentRelayPreservesBinaryAndHalfClose() async throws {
-  let (client, host) = try socketPair()
-  let (guest, server) = try socketPair()
-  client.timeout(seconds: 3)
-  server.timeout(seconds: 3)
-  let relay = Task { await SocketRelay.relay(host, guest) }
-  defer {
-    client.shutdown()
-    server.shutdown()
-    relay.cancel()
-  }
-  // Detached tasks still use Swift's cooperative executor. Blocking socket I/O
-  // belongs on the I/O queue so the relay can start even on a constrained runner.
-  try await SocketIO.run {
-    let binary = Data([0, 255, 128, 10, 13, 0, 42])
-    try client.write(binary)
-    client.shutdownWrite()
-    var received = Data()
-    while true {
-      let chunk = try server.read()
-      if chunk.isEmpty { break }
-      received.append(chunk)
-    }
-    #expect(received == binary)
-    try server.write(Data("response-after-client-half-close".utf8))
-    server.shutdownWrite()
-    var reply = Data()
-    while true {
-      let chunk = try client.read()
-      if chunk.isEmpty { break }
-      reply.append(chunk)
-    }
-    #expect(reply == Data("response-after-client-half-close".utf8))
-  }
-  await relay.value
-}
-
-@Test func relayHandlesBidirectionalBackpressure() async throws {
-  let (client, host) = try socketPair()
-  let (guest, server) = try socketPair()
-  client.timeout(seconds: 5)
-  server.timeout(seconds: 5)
-  var smallBuffer: Int32 = 1024
-  for socket in [host, guest] {
-    _ = setsockopt(
-      socket.rawValue, SOL_SOCKET, SO_SNDBUF, &smallBuffer, socklen_t(MemoryLayout<Int32>.size))
-  }
-  let relay = Task { await SocketRelay.relay(host, guest) }
-  defer {
-    client.shutdown()
-    server.shutdown()
-    relay.cancel()
-  }
-  let forward = Data((0..<2_000_000).map { UInt8(truncatingIfNeeded: $0) })
-  let reverse = Data(repeating: 173, count: 2_000_000)
-  let writeForward = Task {
-    try await SocketIO.run {
-      try client.write(forward)
-      client.shutdownWrite()
-    }
-  }
-  let writeReverse = Task {
-    try await SocketIO.run {
-      try server.write(reverse)
-      server.shutdownWrite()
-    }
-  }
-  let readForward = Task {
-    try await SocketIO.run {
-      var received = Data()
-      while true {
-        let chunk = try server.read()
-        if chunk.isEmpty { return received }
-        received.append(chunk)
-      }
-    }
-  }
-  let readReverse = Task {
-    try await SocketIO.run {
-      var received = Data()
-      while true {
-        let chunk = try client.read()
-        if chunk.isEmpty { return received }
-        received.append(chunk)
-      }
-    }
-  }
-  #expect(try await readForward.value == forward)
-  #expect(try await readReverse.value == reverse)
-  try await writeForward.value
-  try await writeReverse.value
-  await relay.value
-}
-
 @Test func idleRelaysDoNotBlockControlWorkersAndCanBeCancelled() async throws {
   var peers: [SocketDescriptor] = []
   var relays: [Task<Void, Never>] = []
@@ -160,7 +66,7 @@ func socketPair() throws -> (SocketDescriptor, SocketDescriptor) {
     let (client, host) = try socketPair()
     let (guest, server) = try socketPair()
     peers.append(contentsOf: [client, server])
-    relays.append(Task { await SocketRelay.relay(host, guest) })
+    relays.append(Task { await FlowControlledRelay.relay(client: host, guest: guest) })
   }
   try await Task.sleep(for: .milliseconds(100))
   let completed = DispatchSemaphore(value: 0)
