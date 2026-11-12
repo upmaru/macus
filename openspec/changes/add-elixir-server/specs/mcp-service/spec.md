@@ -17,7 +17,7 @@ Macus SHALL expose one /mcp endpoint through the maintained protocol implementat
 
 ### Requirement: Two-tool search and execute surface
 
-The /mcp endpoint SHALL advertise exactly two tools: `search`, which finds operations in the combined catalogue, and `execute`, which runs one named operation with arguments. Individual operations SHALL NOT be advertised as separate MCP tools. Macus SHALL own both tool modules, taking their definitions from `Tama.Dex.MCP.search_tool/0` and `Tama.Dex.MCP.execute_tool/0` and delegating to `Tama.Dex.MCP.handle_search/3` and `Tama.Dex.MCP.handle_execute/4`. Indexing and query matching SHALL be delegated to tama-dex; Macus SHALL NOT implement its own search engine. `search` SHALL return operation IDs, descriptions, input/output schemas, scopes, confirmation rules and bounds taken from the indexed documents.
+The /mcp endpoint SHALL advertise exactly two tools: `search`, which finds operations across all indexed cassettes with an optional cassette filter, and `execute`, which runs one operation addressed by cassette and operation ID with its input. Individual operations SHALL NOT be advertised as separate MCP tools. Macus SHALL own both tool modules, taking their definitions from `Tama.Dex.MCP.search_tool/0` and `Tama.Dex.MCP.execute_tool/0` and delegating to `Tama.Dex.MCP.handle_search/3` and `Tama.Dex.MCP.handle_execute/4`. Indexing and query matching SHALL be delegated to tama-dex; Macus SHALL NOT implement its own search engine. `search` SHALL return each operation's cassette, cassette version, operation ID, description, input/output schemas, scopes, confirmation rule and bounds taken from the indexed documents.
 
 #### Scenario: Tool discovery
 
@@ -29,28 +29,33 @@ The /mcp endpoint SHALL advertise exactly two tools: `search`, which finds opera
 - **WHEN** an authorized caller searches for an operation such as listing instances
 - **THEN** the result names matching operations with the schemas and confirmation rules needed to call `execute`
 
-### Requirement: Indexed operation sources
+### Requirement: Cassette-namespaced operation sources
 
-Macus SHALL index two `tama-operations/1` sources with tama-dex: `opsmaru_incus`, from the shared library's published operation document, and `macus`, from a Macus-built document of its runtime operations. Each source SHALL be executed by its registered executor: `Opsmaru.Incus.Operations.run/3` for `opsmaru_incus` and the Macus runtime executor for `macus`. Shared operations SHALL be indexed as published, without renaming or schema changes. A duplicate operation ID across sources SHALL fail the load. Operations the shared library does not export SHALL NOT be indexed or executable.
+Macus SHALL keep one tama-dex index holding two cassettes, each a namespace of `tama-operations/1` operations. The `opsmaru_incus` cassette SHALL be installed from the shared library's bundled release cassette. The local `macus` cassette SHALL hold the Macus-built runtime document. Operations SHALL be addressed by cassette and operation ID, so an operation ID needs to be unique only within its cassette. Each source SHALL be executed by its registered executor: `Opsmaru.Incus.Operations.run/3` for `opsmaru_incus` and the Macus runtime executor for `macus`. Shared operations SHALL be indexed as published, without renaming or schema changes. Loading into an imported cassette's name SHALL fail, as SHALL importing over the local cassette's name. Operations the shared library does not export SHALL NOT be indexed or executable.
 
-#### Scenario: Duplicate operation ID
+#### Scenario: Same operation ID in two cassettes
 
-- **WHEN** the Macus document declares an operation ID already published by the shared library
-- **THEN** the load fails and neither source's duplicate entry becomes executable
+- **WHEN** the `macus` and `opsmaru_incus` cassettes each declare an operation with the same ID
+- **THEN** both load, and `execute` runs whichever one the call's cassette names
 
-#### Scenario: Unexported shared operation
+#### Scenario: Cassette name conflict
 
-- **WHEN** the shared library lists an operation as unavailable
-- **THEN** `search` does not return it and `execute` rejects it without backend access
+- **WHEN** Macus loads its runtime document into the `opsmaru_incus` cassette name
+- **THEN** the load fails with a cassette conflict and the imported cassette is unchanged
+
+#### Scenario: Shared cassette upgrade
+
+- **WHEN** a newer bundled `opsmaru_incus` cassette that drops an operation is imported
+- **THEN** the whole cassette is replaced atomically, the dropped operation is no longer executable and the `macus` cassette is untouched
 
 ### Requirement: Index storage and readiness
 
-Macus SHALL supervise the tama-dex index at `<state-dir>/server/tama-dex.sqlite3` with mode 0600, as derived data that is recreated when deleted or when its schema version does not match. At server start Macus SHALL import the bundled opsmaru_incus cassette pinned by SHA-256 and load its own document without blocking VM startup, and SHALL report index status as gateway readiness separate from VM readiness. Startup MUST NOT download a cassette. Until an index is committed, both tools SHALL return `not_ready` without dispatching.
+Macus SHALL supervise the tama-dex index at `<state-dir>/server/tama-dex.sqlite3` with mode 0600, as derived data that is recreated when deleted or when its schema version does not match. At server start Macus SHALL import the bundled `opsmaru_incus` cassette pinned by SHA-256 and load its `macus` cassette without blocking VM startup. It SHALL report each cassette's status as gateway readiness, separate from VM readiness. Startup MUST NOT download a cassette. While a cassette is on its first import, describing or executing its operations SHALL return `not_ready` without dispatching.
 
 #### Scenario: Index still importing
 
-- **WHEN** an MCP call arrives while the index import is still running
-- **THEN** the tool returns `not_ready` with `dispatched: false` and the VM's startup and readiness are unaffected
+- **WHEN** an `execute` call names the `opsmaru_incus` cassette while its first import is still running
+- **THEN** the tool returns `not_ready` with `dispatched: false`, the committed `macus` cassette keeps serving and the VM's startup and readiness are unaffected
 
 #### Scenario: Index file deleted
 
@@ -59,7 +64,7 @@ Macus SHALL supervise the tama-dex index at `<state-dir>/server/tama-dex.sqlite3
 
 ### Requirement: Scoped search and execution
 
-Search results SHALL include only operations the caller's verified scopes permit, and `execute` SHALL treat an operation hidden by those scopes as not found. `execute` SHALL enforce the named operation's own scopes even though one tool fronts every operation. Shared operations SHALL run through `Opsmaru.Incus.Operations.run/3` with the caller's verified scopes, and the Macus runtime executor SHALL apply the same check. Unknown or forbidden operations SHALL fail before backend/provider access; no unrestricted host command operation SHALL exist.
+Search results SHALL include only operations the caller's verified scopes permit, and `execute` SHALL treat an unknown cassette, or an operation hidden by those scopes, as not found. `execute` SHALL enforce the named operation's own scopes even though one tool fronts every operation. Shared operations SHALL run through `Opsmaru.Incus.Operations.run/3` with the caller's verified scopes, and the Macus runtime executor SHALL apply the same check. Unknown or forbidden operations SHALL fail before backend/provider access; no unrestricted host command operation SHALL exist.
 
 #### Scenario: Read-only identity
 

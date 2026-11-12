@@ -58,7 +58,7 @@ opsmaru_incus dependency (Hex)
   Opsmaru.Incus.Operations  shared operation descriptors and synchronous run/3
 
 tama-dex (Tama.Dex, separate library, not yet released)
-  SQLite index of tama-operations/1 documents (opsmaru_incus cassette + macus document)
+  one SQLite index; cassette namespaces opsmaru_incus (imported) and macus (local)
   tool definitions and search/execute handlers; started under the Macus supervisor
 ```
 
@@ -160,21 +160,21 @@ Alternative: implementing a few Macus-only REST calls would both duplicate the s
 
 **Revision 2026-11-12:** `:opsmaru_incus` 0.1.0 ships operation descriptors and `Opsmaru.Incus.Operations.run/3` but no MCP binding (its optional TamaMCP tool modules were removed on 2026-11-04). Macus therefore does not register one MCP tool per operation. `/mcp` advertises exactly two tools, `search` and `execute`, backed by the separate tama-dex library (module namespace `Tama.Dex`, kritama/tama-dex). The user confirmed the three tama-dex defaults below on 2026-11-12.
 
-tama-dex indexes `tama-operations/1` documents into SQLite. A `tama-operations/1` document is an OpenAPI 3.1 profile: one `POST /operations/{operationId}` per operation, plus `x-tama-scopes`, `x-tama-destructive`, `x-tama-confirmation`, `x-tama-bounds` and `x-tama-identity`. Macus indexes two sources:
+tama-dex indexes `tama-operations/1` documents into SQLite. A `tama-operations/1` document is an OpenAPI 3.1 profile: one `POST /operations/{operationId}` per operation, plus `x-tama-scopes`, `x-tama-destructive`, `x-tama-confirmation`, `x-tama-bounds` and `x-tama-identity`. Macus keeps one index with two cassettes. A cassette is a namespace: operations are addressed by `(cassette, operation_id)` and IDs need only be unique within a cassette (kritama/tama-dex#1 `d91fe07`). Executors stay keyed by `x-tama-source`.
 
-| Source | Document | Executor |
+| Cassette / source | Document | Executor |
 | --- | --- | --- |
-| `opsmaru_incus` | `Opsmaru.Incus.Operations.openapi/0`, shipped as an opsmaru_incus release cassette (planned for 0.2.0) | `Opsmaru.Incus.Operations.run/3` with `host: Macus.MCP.IncusHost`, the verified caller and verified scopes |
-| `macus` | Macus-built document of `macus_runtime_*` operations | Macus runtime executor over the private Swift adapter |
+| `opsmaru_incus` (imported) | `Opsmaru.Incus.Operations.openapi/0`, shipped as an opsmaru_incus release cassette (planned for 0.2.0) | `Opsmaru.Incus.Operations.run/3` with `host: Macus.MCP.IncusHost`, the verified caller and verified scopes |
+| `macus` (local) | Macus-built document of `macus_runtime_*` operations | Macus runtime executor over the private Swift adapter |
 
-1. **Load at server start.** Macus starts `Tama.Dex.Index` under its own supervisor. At server start it imports the bundled opsmaru_incus cassette with `Tama.Dex.import/3`, giving the SHA-256 pinned in build metadata, and loads its own `macus` document with `Tama.Dex.load/3`. Both calls use `async: true` and/or `timeout:`. `Tama.Dex.Index.status/1` (empty, importing, ready or failed) is reported as gateway readiness, separate from VM readiness. A slow or failed import never blocks or fails VM startup. Until an index is committed, both tools return `not_ready` with `dispatched: false`. Startup never downloads a cassette; on a digest mismatch tama-dex rebuilds from the embedded documents. A duplicate `operationId` across sources fails the load.
+1. **Load at server start.** Macus starts `Tama.Dex.Index` under its own supervisor. At server start it installs the bundled `opsmaru_incus` cassette with `Tama.Dex.import(index, path, sha256: pin, async: true)`. The pin is the SHA-256 recorded in build metadata, and the cassette name comes from its manifest (`as:` is used only on a collision). It loads its own document with `Tama.Dex.load(index, doc, cassette: "macus")`. Both calls use `async: true` and/or `timeout:`. Per-cassette status from `Tama.Dex.cassettes/1` is reported as gateway readiness, separate from VM readiness. `Index.status/1` `:ready` means only that at least one cassette is committed. A slow or failed import never blocks or fails VM startup. A cassette on its first import returns `not_ready` with `dispatched: false` while committed cassettes keep serving. An import replaces its whole cassette atomically, so an upgrade that drops an operation removes it without touching `macus`. Loading into an imported cassette's name, or the reverse, fails with `cassette_conflict`. Startup never downloads a cassette; on a digest mismatch tama-dex rebuilds from the embedded documents.
 2. **Index path.** `<state-dir>/server/tama-dex.sqlite3`, mode 0600, under the existing owner-private ancestry checks. It is derived data: deleting it, or a schema-version mismatch, recreates it from the cassette and documents.
 3. **Macus owns the tool modules.** The two TamaMCP tool modules on the Macus server take their definitions from `Tama.Dex.MCP.search_tool/0` and `execute_tool/0` (via `raw_input_schema`/`raw_output_schema`). They delegate to `Tama.Dex.MCP.handle_search/3` and `handle_execute/4` with the caller's verified scopes and the per-source executors above. tama-dex does not depend on TamaMCP.
 
 | Tool | Behavior |
 | --- | --- |
-| `search` | Bounded query over the index, filtered to the caller's verified scopes. Returns operation IDs, descriptions, schemas, scopes, confirmation and bounds. |
-| `execute` | Takes an operation ID and input. Before dispatch, tama-dex checks scope visibility (`not_found` otherwise), the executor, input schema and confirmation presence, then dispatches once and validates the result. Errors carry `dispatched`. `dispatch_failed` and `invalid_output` are `dispatched: true`, keep `x-tama-identity` fields and must be reconciled, never retried. |
+| `search` | Bounded query ranked across all cassettes, with an optional `cassette` filter, filtered to the caller's verified scopes. Each result carries `cassette`, `cassette_version`, operation ID, description, schemas, scopes, confirmation and bounds. |
+| `execute` | Takes `{cassette, operation_id, input}`, all required, and returns `{cassette, operation_id, source, result}`. Before dispatch, tama-dex checks the cassette and scope visibility (`not_found` otherwise), the executor, input schema and confirmation presence, then dispatches once and validates the result. Errors carry `dispatched`. `dispatch_failed` and `invalid_output` are `dispatched: true`, keep `x-tama-identity` fields and must be reconciled, never retried. |
 
 The executor still enforces each operation's own rules: `run/3` re-checks scope, confirmation value and host authorization, and the runtime executor enforces Swift preconditions. Access to `execute` therefore does not grant every operation. tama-dex imposes no deadline around an executor. Macus caps its own waits and returns `running` with operation or runtime identity. No per-operation MCP tools, dynamic plugin loader, second MCP service or Macus-owned search engine are introduced.
 
