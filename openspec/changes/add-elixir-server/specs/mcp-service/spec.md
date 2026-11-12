@@ -31,7 +31,7 @@ The /mcp endpoint SHALL advertise exactly two tools: `search`, which finds opera
 
 ### Requirement: Cassette-namespaced operation sources
 
-Macus SHALL keep one tama-dex index holding two cassettes, each a namespace of `tama-operations/1` operations. The `opsmaru_incus` cassette SHALL be installed from the shared library's bundled release cassette. The local `macus` cassette SHALL hold the Macus-built runtime document. Operations SHALL be addressed by cassette and operation ID, so an operation ID needs to be unique only within its cassette. Each source SHALL be executed by its registered executor: `Opsmaru.Incus.Operations.run/3` for `opsmaru_incus` and the Macus runtime executor for `macus`. Shared operations SHALL be indexed as published, without renaming or schema changes. Loading into an imported cassette's name SHALL fail, as SHALL importing over the local cassette's name. Operations the shared library does not export SHALL NOT be indexed or executable.
+Macus SHALL keep one tama-dex index holding two cassettes, each a namespace of `tama-operations/1` operations. The `opsmaru_incus` cassette SHALL be installed from the shared library's bundled release cassette. The local `macus` cassette SHALL hold the Macus-built runtime document. Operations SHALL be addressed by cassette and operation ID, so an operation ID needs to be unique only within its cassette. Each source SHALL be executed by its registered executor: `Opsmaru.Incus.Operations.Composite.run/3` for `opsmaru_incus` and the Macus runtime executor for `macus`. Shared operations SHALL be indexed as published, without renaming or schema changes. Loading into an imported cassette's name SHALL fail, as SHALL importing over the local cassette's name. Operations the shared library does not export SHALL NOT be indexed or executable.
 
 #### Scenario: Same operation ID in two cassettes
 
@@ -74,7 +74,7 @@ Macus SHALL supervise the tama-dex index at `<state-dir>/server/tama-dex.sqlite3
 
 ### Requirement: Scoped search and execution
 
-Search results SHALL include only operations the caller's verified scopes permit, and `execute` SHALL treat an unknown cassette, or an operation hidden by those scopes, as not found. `execute` SHALL enforce the named operation's own scopes even though one tool fronts every operation. Shared operations SHALL run through `Opsmaru.Incus.Operations.run/3` with the caller's verified scopes, and the Macus runtime executor SHALL apply the same check. Unknown or forbidden operations SHALL fail before backend/provider access; no unrestricted host command operation SHALL exist.
+Search results SHALL include only operations the caller's verified scopes permit, and `execute` SHALL treat an unknown cassette, or an operation hidden by those scopes, as not found. `execute` SHALL enforce the named operation's own scopes even though one tool fronts every operation. Shared operations SHALL run through `Opsmaru.Incus.Operations.Composite.run/3` with the caller's verified scopes, and the Macus runtime executor SHALL apply the same check. Unknown or forbidden operations SHALL fail before backend/provider access; no unrestricted host command operation SHALL exist.
 
 #### Scenario: Read-only identity
 
