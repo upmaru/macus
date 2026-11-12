@@ -1,9 +1,71 @@
 # Architecture
 
+The approved `add-elixir-server` change introduces this connection boundary:
+
+```text
+Swift CLI / standard Incus / MCP clients
+                  │ HTTPS
+           Phoenix / Cowboy (server/)
+            /      │       \
+     /runtime    /1.0*     /mcp (TamaMCP: search + execute)
+         │         │       │ Opsmaru.Incus.Operations + Macus runtime ops
+   runtime.sock  incus.sock │
+         │         │       │
+   Swift VM actor  Swift duplex relay
+         │         │
+        VZ       virtio/vsock → guest Incus Unix socket
+```
+
+Swift owns the VM and disks. Macus Elixir code owns gateway identity/trust,
+scoped bearer authorization, native HTTP/upgrade proxying and the private
+Swift runtime adapter. The pure `:opsmaru_incus` Hex library owns the portable
+Incus client, native gateway relay mechanics and shared Incus operation
+descriptors. It runs inside the existing Macus BEAM with no application
+callback, listener or process. `/mcp` advertises only `search` and `execute`
+over one catalogue of shared and Macus runtime operations; the separate tama-dex
+library (`Tama.Dex`, not yet released) indexes them into
+`<state-dir>/server/tama-dex.sqlite3` at server start. There is one public endpoint and the same
+two independently supervised Swift/Elixir processes. The
+public gateway defaults to loopback HTTPS; LAN binding and advertised identity
+require explicit configuration. Authenticate before accessing either private
+socket. Gateway certificate trust is independent of guest trust. Native Incus
+paths, binary streaming and upgrades remain native, with only the documented
+gateway identity/trust exceptions. Typed-client parity has separate upstream
+inventory evidence; proxy breadth is not client-port evidence.
+
+`server/mix.lock` locks `:opsmaru_incus` 0.1.0 from Hex, which delivers the
+client, gateway and operations. Its coverage still reports
+`complete_port=false`, so no complete-client claim is made. Durable tasks and
+central connectors are later milestones. No fallback client or duplicate task
+engine is implemented here. Historical Macus reference inputs
+can be transferred with notices, while Macus-specific bridge, identity and
+runtime evidence remains in this repository.
+
+The Macus-owned `Macus.Runtime.Client` now provides passive private Unix HTTP
+requests to Swift, with native errors/budget payloads and bounded framing,
+deadlines and socket ownership checks. It is independent of the shared Incus
+client. The authenticated public routes are still pending implementation.
+
+Optional explicit `macus connect [url]` will register only this selected Macus
+target with central Opsmaru and enable an outbound connector inside the same
+server. Central manages multiple targets; the local gateway uses only its
+configured Swift/Incus backend. Local startup will remain usable without
+enrollment or central availability. Disconnect will disable central dispatch
+without stopping the VM or deleting workloads/credentials/task receipts.
+
+One passive package will install Swift at `bin/macus` and a matching
+bundled-ERTS Mix release at `libexec/macus`. `macus start` will activate both
+per-user jobs inside the existing startup deadline. See the
+[approved design](../openspec/changes/add-elixir-server/design.md).
+Implementation progress is recorded in its tasks: the scaffold currently
+starts without a listener, and the installed CLI/packaging still use the
+Swift-only baseline below until their integration tasks are complete.
+
+## Integrated Swift baseline
+
 ```text
 macOS
   ├─ macus (this package) → runtime.sock lifecycle and standard incus CLI setup
-  ├─ tama-machine may use the same sockets independently
   ├─ Unix HTTP runtime.sock → runtime actor → main-actor VZ controller
   └─ Unix stream incus.sock → flow-controlled relay → VZ virtio socket
                                               ↓ host CID 2 only
