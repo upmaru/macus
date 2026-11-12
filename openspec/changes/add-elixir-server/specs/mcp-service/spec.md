@@ -8,7 +8,7 @@ Exposes shared `:opsmaru_incus` Incus operations and Macus runtime operations to
 
 ### Requirement: Maintained MCP protocol integration
 
-Macus SHALL expose one /mcp endpoint through the maintained protocol implementation. The shared library MUST NOT start another endpoint, listener or process, and the operation index library (tama-dex) MUST NOT start another endpoint or listener. Unsupported protocol/transport features MUST NOT be advertised, and authentication SHALL precede tool discovery and execution.
+Macus SHALL expose one /mcp endpoint through the maintained protocol implementation. The shared library MUST NOT start another endpoint, listener or process, and tama-dex MUST NOT start another endpoint or listener; its index process runs under the Macus supervisor. Unsupported protocol/transport features MUST NOT be advertised, and authentication SHALL precede tool discovery and execution.
 
 #### Scenario: Unsupported protocol
 
@@ -17,7 +17,7 @@ Macus SHALL expose one /mcp endpoint through the maintained protocol implementat
 
 ### Requirement: Two-tool search and execute surface
 
-The /mcp endpoint SHALL advertise exactly two tools: `search`, which finds operations in the combined catalogue, and `execute`, which runs one named operation with arguments. Individual operations SHALL NOT be advertised as separate MCP tools. Indexing and query matching SHALL be delegated to the separate tama-dex operation index library; Macus SHALL NOT implement its own search engine. `search` SHALL return operation names, descriptions, input/output schemas, required scope and confirmation rules taken from the operation descriptors.
+The /mcp endpoint SHALL advertise exactly two tools: `search`, which finds operations in the combined catalogue, and `execute`, which runs one named operation with arguments. Individual operations SHALL NOT be advertised as separate MCP tools. Macus SHALL own both tool modules, taking their definitions from `Tama.Dex.MCP.search_tool/0` and `Tama.Dex.MCP.execute_tool/0` and delegating to `Tama.Dex.MCP.handle_search/3` and `Tama.Dex.MCP.handle_execute/4`. Indexing and query matching SHALL be delegated to tama-dex; Macus SHALL NOT implement its own search engine. `search` SHALL return operation IDs, descriptions, input/output schemas, scopes, confirmation rules and bounds taken from the indexed documents.
 
 #### Scenario: Tool discovery
 
@@ -29,23 +29,37 @@ The /mcp endpoint SHALL advertise exactly two tools: `search`, which finds opera
 - **WHEN** an authorized caller searches for an operation such as listing instances
 - **THEN** the result names matching operations with the schemas and confirmation rules needed to call `execute`
 
-### Requirement: Combined operation catalogue
+### Requirement: Indexed operation sources
 
-Macus SHALL build one catalogue from the exported `:opsmaru_incus` operation descriptors and Macus-owned runtime operation descriptors, and index it with tama-dex. Shared descriptors SHALL be used as published, without renaming or schema changes. Duplicate operation names SHALL fail catalogue construction. Operations the library reports as unavailable SHALL NOT be indexed or executable.
+Macus SHALL index two `tama-operations/1` sources with tama-dex: `opsmaru_incus`, from the shared library's published operation document, and `macus`, from a Macus-built document of its runtime operations. Each source SHALL be executed by its registered executor: `Opsmaru.Incus.Operations.run/3` for `opsmaru_incus` and the Macus runtime executor for `macus`. Shared operations SHALL be indexed as published, without renaming or schema changes. A duplicate operation ID across sources SHALL fail the load. Operations the shared library does not export SHALL NOT be indexed or executable.
 
-#### Scenario: Duplicate operation name
+#### Scenario: Duplicate operation ID
 
-- **WHEN** a Macus runtime operation uses a name already exported by the shared library
-- **THEN** catalogue construction fails before the endpoint serves requests
+- **WHEN** the Macus document declares an operation ID already published by the shared library
+- **THEN** the load fails and neither source's duplicate entry becomes executable
 
-#### Scenario: Unavailable shared operation
+#### Scenario: Unexported shared operation
 
 - **WHEN** the shared library lists an operation as unavailable
 - **THEN** `search` does not return it and `execute` rejects it without backend access
 
+### Requirement: Index storage and readiness
+
+Macus SHALL supervise the tama-dex index at `<state-dir>/server/tama-dex.sqlite3` with mode 0600, as derived data that is recreated when deleted or when its schema version does not match. At server start Macus SHALL import the bundled opsmaru_incus cassette pinned by SHA-256 and load its own document without blocking VM startup, and SHALL report index status as gateway readiness separate from VM readiness. Startup MUST NOT download a cassette. Until an index is committed, both tools SHALL return `not_ready` without dispatching.
+
+#### Scenario: Index still importing
+
+- **WHEN** an MCP call arrives while the index import is still running
+- **THEN** the tool returns `not_ready` with `dispatched: false` and the VM's startup and readiness are unaffected
+
+#### Scenario: Index file deleted
+
+- **WHEN** the index file is missing at server start
+- **THEN** Macus recreates it from the bundled cassette and its own document without fetching anything
+
 ### Requirement: Scoped search and execution
 
-Search results SHALL include only operations the caller's verified scopes permit. `execute` SHALL enforce the named operation's own scope even though one tool fronts every operation: shared operations SHALL run through `Opsmaru.Incus.Operations.run/3` with the caller's verified scopes, and Macus runtime operations SHALL apply the same check. Unknown or forbidden operations SHALL fail before backend/provider access; no unrestricted host command operation SHALL exist.
+Search results SHALL include only operations the caller's verified scopes permit, and `execute` SHALL treat an operation hidden by those scopes as not found. `execute` SHALL enforce the named operation's own scopes even though one tool fronts every operation. Shared operations SHALL run through `Opsmaru.Incus.Operations.run/3` with the caller's verified scopes, and the Macus runtime executor SHALL apply the same check. Unknown or forbidden operations SHALL fail before backend/provider access; no unrestricted host command operation SHALL exist.
 
 #### Scenario: Read-only identity
 
@@ -68,7 +82,7 @@ Runtime deletion, workload deletion, destructive restore and forced stop SHALL r
 
 ### Requirement: Truthful synchronous tool behavior
 
-`execute` SHALL run shared Incus and Macus runtime operations synchronously within bounded waits and report native operation or runtime identity with completed, running, failed or uncertain status. Callers SHALL be able to poll later state by executing the operation and runtime status operations. Durable MCP task handles MUST NOT be advertised, and accepted operations MUST NOT be described as completed.
+`execute` SHALL run shared Incus and Macus runtime operations synchronously within bounded waits and report native operation or runtime identity with completed, running, failed or uncertain status. Callers SHALL be able to poll later state by executing the operation and runtime status operations. Durable MCP task handles MUST NOT be advertised, and accepted operations MUST NOT be described as completed. Errors SHALL state whether the operation was dispatched. A dispatched failure or invalid result SHALL keep the operation's declared identity fields and SHALL NOT be retried automatically.
 
 #### Scenario: Long-running creation
 

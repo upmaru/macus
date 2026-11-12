@@ -57,8 +57,9 @@ opsmaru_incus dependency (Hex)
   Opsmaru.Incus.Gateway     native HTTP/WebSocket/raw-upgrade relay mechanics
   Opsmaru.Incus.Operations  shared operation descriptors and synchronous run/3
 
-tama-dex (separate library, not yet published)
-  SQLite index of the combined catalogue for the `search` tool
+tama-dex (Tama.Dex, separate library, not yet released)
+  SQLite index of tama-operations/1 documents (opsmaru_incus cassette + macus document)
+  tool definitions and search/execute handlers; started under the Macus supervisor
 ```
 
 Resolve compatible locked Phoenix/Cowboy/TamaMCP dependencies against the library's ranged requirements. The library's isolated consumer fixture uses Macus's exact Phoenix/Plug.Cowboy/Cowboy/Mint/TamaMCP set. Adding it to `server/mix.lock` adds only `opsmaru_incus`, `mint_web_socket` and `yamerl`. CI, source installs and packaging resolve from Hex without a sibling checkout.
@@ -157,18 +158,32 @@ Alternative: implementing a few Macus-only REST calls would both duplicate the s
 
 ### 6. Search and execute operations at one MCP endpoint
 
-**Revision 2026-11-12:** `:opsmaru_incus` 0.1.0 ships operation descriptors and `Opsmaru.Incus.Operations.run/3` but no MCP binding (its optional TamaMCP tool modules were removed on 2026-11-04). Macus therefore does not register one MCP tool per operation. `/mcp` advertises exactly two tools, `search` and `execute`, and the separate tama-dex library handles indexing and search.
+**Revision 2026-11-12:** `:opsmaru_incus` 0.1.0 ships operation descriptors and `Opsmaru.Incus.Operations.run/3` but no MCP binding (its optional TamaMCP tool modules were removed on 2026-11-04). Macus therefore does not register one MCP tool per operation. `/mcp` advertises exactly two tools, `search` and `execute`, backed by the separate tama-dex library (module namespace `Tama.Dex`, kritama/tama-dex). The user confirmed the three tama-dex defaults below on 2026-11-12.
 
-`:opsmaru_incus` (`add-incus-operations`) supplies the shared Incus operation descriptors (`all/0`, `fetch/1`, `describe/1`) and their synchronous runner (`run/3`). Macus defines its private-runtime operations in the same descriptor shape: name, title, description, input/output schema, required scope and confirmation rule. At startup Macus builds one catalogue from the exported shared descriptors and its runtime descriptors. Duplicate names fail construction, and descriptors in `Operations.unavailable/0` are excluded. tama-dex indexes that catalogue (planned 2026-11-04 as a SQLite index of the operation specs). Macus mounts the maintained TamaMCP Streamable HTTP Plug at `/mcp` on its existing endpoint with two Macus-owned tools:
+tama-dex indexes `tama-operations/1` documents into SQLite. A `tama-operations/1` document is an OpenAPI 3.1 profile: one `POST /operations/{operationId}` per operation, plus `x-tama-scopes`, `x-tama-destructive`, `x-tama-confirmation`, `x-tama-bounds` and `x-tama-identity`. Macus indexes two sources:
+
+| Source | Document | Executor |
+| --- | --- | --- |
+| `opsmaru_incus` | `Opsmaru.Incus.Operations.openapi/0`, shipped as an opsmaru_incus release cassette (planned for 0.2.0) | `Opsmaru.Incus.Operations.run/3` with `host: Macus.MCP.IncusHost`, the verified caller and verified scopes |
+| `macus` | Macus-built document of `macus_runtime_*` operations | Macus runtime executor over the private Swift adapter |
+
+1. **Load at server start.** Macus starts `Tama.Dex.Index` under its own supervisor. At server start it imports the bundled opsmaru_incus cassette with `Tama.Dex.import/3`, giving the SHA-256 pinned in build metadata, and loads its own `macus` document with `Tama.Dex.load/3`. Both calls use `async: true` and/or `timeout:`. `Tama.Dex.Index.status/1` (empty, importing, ready or failed) is reported as gateway readiness, separate from VM readiness. A slow or failed import never blocks or fails VM startup. Until an index is committed, both tools return `not_ready` with `dispatched: false`. Startup never downloads a cassette; on a digest mismatch tama-dex rebuilds from the embedded documents. A duplicate `operationId` across sources fails the load.
+2. **Index path.** `<state-dir>/server/tama-dex.sqlite3`, mode 0600, under the existing owner-private ancestry checks. It is derived data: deleting it, or a schema-version mismatch, recreates it from the cassette and documents.
+3. **Macus owns the tool modules.** The two TamaMCP tool modules on the Macus server take their definitions from `Tama.Dex.MCP.search_tool/0` and `execute_tool/0` (via `raw_input_schema`/`raw_output_schema`). They delegate to `Tama.Dex.MCP.handle_search/3` and `handle_execute/4` with the caller's verified scopes and the per-source executors above. tama-dex does not depend on TamaMCP.
 
 | Tool | Behavior |
 | --- | --- |
-| `search` | Bounded query over the index. Returns matching operation names, descriptions, schemas, required scope and confirmation rule, filtered to the caller's verified scopes. |
-| `execute` | Takes `operation` and `arguments`. A shared operation runs through `Opsmaru.Incus.Operations.run/3` with `host: Macus.MCP.IncusHost`, the verified caller and verified scopes. A Macus runtime operation runs through the runtime adapter after the same scope, schema and confirmation checks. |
+| `search` | Bounded query over the index, filtered to the caller's verified scopes. Returns operation IDs, descriptions, schemas, scopes, confirmation and bounds. |
+| `execute` | Takes an operation ID and input. Before dispatch, tama-dex checks scope visibility (`not_found` otherwise), the executor, input schema and confirmation presence, then dispatches once and validates the result. Errors carry `dispatched`. `dispatch_failed` and `invalid_output` are `dispatched: true`, keep `x-tama-identity` fields and must be reconciled, never retried. |
 
-`run/3` enforces each operation's own scope, so access to `execute` does not grant every operation. Search filtering limits discovery, but `execute` remains the authorization point. No per-operation MCP tools, dynamic plugin loader or second MCP service are introduced.
+The executor still enforces each operation's own rules: `run/3` re-checks scope, confirmation value and host authorization, and the runtime executor enforces Swift preconditions. Access to `execute` therefore does not grant every operation. tama-dex imposes no deadline around an executor. Macus caps its own waits and returns `running` with operation or runtime identity. No per-operation MCP tools, dynamic plugin loader, second MCP service or Macus-owned search engine are introduced.
 
-tama-dex has no repository or release yet, so the `search` integration task stays open. Its SQLite index is not state for `:opsmaru_incus`, which holds no repository or runtime state. Macus must not grow its own search engine to fill the gap. `execute` and the catalogue do not depend on it.
+The Macus runtime document follows the profile:
+- A graceful `macus_runtime_stop` is separate from a destructive, confirmed `macus_runtime_force_stop`.
+- Runtime deletion takes a string `confirm` token that the executor maps to the private `{"confirm": true}`.
+- Stopped-state preconditions are described in text and `x-macus-*` metadata, and the private API enforces them with 409.
+
+Blocking releases: tama-dex, and the opsmaru_incus release that adds `Operations.openapi/0` and its cassette. The Macus document, `Operations.Host` and executors can be built and fixture-tested before then.
 
 | Operation family | Owner / scope / delegation |
 | --- | --- |
@@ -244,7 +259,7 @@ Central registration, `macus connect`/`connection status`/`disconnect`, the outb
 
 ## Migration Plan
 
-1. Integrate the released `:opsmaru_incus` Hex package (0.1.0 delivers the client, gateway and Incus operations) on `feature/elixir-server`. Gateway, runtime, client and `execute` work proceed against it. `search` waits for tama-dex. Preserve completed tasks; new dependency/ownership tasks remain unchecked. Pass canonical consumer checks and installed-package evidence before deployment claims.
+1. Integrate the released `:opsmaru_incus` Hex package (0.1.0 delivers the client, gateway and Incus operations) on `feature/elixir-server`. Gateway, runtime, client, the operations host and the Macus runtime document/executor proceed against it. The `search`/`execute` tool modules and index loading wait for tama-dex and the opsmaru_incus release that ships its profile document and cassette. Preserve completed tasks; new dependency/ownership tasks remain unchecked. Pass canonical consumer checks and installed-package evidence before deployment claims.
 2. Keep existing VM state and Swift internal APIs. Install a complete matching package passively; do not create credentials or activate services during package installation.
 3. Before replacing an existing installed version, stop the runtime explicitly and unload both owned services that exist. Retain disks, logs and gateway credentials. Do not auto-unload foreign or legacy registrations.
 4. On explicit `macus start`, initialize gateway state only if absent, activate both verified jobs and connect through the public server. An existing named `unix:` remote remains a conflict: present an explicit owner-controlled transition or select a different remote name. Do not hand-edit or silently overwrite Incus client configuration.
@@ -255,5 +270,5 @@ Central registration, `macus connect`/`connection status`/`disconnect`, the outb
 
 - The exact first deployment's LAN hostname, operator-supplied certificate and advertised address are configuration inputs, not fixed product requirements.
 - Resolved 2026-11-12: `:opsmaru_incus` 0.1.0 from Hex, locked in `server/mix.lock`. Its coverage still reports `complete_port=false`, so complete-client claims (task 6.12) stay blocked on later library releases.
-- tama-dex ownership: who builds and refreshes the SQLite index (Macus at startup from its catalogue, or tama-dex from a published operation document), where the index file lives, and whether `search` is implemented in Macus over a tama-dex query API or supplied by tama-dex. Whatever the answer, tama-dex adds no endpoint or listener, and search results never bypass `execute` authorization. A possible `Operations.openapi/0` export in a later opsmaru_incus release is not yet decided; do not design against its shape.
+- Resolved 2026-11-12 (user confirmed): Macus loads the index at server start, stores it at `<state-dir>/server/tama-dex.sqlite3` and owns the two tool modules; see section 6. Still open: whether Macus also loads the planned `opsmaru_incus_native` document. Its `incus.native.*` scopes are never implied by the curated scopes. The proposed default is to grant them only when explicitly requested at token issuance.
 - Cross-machine LAN acceptance requires an owner-supplied isolated remote test client. Until that evidence is available, mark that acceptance task incomplete rather than infer it from loopback success.

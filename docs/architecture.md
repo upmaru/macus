@@ -23,7 +23,8 @@ Incus client, native gateway relay mechanics and shared Incus operation
 descriptors. It runs inside the existing Macus BEAM with no application
 callback, listener or process. `/mcp` advertises only `search` and `execute`
 over one catalogue of shared and Macus runtime operations; the separate tama-dex
-index library (not yet published) backs `search`. There is one public endpoint and the same
+library (`Tama.Dex`, not yet released) indexes them into
+`<state-dir>/server/tama-dex.sqlite3` at server start. There is one public endpoint and the same
 two independently supervised Swift/Elixir processes. The
 public gateway defaults to loopback HTTPS; LAN binding and advertised identity
 require explicit configuration. Authenticate before accessing either private
