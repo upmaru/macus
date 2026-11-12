@@ -43,6 +43,11 @@ Macus SHALL keep one tama-dex index holding two cassettes, each a namespace of `
 - **WHEN** Macus loads its runtime document into the `opsmaru_incus` cassette name
 - **THEN** the load fails with a cassette conflict and the imported cassette is unchanged
 
+#### Scenario: Native source without an executor
+
+- **WHEN** the imported `opsmaru_incus` cassette includes its `opsmaru_incus_native` source and Macus registers no native executor
+- **THEN** Macus refuses to issue `incus.native.*` scopes, so no caller can discover or execute a native operation
+
 #### Scenario: Shared cassette upgrade
 
 - **WHEN** a newer bundled `opsmaru_incus` cassette that drops an operation is imported
@@ -56,6 +61,11 @@ Macus SHALL supervise the tama-dex index at `<state-dir>/server/tama-dex.sqlite3
 
 - **WHEN** an `execute` call names the `opsmaru_incus` cassette while its first import is still running
 - **THEN** the tool returns `not_ready` with `dispatched: false`, the committed `macus` cassette keeps serving and the VM's startup and readiness are unaffected
+
+#### Scenario: Bundled cassette fails its pin
+
+- **WHEN** the bundled `opsmaru_incus` cassette does not match the SHA-256 pin recorded in build metadata
+- **THEN** nothing is imported, previous entries stay, that cassette's readiness is reported as failed with repair guidance and the cassette is not rebuilt silently
 
 #### Scenario: Index file deleted
 
