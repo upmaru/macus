@@ -23,8 +23,9 @@ Incus client, native gateway relay mechanics and shared Incus operation
 descriptors. It runs inside the existing Macus BEAM with no application
 callback, listener or process. `/mcp` advertises only `search` and `execute`
 over one catalogue of shared and Macus runtime operations; the separate tama-dex
-library (`Tama.Dex`, not yet released) indexes them into
-`<state-dir>/server/tama-dex.sqlite3` at server start. There is one public endpoint and the same
+library (`Tama.Dex`) will index them into `<state-dir>/server/tama-dex.sqlite3`
+at server start. tama_dex 0.1.0 is on Hex but cannot yet be locked alongside
+tama_mcp (conflicting jsonschex requirements). There is one public endpoint and the same
 two independently supervised Swift/Elixir processes. The
 public gateway defaults to loopback HTTPS; LAN binding and advertised identity
 require explicit configuration. Authenticate before accessing either private
@@ -33,8 +34,8 @@ paths, binary streaming and upgrades remain native, with only the documented
 gateway identity/trust exceptions. Typed-client parity has separate upstream
 inventory evidence; proxy breadth is not client-port evidence.
 
-`server/mix.lock` locks `:opsmaru_incus` 0.1.0 from Hex, which delivers the
-client, gateway and operations. Its coverage still reports
+`server/mix.lock` locks `:opsmaru_incus` 0.2.0 from Hex, which delivers the
+client, gateway, composite/native operations and their release cassette. Its coverage still reports
 `complete_port=false`, so no complete-client claim is made. Durable tasks and
 central connectors are later milestones. No fallback client or duplicate task
 engine is implemented here. Historical Macus reference inputs

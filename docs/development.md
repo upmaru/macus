@@ -58,7 +58,7 @@ mise exec -- mix test
 
 `server/mix.lock` records released dependencies, including Phoenix 1.8.15,
 Plug.Cowboy 2.9.0, Cowboy 2.19.0, Mint 1.11.0, TamaMCP 0.1.1 and
-`opsmaru_incus` 0.1.0. All dependencies are released Hex packages; Hex is the
+`opsmaru_incus` 0.2.0. All dependencies are released Hex packages; Hex is the
 only distribution route for `opsmaru_incus`, so builds never use a Git revision
 or sibling path for it. Macus's own scaffold has no Ecto, HTML,
 assets, LiveView or generated nested AGENTS file. `opsmaru_incus` has no

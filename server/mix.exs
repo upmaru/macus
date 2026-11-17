@@ -50,7 +50,7 @@ defmodule Macus.MixProject do
       # Shared Incus client, native gateway relay and operation descriptors.
       # A pure library: no application callback, listener or process. Hex is
       # its only distribution route; mix.lock records the exact checksum.
-      {:opsmaru_incus, "~> 0.1.0"}
+      {:opsmaru_incus, "~> 0.2.0"}
     ]
   end
 
