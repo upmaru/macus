@@ -13,6 +13,7 @@ defmodule Macus.Application do
         {Phoenix.PubSub, name: Macus.PubSub}
       ] ++
         Macus.Auth.Streams.child_specs() ++
+        Macus.Proxy.child_specs() ++
         dex_children() ++
         [
           # Start to serve requests, typically the last entry

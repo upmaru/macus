@@ -29,6 +29,11 @@ type Input struct {
 	Path        string         `json:"path"`
 	Body        map[string]any `json:"body"`
 	ETag        string         `json:"etag"`
+	// Typed official-client calls for identity and certificate trust fixtures.
+	Action      string `json:"action"`
+	Certificate string `json:"certificate"`
+	Name        string `json:"name"`
+	Fingerprint string `json:"fingerprint"`
 }
 
 func main() {
@@ -49,7 +54,7 @@ func main() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	args := &incus.ConnectionArgs{SkipGetServer: input.Protocol == "", TLSServerCert: input.ServerCert,
+	args := &incus.ConnectionArgs{SkipGetServer: input.Protocol == "" && input.Action == "", TLSServerCert: input.ServerCert,
 		TLSClientCert: input.ClientCert, TLSClientKey: input.ClientKey, TLSCA: input.TLSCA}
 	var client incus.InstanceServer
 	err = nil
@@ -63,6 +68,10 @@ func main() {
 		os.Exit(1)
 	}
 	defer client.Disconnect()
+	if input.Action != "" {
+		typedCall(client, input)
+		return
+	}
 	if input.Protocol != "" {
 		rawConnection(client, input)
 		return
@@ -132,4 +141,52 @@ func rawConnection(client incus.InstanceServer, input Input) {
 		result["echo"] = echo
 	}
 	_ = json.NewEncoder(os.Stdout).Encode(result)
+}
+
+// typedCall exercises the official client's own request and response shapes.
+func typedCall(client incus.InstanceServer, input Input) {
+	result := map[string]any{}
+	var err error
+	switch input.Action {
+	case "server":
+		var server *api.Server
+		server, _, err = client.GetServer()
+		result["server"] = server
+	case "certificates":
+		result["certificates"], err = client.GetCertificates()
+	case "fingerprints":
+		result["fingerprints"], err = client.GetCertificateFingerprints()
+	case "certificate":
+		var certificate *api.Certificate
+		var etag string
+		certificate, etag, err = client.GetCertificate(input.Fingerprint)
+		result["certificate"] = certificate
+		result["etag"] = etag
+	case "create":
+		err = client.CreateCertificate(api.CertificatesPost{CertificatePut: api.CertificatePut{
+			Name: input.Name, Type: api.CertificateTypeClient, Certificate: input.Certificate}})
+	case "rename":
+		var certificate *api.Certificate
+		var etag string
+		certificate, etag, err = client.GetCertificate(input.Fingerprint)
+		if err == nil {
+			put := certificate.Writable()
+			put.Name = input.Name
+			err = client.UpdateCertificate(input.Fingerprint, put, etag)
+		}
+	case "delete":
+		err = client.DeleteCertificate(input.Fingerprint)
+	default:
+		err = fmt.Errorf("unknown fixture action")
+	}
+	if err != nil {
+		result["error"] = err.Error()
+		if status, ok := api.StatusErrorMatch(err); ok {
+			result["error_status"] = status
+		}
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }

@@ -74,6 +74,38 @@ defmodule Macus.TestSupport.TLSIdentity do
     %{certfile: certfile, keyfile: keyfile, cafile: cafile, der: der}
   end
 
+  @doc """
+  A self-signed client or server certificate, as the standard Incus client
+  generates for itself, valid for two days. Expiry tests inject a clock.
+  """
+  def self_signed(root, name, hostname \\ nil) do
+    certfile = Path.join(root, name <> ".pem")
+    keyfile = Path.join(root, name <> ".key")
+
+    san = if hostname, do: ["-addext", "subjectAltName=DNS:#{hostname}"], else: []
+
+    run!(
+      [
+        "req",
+        "-x509",
+        "-newkey",
+        "ec",
+        "-pkeyopt",
+        "ec_paramgen_curve:P-384",
+        "-nodes",
+        "-days",
+        "2",
+        "-subj",
+        "/CN=#{hostname || name}"
+      ] ++ san ++ ["-keyout", keyfile, "-out", certfile]
+    )
+
+    for path <- [certfile, keyfile], do: File.chmod!(path, 0o600)
+    pem = File.read!(certfile)
+    [{:Certificate, der, _}] = :public_key.pem_decode(pem)
+    %{certfile: certfile, keyfile: keyfile, pem: pem, der: der}
+  end
+
   defp run!(args) do
     {output, status} = System.cmd("openssl", args, stderr_to_stdout: true)
     if status != 0, do: raise("fixture certificate generation failed: #{output}")
