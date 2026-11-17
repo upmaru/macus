@@ -10,8 +10,7 @@ defmodule Macus.Runtime.Client do
   and potentially accepted mutations are never retried.
   """
 
-  import Bitwise
-  alias Macus.{Configuration, Runtime.Error, Runtime.Response}
+  alias Macus.{Configuration, PrivatePath, Runtime.Error, Runtime.Response}
 
   @request_limit 1_048_576
   @header_limit 16_384
@@ -237,55 +236,15 @@ defmodule Macus.Runtime.Client do
   end
 
   defp safe_socket(client) do
-    path = system_alias(client.socket)
-    parent = Path.dirname(path)
+    path = PrivatePath.system_alias(client.socket)
 
-    with {:ok, %File.Stat{type: :directory, uid: uid, mode: mode}} <- File.lstat(parent),
-         true <- uid == client.owner_uid and band(mode, 0o777) == 0o700,
-         :ok <- safe_ancestors(parent, client.owner_uid),
-         {:ok, %File.Stat{uid: uid, mode: mode}} <- File.lstat(path),
-         true <-
-           uid == client.owner_uid and band(mode, 0o170000) == 0o140000 and
-             band(mode, 0o777) == 0o600 do
+    with :ok <- PrivatePath.private_dir(Path.dirname(path), client.owner_uid),
+         :ok <- PrivatePath.private_entry(path, client.owner_uid, :socket) do
       :ok
     else
       {:error, :enoent} -> failure(:unavailable, :not_dispatched)
       _ -> failure(:unsafe_socket, :not_dispatched)
     end
-  end
-
-  defp safe_ancestors("/", _uid), do: :ok
-
-  defp safe_ancestors(path, uid) do
-    case File.lstat(path) do
-      {:ok, %File.Stat{type: :directory, uid: owner, mode: mode}} ->
-        sticky_system = owner == 0 and band(mode, 0o1000) != 0
-
-        if owner in [0, uid] and (band(mode, 0o022) == 0 or sticky_system),
-          do: safe_ancestors(Path.dirname(path), uid),
-          else: failure(:unsafe_socket, :not_dispatched)
-
-      _ ->
-        failure(:unsafe_socket, :not_dispatched)
-    end
-  end
-
-  defp system_alias(path) do
-    Enum.reduce([{"/var", "/private/var"}, {"/tmp", "/private/tmp"}], path, fn {alias_path,
-                                                                                destination},
-                                                                               path ->
-      expected_alias =
-        case File.read_link(alias_path) do
-          {:ok, target} -> Path.expand(target, Path.dirname(alias_path)) == destination
-          _ -> false
-        end
-
-      if String.starts_with?(path, alias_path <> "/") and expected_alias do
-        destination <> String.replace_prefix(path, alias_path, "")
-      else
-        path
-      end
-    end)
   end
 
   defp remaining(deadline) do

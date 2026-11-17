@@ -7,19 +7,34 @@ defmodule Macus.Application do
 
   @impl true
   def start(_type, _args) do
-    children = [
-      MacusWeb.Telemetry,
-      {Phoenix.PubSub, name: Macus.PubSub},
-      # Start a worker by calling: Macus.Worker.start_link(arg)
-      # {Macus.Worker, arg},
-      # Start to serve requests, typically the last entry
-      MacusWeb.Endpoint
-    ]
+    children =
+      [
+        MacusWeb.Telemetry,
+        {Phoenix.PubSub, name: Macus.PubSub}
+      ] ++
+        dex_children() ++
+        [
+          # Start to serve requests, typically the last entry
+          MacusWeb.Endpoint
+        ]
 
     # See https://elixir.hexdocs.pm/Supervisor.html
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: Macus.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  # The operation index starts only when explicitly enabled; a default start
+  # stays passive and opens or creates nothing. It is a temporary child, so
+  # an index failure never stops the server.
+  defp dex_children do
+    state =
+      case Macus.Configuration.new(Application.get_env(:macus, :state_dir)) do
+        {:ok, config} -> config
+        {:error, _} -> nil
+      end
+
+    Macus.Dex.children(Application.get_env(:macus, Macus.Dex, []), state)
   end
 
   # Tell Phoenix to update the endpoint configuration
