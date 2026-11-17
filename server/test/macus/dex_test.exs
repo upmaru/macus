@@ -327,16 +327,33 @@ defmodule Macus.DexTest do
       sub = Process.whereis(names.name)
       ref = Process.monitor(sub)
 
-      # Exceed the subtree's restart intensity.
-      for _ <- 1..5 do
-        if pid = Process.whereis(names.index), do: Process.exit(pid, :kill)
-        Process.sleep(20)
-      end
+      # Exceed the subtree's restart intensity (3 restarts in 5 seconds),
+      # killing each restarted index as soon as it is registered.
+      kill_restarts(names.index, ref, sub, nil, 10)
 
       assert_receive {:DOWN, ^ref, :process, ^sub, _reason}, 5_000
       assert Process.alive?(parent)
       assert Agent.get(:"sibling_#{n}", & &1) == :alive
       assert Dex.readiness(names.bootstrap).status == :unavailable
+    end
+  end
+
+  defp kill_restarts(_index, _ref, _sub, _previous, 0), do: :ok
+
+  defp kill_restarts(index, ref, sub, previous, attempts) do
+    receive do
+      {:DOWN, ^ref, :process, ^sub, _reason} = down -> send(self(), down)
+    after
+      0 ->
+        case Process.whereis(index) do
+          pid when is_pid(pid) and pid != previous ->
+            Process.exit(pid, :kill)
+            kill_restarts(index, ref, sub, pid, attempts - 1)
+
+          _ ->
+            Process.sleep(5)
+            kill_restarts(index, ref, sub, previous, attempts)
+        end
     end
   end
 

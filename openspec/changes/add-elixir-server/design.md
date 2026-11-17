@@ -185,6 +185,7 @@ The Macus runtime document follows the profile:
 - A graceful `macus_runtime_stop` is separate from a destructive, confirmed `macus_runtime_force_stop`.
 - Runtime deletion takes a string `confirm` token that the executor maps to the private `{"confirm": true}`.
 - Stopped-state preconditions are described in text and `x-macus-*` metadata, and the private API enforces them with 409.
+- Lifecycle replies are awaited up to 25 seconds, below the 30-second TamaMCP request deadline. A slower start, stop or restart reports `status: "uncertain"` and keeps running, and the caller polls `macus_runtime_progress` or `macus_runtime_status`. Status results omit the private `incus_socket` path.
 
 Release status (2026-11-17): Macus locks opsmaru_incus 0.2.0, tama_dex 0.1.0 and tama_mcp 0.2.1. tama_mcp 0.2.1 moved to jsonschex 0.11.2, the range tama_dex requires; earlier tama_mcp releases could not resolve alongside tama_dex. tama_dex brings exqlite (a SQLite NIF), so the release build must bundle exqlite's macOS ARM64 NIF (see section 7); the installed server never fetches it.
 
@@ -197,7 +198,7 @@ Runtime notes for tama_dex:
 | --- | --- |
 | Runtime status/config/progress/health/capabilities | Macus; `runtime.read`; Swift runtime adapter |
 | Runtime create/start/stop/restart/config replacement | Macus; `runtime.write`; existing lifecycle API |
-| Runtime deletion/forced stop | Macus; explicit destructive inputs and runtime permission |
+| Runtime deletion/forced stop | Macus; `runtime.delete`; explicit `confirm` tokens (`"delete-runtime"`, `"force-stop"`) mapped to the private booleans |
 | Incus inspection | opsmaru-incus; `incus.read`; shared client through configured incus.sock |
 | Instance/state/image/snapshot mutation | opsmaru-incus; `incus.write`; same shared client |
 | Bounded guest exec | opsmaru-incus; `incus.exec`; explicitly selected instance |

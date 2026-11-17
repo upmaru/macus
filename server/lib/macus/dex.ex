@@ -49,7 +49,7 @@ defmodule Macus.Dex do
 
   The index path is derived from the selected state directory. `:owner_uid`,
   `:imports` and `:documents` come from the environment; see
-  `Macus.Dex.Config`.
+  `Macus.Dex.Config`. `:documents` defaults to `runtime_document/0`.
   """
   @spec children(keyword(), Macus.Configuration.t() | nil) :: [Supervisor.child_spec()]
   def children(env, state) do
@@ -60,6 +60,7 @@ defmodule Macus.Dex do
             env
             |> Keyword.drop([:enabled])
             |> Keyword.put(:index_path, Config.index_path(state))
+            |> Keyword.put_new(:documents, [runtime_document()])
             |> Config.new()
 
           nil ->
@@ -71,6 +72,11 @@ defmodule Macus.Dex do
       []
     end
   end
+
+  @doc "The local `macus` cassette: the Macus runtime operations document."
+  @spec runtime_document() :: Config.document_spec()
+  def runtime_document,
+    do: %{cassette: "macus", document: {Macus.Dex.RuntimeDocument, :document, []}}
 
   @doc "The registered index, for `Tama.Dex` calls."
   @spec index() :: atom()

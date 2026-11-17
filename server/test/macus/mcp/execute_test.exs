@@ -88,8 +88,11 @@ defmodule Macus.MCP.ExecuteTest do
       end
     end
 
-    test "registers only the shared Incus executor" do
-      assert MCP.executors() == %{"opsmaru_incus" => Macus.Dex.IncusExecutor}
+    test "registers the shared Incus and Macus runtime executors, and no native one" do
+      assert MCP.executors() == %{
+               "opsmaru_incus" => Macus.Dex.IncusExecutor,
+               "macus" => Macus.Dex.RuntimeExecutor
+             }
     end
   end
 
@@ -271,8 +274,11 @@ defmodule Macus.MCP.ExecuteTest do
       assert HTTPFixture.requests(ctx.fixture) == []
     end
 
-    test "Macus runtime operations wait for their executor" do
-      assert %{"error" => %{"kind" => "no_executor", "dispatched" => false}} =
+    test "the runtime executor refuses an operation the runtime document does not define" do
+      assert %{
+               "operation_error" => %{"error" => %{"code" => "unknown_operation"}},
+               "dispatched" => true
+             } =
                execute(
                  %{
                    "cassette" => "macus",

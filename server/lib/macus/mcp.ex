@@ -17,13 +17,13 @@ defmodule Macus.MCP do
   @native_prefix "incus.native."
 
   @doc """
-  Executors by operation source. `opsmaru_incus` runs through
-  `Macus.Dex.IncusExecutor`. `macus` gains `Macus.Dex.RuntimeExecutor` with
-  task 7.2; until then its operations return `no_executor`. No executor is
-  registered for `opsmaru_incus_native`.
+  Executors by operation source: `opsmaru_incus` runs through
+  `Macus.Dex.IncusExecutor` and `macus` through `Macus.Dex.RuntimeExecutor`.
+  No executor is registered for `opsmaru_incus_native`.
   """
   @spec executors() :: %{String.t() => module() | {module(), keyword()}}
-  def executors, do: %{"opsmaru_incus" => Macus.Dex.IncusExecutor}
+  def executors,
+    do: %{"opsmaru_incus" => Macus.Dex.IncusExecutor, "macus" => Macus.Dex.RuntimeExecutor}
 
   @doc "The caller as tama-dex and the executors see it: without `incus.native.*` scopes."
   @spec caller(TamaMCP.Context.t()) :: TamaMCP.Context.t()
