@@ -24,8 +24,8 @@ descriptors. It runs inside the existing Macus BEAM with no application
 callback, listener or process. `/mcp` advertises only `search` and `execute`
 over one catalogue of shared and Macus runtime operations; the separate tama-dex
 library (`Tama.Dex`) will index them into `<state-dir>/server/tama-dex.sqlite3`
-at server start. tama_dex 0.1.0 is on Hex but cannot yet be locked alongside
-tama_mcp (conflicting jsonschex requirements). There is one public endpoint and the same
+at server start; `server/mix.lock` locks tama_dex 0.1.0 with tama_mcp 0.2.1.
+There is one public endpoint and the same
 two independently supervised Swift/Elixir processes. The
 public gateway defaults to loopback HTTPS; LAN binding and advertised identity
 require explicit configuration. Authenticate before accessing either private

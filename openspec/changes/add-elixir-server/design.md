@@ -58,7 +58,7 @@ opsmaru_incus dependency (Hex)
   Opsmaru.Incus.Operations  shared operation descriptors and synchronous run/3
                             (0.2.0: .Composite and .Native; .Host unchanged)
 
-tama-dex (Tama.Dex, tama_dex 0.1.0 on Hex; not yet a Macus dependency, see section 6)
+tama-dex (Tama.Dex, tama_dex 0.1.0 from Hex)
   one SQLite index; cassette namespaces opsmaru_incus (imported) and macus (local)
   tool definitions and search/execute handlers; started under the Macus supervisor
 ```
@@ -186,9 +186,9 @@ The Macus runtime document follows the profile:
 - Runtime deletion takes a string `confirm` token that the executor maps to the private `{"confirm": true}`.
 - Stopped-state preconditions are described in text and `x-macus-*` metadata, and the private API enforces them with 409.
 
-Release status (2026-11-17): opsmaru_incus 0.2.0 and tama_dex 0.1.0 are both on Hex, and Macus locks opsmaru_incus 0.2.0. Adding tama_dex is blocked: tama_dex 0.1.0 requires `jsonschex ~> 0.11.2`, but every published tama_mcp (0.1.1–0.2.0) requires `jsonschex ~> 0.10.0`, so Hex cannot resolve them together (verified 2026-11-17). Resolving it needs a tama_mcp release accepting jsonschex 0.11, or a tama_dex release accepting 0.10. Macus does not override jsonschex. The Macus profile document, `Operations.Host` and the runtime adapter can be built and fixture-tested meanwhile.
+Release status (2026-11-17): Macus locks opsmaru_incus 0.2.0, tama_dex 0.1.0 and tama_mcp 0.2.1. tama_mcp 0.2.1 moved to jsonschex 0.11.2, the range tama_dex requires; earlier tama_mcp releases could not resolve alongside tama_dex. tama_dex brings exqlite (a SQLite NIF), so the release build must bundle exqlite's macOS ARM64 NIF (see section 7); the installed server never fetches it.
 
-Runtime notes for when tama_dex is added:
+Runtime notes for tama_dex:
 - `Tama.Dex.import(..., async: true)` returns `{:ok, ref}` after its precheck. It then sends `{:tama_dex_import, ref, result}` to the calling process, so a long-lived Macus bootstrap GenServer issues it and turns `result` into gateway readiness.
 - `handle_execute/4` returns either a tama-dex error (`%{"error" => %{"kind", "dispatched", "message"}}`) or an executor's own valid error (`%{"cassette", "operation_id", "source", "operation_error", "dispatched" => true}`). Both are sent as TamaMCP tool errors, and an `operation_error` may have taken effect.
 - `TamaMCP.Tool` takes literal schemas, so the two tool modules use a small `__using__` macro injecting `Tama.Dex.MCP.search_tool/0`/`execute_tool/0`, with a shared `respond/1`, as in the `Tama.Dex.MCP` moduledoc.
@@ -222,7 +222,7 @@ Install one matched package at distinct paths:
   lib/, releases/, erts-*/
 ```
 
-Both carry matched immutable Macus source revision/package version metadata. The server release also records its distinct pinned `:opsmaru_incus` dependency revision/version and backend-reference provenance; it does not compare two different repositories' commits for equality. Include the library in the existing Macus release. Build the release with bundled ERTS for the supported macOS ARM64 baseline and test that no installed Elixir/Erlang or sibling opsmaru-incus checkout is needed. Source builds document Swift plus pinned Elixir/OTP build prerequisites. The Homebrew bottle includes the complete release; startup does not fetch a separately versioned server payload. The release build obtains the tama-dex cassette in step with the locked library:
+Both carry matched immutable Macus source revision/package version metadata. The server release also records its distinct pinned `:opsmaru_incus` dependency revision/version and backend-reference provenance, and bundles the exqlite NIF that `tama_dex` uses, built or verified for macOS ARM64 during the release build; it does not compare two different repositories' commits for equality. Include the library in the existing Macus release. Build the release with bundled ERTS for the supported macOS ARM64 baseline and test that no installed Elixir/Erlang or sibling opsmaru-incus checkout is needed. Source builds document Swift plus pinned Elixir/OTP build prerequisites. The Homebrew bottle includes the complete release; startup does not fetch a separately versioned server payload. The release build obtains the tama-dex cassette in step with the locked library:
 1. Read the locked `opsmaru_incus` version from `server/mix.lock`.
 2. Download `opsmaru_incus-<version>.tama-cassette` and its `.sha256` from that upmaru/opsmaru-incus GitHub Release.
 3. Verify the hash and the provenance attestation (`gh attestation verify --repo upmaru/opsmaru-incus`).
@@ -273,7 +273,7 @@ Central registration, `macus connect`/`connection status`/`disconnect`, the outb
 
 ## Migration Plan
 
-1. Integrate the released `:opsmaru_incus` Hex package (0.2.0 delivers the client, gateway, Composite/Native operations and the release cassette) on `feature/elixir-server`. Gateway, runtime, client, the operations host and the Macus runtime document/executor proceed against it. The `search`/`execute` tool modules and index loading wait until tama_dex can be added (the jsonschex conflict in section 6). Preserve completed tasks; new dependency/ownership tasks remain unchecked. Pass canonical consumer checks and installed-package evidence before deployment claims.
+1. Integrate the released `:opsmaru_incus` Hex package (0.2.0 delivers the client, gateway, Composite/Native operations and the release cassette) on `feature/elixir-server`. Gateway, runtime, client, the operations host and the Macus runtime document/executor proceed against it. tama_dex 0.1.0 and tama_mcp 0.2.1 are locked too, so the `search`/`execute` tool modules and index loading proceed as well. Preserve completed tasks; new dependency/ownership tasks remain unchecked. Pass canonical consumer checks and installed-package evidence before deployment claims.
 2. Keep existing VM state and Swift internal APIs. Install a complete matching package passively; do not create credentials or activate services during package installation.
 3. Before replacing an existing installed version, stop the runtime explicitly and unload both owned services that exist. Retain disks, logs and gateway credentials. Do not auto-unload foreign or legacy registrations.
 4. On explicit `macus start`, initialize gateway state only if absent, activate both verified jobs and connect through the public server. An existing named `unix:` remote remains a conflict: present an explicit owner-controlled transition or select a different remote name. Do not hand-edit or silently overwrite Incus client configuration.
