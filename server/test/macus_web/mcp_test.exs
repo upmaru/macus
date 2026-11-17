@@ -4,7 +4,7 @@ defmodule MacusWeb.MCPTest do
   use ExUnit.Case, async: false
 
   alias Macus.MCP.IncusHost
-  alias Macus.TestSupport.DexFixtures
+  alias Macus.TestSupport.{AuthFixtures, DexFixtures}
   alias Opsmaru.Incus.Operations.Composite
   alias TamaMCP.Conformance
 
@@ -245,18 +245,25 @@ defmodule MacusWeb.MCPTest do
       end
     end
 
-    test "nothing is accepted until a verifier is configured" do
+    test "without a configured verifier, nothing is accepted before the token store exists" do
       Application.delete_env(:macus, Macus.MCP.Authorization)
+      root = DexFixtures.private_root!()
+      on_exit(fn -> File.rm_rf!(root) end)
+      {state, uid} = AuthFixtures.state!(root)
+      AuthFixtures.configure!(state, uid)
+      {token, _record} = AuthFixtures.token!(["incus.read"])
 
-      conn =
-        send_conn(
-          :post,
-          "/mcp",
-          list_tools_body(),
-          mcp_headers("tools/list") ++ authorization("good-token")
-        )
+      for credential <- ["good-token", token] do
+        conn =
+          send_conn(
+            :post,
+            "/mcp",
+            list_tools_body(),
+            mcp_headers("tools/list") ++ authorization(credential)
+          )
 
-      assert conn.status == 401
+        assert conn.status == 401
+      end
     end
 
     test "the token is case-insensitively a Bearer credential" do
@@ -271,6 +278,111 @@ defmodule MacusWeb.MCPTest do
       assert conn.status == 200
     end
   end
+
+  describe "the Macus token store" do
+    setup do
+      Application.delete_env(:macus, Macus.MCP.Authorization)
+      root = DexFixtures.private_root!()
+      on_exit(fn -> File.rm_rf!(root) end)
+      {state, uid} = AuthFixtures.state!(root)
+      AuthFixtures.configure!(state, uid)
+
+      previous = Application.fetch_env(:macus, IncusHost)
+      on_exit(fn -> restore(IncusHost, previous) end)
+
+      # Readiness is checked only once a call is bound to the backend; this
+      # one reports each check and keeps the backend unreachable.
+      Application.put_env(:macus, IncusHost,
+        owner_uid: uid,
+        owner_key: Macus.Auth.owner_key(uid),
+        ready: {__MODULE__, :backend_reached, [self()]}
+      )
+
+      %{state: state}
+    end
+
+    test "is the default verifier for /mcp", %{state: state} do
+      {token, record} = AuthFixtures.token!(["incus.read"], principal: "laptop")
+      AuthFixtures.store!(state, [record])
+
+      %{status: 200, body: body} = rpc("tools/list", %{}, token: token)
+      assert Enum.map(body["result"]["tools"], & &1["name"]) == ["execute", "search"]
+
+      %{status: 200, body: body} =
+        call_tool("search", %{"query" => "instance", "limit" => 5}, token)
+
+      assert Enum.all?(
+               body["result"]["structuredContent"]["results"],
+               &(&1["scopes"] == ["incus.read"])
+             )
+    end
+
+    test "a store-verified owner is bound to the Incus host", %{state: state} do
+      {token, record} = AuthFixtures.token!(["incus.read"])
+      AuthFixtures.store!(state, [record])
+
+      %{status: 200, body: body} = call_tool("execute", server_get(), token)
+
+      assert %{"operation_error" => %{"error" => %{"kind" => "host_not_ready"}}} =
+               body["result"]["structuredContent"]
+
+      assert_received :backend_reached
+    end
+
+    test "refused credentials and missing scopes never reach the backend", %{state: state} do
+      {valid, valid_record} = AuthFixtures.token!(["incus.read"])
+      {revoked, revoked_record} = AuthFixtures.token!(["incus.read"])
+      {expired, expired_record} = AuthFixtures.token!(["incus.read"])
+      {native, native_record} = AuthFixtures.token!(["incus.read"])
+      {runtime_only, runtime_record} = AuthFixtures.token!(["runtime.read"])
+      {unknown, _} = AuthFixtures.token!(["incus.read"])
+      {:ok, id, _} = Macus.Auth.Token.parse(valid)
+      {:ok, _, other_secret} = Macus.Auth.Token.parse(unknown)
+
+      AuthFixtures.store!(state, [
+        valid_record,
+        %{revoked_record | "revoked_at" => "2026-01-01T00:00:00Z"},
+        %{expired_record | "expires_at" => "2020-01-01T00:00:00Z"},
+        %{native_record | "scopes" => ["incus.read", "incus.native.read"]},
+        runtime_record
+      ])
+
+      for credential <- [revoked, expired, native, unknown, "macus.#{id}.#{other_secret}"] do
+        conn =
+          send_conn(
+            :post,
+            "/mcp",
+            Jason.encode!(%{
+              "jsonrpc" => "2.0",
+              "id" => "call-1",
+              "method" => "tools/call",
+              "params" => with_meta(%{"name" => "execute", "arguments" => server_get()})
+            }),
+            mcp_headers("tools/call", "execute") ++ authorization(credential)
+          )
+
+        assert conn.status == 401, credential
+
+        assert Plug.Conn.get_resp_header(conn, "www-authenticate") == [
+                 ~s(Bearer error="invalid_token")
+               ]
+      end
+
+      # Verified, but without incus.read.
+      %{status: 200, body: body} = call_tool("execute", server_get(), runtime_only)
+      assert body["result"]["isError"] == true
+
+      refute_received :backend_reached
+    end
+  end
+
+  def backend_reached(pid) do
+    send(pid, :backend_reached)
+    false
+  end
+
+  defp server_get,
+    do: %{"cassette" => "opsmaru_incus", "operation_id" => "incus_server_get", "input" => %{}}
 
   # Wire helpers
 
