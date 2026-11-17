@@ -34,6 +34,18 @@ defmodule Macus.MCP do
   def caller(%TamaMCP.Context{} = context), do: %{context | scopes: []}
 
   @doc """
+  Handles a `search` call for a verified TamaMCP context. Returns the
+  tama-dex response map; `not_ready` when the operation index is not
+  running.
+  """
+  @spec search(map(), TamaMCP.Context.t(), GenServer.server()) :: map()
+  def search(arguments, %TamaMCP.Context{} = context, index \\ Macus.Dex.index()) do
+    Tama.Dex.MCP.handle_search(index, arguments, caller(context))
+  catch
+    :exit, _reason -> unavailable()
+  end
+
+  @doc """
   Handles an `execute` call for a verified TamaMCP context. Returns the
   tama-dex response map; `not_ready` with `"dispatched" => false` when the
   operation index is not running.
