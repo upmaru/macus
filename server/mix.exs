@@ -45,7 +45,7 @@ defmodule Macus.MixProject do
       {:jason, "~> 1.4"},
       {:mint, "1.11.0"},
       {:plug_cowboy, "2.9.0"},
-      {:cowboy, "2.19.0"},
+      {:cowboy, "2.21.0"},
       {:tama_mcp, "0.2.1"},
       # Shared Incus client, native gateway relay and operation descriptors.
       # A pure library: no application callback, listener or process. Hex is

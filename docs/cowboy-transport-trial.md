@@ -2,7 +2,7 @@
 
 The `add-elixir-server` change uses Phoenix's Cowboy2 adapter after a fixture
 trial of Cowboy's documented native protocol-switch mechanism. The locked
-dependencies are Phoenix 1.8.15, Plug.Cowboy 2.9.0, Cowboy 2.19.0, Cowlib 2.21.0
+dependencies are Phoenix 1.8.15, Plug.Cowboy 2.9.0, Cowboy 2.21.0, Cowlib 2.22.0
 and Ranch 2.3.0. The official Incus client remains unmodified at v7.0.1,
 commit `13f3992766142d5087fff2e362cd2e1a75294fe8`; reference fixtures verify
 its source hashes independently.
@@ -47,4 +47,4 @@ explicitly and tests that a malicious upgrade header produces HTTP 500 without
 injecting headers or starting the tunnel. Native protocol names are fixed
 allowlisted values. Preserve this guard in production listener configuration;
 do not disable it or pass unchecked input into structured-field encoders.
-This does not claim that Cowlib itself has a fixed release.
+Cowlib 2.22.0 clears the Hex advisory; keep the guard as defence in depth.
