@@ -289,12 +289,8 @@ defmodule Macus.Proxy.OfficialClientTrustTest do
   end
 
   # The pinned official client sends `"type": ""` (and the other zero-valued
-  # CertificatePut fields) beside `trust_token`. Native Incus ignores every
-  # field but the token when redeeming it; the shared gateway's claims check
-  # in opsmaru_incus 0.2.0 refuses the empty type with 400 before the host
-  # callback. Verified passing with that check accepting "" for token
-  # requests; enable with the opsmaru_incus release that does.
-  @tag skip: "needs opsmaru_incus to accept the official client's empty type with trust_token"
+  # CertificatePut fields) beside `trust_token`, as native Incus accepts;
+  # opsmaru_incus 0.2.1 lets that request reach the host callback.
   test "the official client enrolls once with a token, as incus remote add does", context do
     issued =
       EnrollmentFixtures.issue!(context.store, "laptop", context.server.der, @addresses)
@@ -327,13 +323,6 @@ defmodule Macus.Proxy.OfficialClientTrustTest do
     refute_received {:backend, _, _}
   end
 
-  # The pinned official client sends `"type": ""` (and the other zero-valued
-  # CertificatePut fields) beside `trust_token`. Native Incus ignores every
-  # field but the token when redeeming it; the shared gateway's claims check
-  # in opsmaru_incus 0.2.0 refuses the empty type with 400 before the host
-  # callback. Verified passing with that check accepting "" for token
-  # requests; enable with the opsmaru_incus release that does.
-  @tag skip: "needs opsmaru_incus to accept the official client's empty type with trust_token"
   test "the official client is refused an expired token", context do
     issued =
       EnrollmentFixtures.issue!(context.store, "phone", context.server.der, @addresses,
