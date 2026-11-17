@@ -15,3 +15,6 @@ config :phoenix, :plug_init_mode, :runtime
 # Sort query params output of verified routes for robust url comparisons
 config :phoenix,
   sort_verified_routes_query_params: true
+
+# Streams of revoked credentials close only when a test checks.
+config :macus, Macus.Auth.Streams, interval_ms: :manual

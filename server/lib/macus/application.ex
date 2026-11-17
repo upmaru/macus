@@ -12,6 +12,7 @@ defmodule Macus.Application do
         MacusWeb.Telemetry,
         {Phoenix.PubSub, name: Macus.PubSub}
       ] ++
+        Macus.Auth.Streams.child_specs() ++
         dex_children() ++
         [
           # Start to serve requests, typically the last entry

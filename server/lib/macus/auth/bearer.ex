@@ -38,8 +38,10 @@ defmodule Macus.Auth.Bearer do
 
   @doc """
   Verifies `token`. Returns `{:ok, %{principal, owner_key, scopes,
-  expires_at, claims}}` or `{:error, :invalid_token}`; the reason never says
-  which check failed.
+  expires_at, claims, credential}}` or `{:error, :invalid_token}`; the
+  reason never says which check failed. `credential` is the
+  `Macus.Auth.Streams` key that keeps the request's streams tied to this
+  record.
   """
   @spec verify(term()) :: {:ok, map()} | {:error, :invalid_token}
   def verify(token) do
@@ -55,7 +57,8 @@ defmodule Macus.Auth.Bearer do
          owner_key: Auth.owner_key(uid),
          scopes: record["scopes"],
          expires_at: expires_at,
-         claims: %{"token_id" => id}
+         claims: %{"token_id" => id},
+         credential: {:bearer, id, record["verifier"], record["scopes"]}
        }}
     else
       _ -> {:error, :invalid_token}
@@ -95,6 +98,10 @@ defmodule Macus.Auth.Bearer do
       else: :error
   end
 
+  @doc "Whether a stored record is unrevoked and unexpired at `now`."
+  @spec current?(map(), DateTime.t()) :: boolean()
+  def current?(record, now), do: match?({:ok, _}, current(record, now))
+
   defp current(%{"revoked_at" => nil, "expires_at" => nil}, _now), do: {:ok, nil}
 
   defp current(%{"revoked_at" => nil, "expires_at" => expires}, now) do
@@ -126,7 +133,8 @@ defmodule Macus.Auth.Bearer do
 
   defp timestamp?(_value), do: false
 
-  defp config do
+  @doc false
+  def config do
     with {:ok, state} <- Configuration.new(Application.get_env(:macus, :state_dir)),
          uid when is_integer(uid) and uid >= 0 <-
            Keyword.get(Application.get_env(:macus, Auth, []), :owner_uid) do

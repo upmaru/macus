@@ -16,6 +16,12 @@ defmodule Macus.MCP.Authorization do
   credential, or a result without a principal, owner key or valid scopes is
   refused before any tool runs. The token and verifier reason are never
   logged or echoed.
+
+  When the verifier names the credential (`credential:`, as
+  `Macus.Auth.Bearer` does), the request process registers with
+  `Macus.Auth.Streams` before the request proceeds, so revocation or expiry
+  closes it within the documented bound; a request that cannot be tracked
+  is refused. `MacusWeb.MCP` ends the registration when the request ends.
   """
 
   use TamaMCP.Authorization
@@ -31,7 +37,8 @@ defmodule Macus.MCP.Authorization do
   def authenticate(conn, _options) do
     with {:ok, token} <- bearer(conn),
          {:ok, verified} <- verify(token),
-         {:ok, decision} <- decision(verified) do
+         {:ok, decision} <- decision(verified),
+         :ok <- track(verified) do
       {:ok, decision}
     else
       _ -> {:error, TamaMCP.Error.invalid_request("A valid Macus bearer credential is required")}
@@ -92,6 +99,11 @@ defmodule Macus.MCP.Authorization do
   end
 
   defp decision(_verified), do: :error
+
+  defp track(%{credential: credential} = verified),
+    do: Macus.Auth.Streams.register(credential, Map.get(verified, :expires_at))
+
+  defp track(_verified), do: :ok
 
   defp expired?(nil), do: false
   defp expired?(%DateTime{} = at), do: DateTime.compare(at, DateTime.utc_now()) != :gt

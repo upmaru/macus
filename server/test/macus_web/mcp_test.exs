@@ -374,6 +374,69 @@ defmodule MacusWeb.MCPTest do
 
       refute_received :backend_reached
     end
+
+    test "revocation closes an in-flight request and its tool call", %{state: state} do
+      {token, record} = AuthFixtures.token!(["incus.read"])
+      {other, other_record} = AuthFixtures.token!(["incus.read"])
+      AuthFixtures.store!(state, [record, other_record])
+      test = self()
+
+      Application.put_env(
+        :macus,
+        IncusHost,
+        Keyword.put(Application.get_env(:macus, IncusHost), :ready, {__MODULE__, :block, [test]})
+      )
+
+      # The request blocks in the backend readiness check, inside the tool call.
+      request = fn credential ->
+        spawn_monitor(fn -> call_tool("execute", server_get(), credential) end)
+      end
+
+      {revoked_request, _} = request.(token)
+      assert_receive {:blocked, revoked_worker}, 2_000
+      {kept_request, _} = request.(other)
+      assert_receive {:blocked, kept_worker}, 2_000
+      worker_monitor = Process.monitor(revoked_worker)
+
+      # Nothing is closed while both credentials are valid.
+      assert Macus.Auth.Streams.Watcher.check() == []
+
+      AuthFixtures.store!(state, [
+        %{record | "revoked_at" => "2026-01-01T00:00:00Z"},
+        other_record
+      ])
+
+      assert Macus.Auth.Streams.Watcher.check() == [revoked_request]
+      assert_receive {:DOWN, _, :process, ^revoked_request, {:shutdown, :credential_revoked}}
+      assert_receive {:DOWN, ^worker_monitor, :process, ^revoked_worker, _}, 1_000
+      assert Process.alive?(kept_request) and Process.alive?(kept_worker)
+
+      # The next request with the revoked token is refused.
+      conn =
+        send_conn(
+          :post,
+          "/mcp",
+          list_tools_body(),
+          mcp_headers("tools/list") ++ authorization(token)
+        )
+
+      assert conn.status == 401
+
+      Process.exit(kept_request, :kill)
+    end
+
+    test "a finished request leaves no registration", %{state: state} do
+      {token, record} = AuthFixtures.token!(["incus.read"])
+      AuthFixtures.store!(state, [record])
+
+      %{status: 200} = rpc("tools/list", %{}, token: token)
+      refute Enum.any?(Macus.Auth.Streams.entries(), fn {pid, _} -> pid == self() end)
+    end
+  end
+
+  def block(test) do
+    send(test, {:blocked, self()})
+    Process.sleep(:infinity)
   end
 
   def backend_reached(pid) do

@@ -8,6 +8,10 @@ defmodule MacusWeb.MCP do
   serves `Macus.MCP.Server`. No task store, runner or notification adapter
   is configured, so no task or subscription capability is advertised.
 
+  An authenticated request is registered with `Macus.Auth.Streams` for its
+  duration, so revoking or expiring its credential terminates it (and the
+  tool call it is running) within the documented bound.
+
   The transport runtime is built and validated once, on first use, rather
   than at router compile time.
   """
@@ -29,7 +33,12 @@ defmodule MacusWeb.MCP do
   def init(opts), do: opts
 
   @impl true
-  def call(%Plug.Conn{path_info: []} = conn, _opts), do: Transport.call(conn, runtime())
+  def call(%Plug.Conn{path_info: []} = conn, _opts) do
+    Transport.call(conn, runtime())
+  after
+    # The request is over: its credential no longer has a stream here.
+    Macus.Auth.Streams.unregister()
+  end
 
   def call(conn, _opts) do
     conn
