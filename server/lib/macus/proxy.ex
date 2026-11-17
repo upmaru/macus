@@ -23,9 +23,12 @@ defmodule Macus.Proxy do
         ],
         max_exchanges: 64
 
-  plus `config :macus, :state_dir`. The identity comes from the private
-  gateway endpoint metadata (task 3.1); `api_extensions` are the verified
-  backend's, which the shared gateway further limits to what it implements.
+  plus `config :macus, :state_dir`. When serving, the running gateway's
+  (`Macus.Gateway`) state directory is used, and `owner_uid`, `owner_key`
+  and `identity` default to the running gateway's: its
+  advertised URL and address and its certificate, with `api_extensions`
+  (the verified backend's, which the shared gateway further limits to what
+  it implements) taken from this configuration.
   Without valid configuration `gateway/0` returns `:error` and every native
   request is refused with 503 before backend access.
   """
@@ -51,10 +54,14 @@ defmodule Macus.Proxy do
   def gateway do
     env = Application.get_env(:macus, __MODULE__, [])
 
-    with {:ok, state} <- Configuration.new(Application.get_env(:macus, :state_dir)),
-         uid when is_integer(uid) and uid >= 0 <- Keyword.get(env, :owner_uid),
-         key when is_binary(key) <- Keyword.get(env, :owner_key),
-         identity when is_list(identity) <- Keyword.get(env, :identity) do
+    serving = Macus.Gateway.current()
+
+    with {:ok, state} <- state(serving),
+         uid when is_integer(uid) and uid >= 0 <-
+           Keyword.get(env, :owner_uid, serving && serving.uid),
+         key when is_binary(key) <-
+           Keyword.get_lazy(env, :owner_key, fn -> uid && Macus.Auth.owner_key(uid) end),
+         identity when is_list(identity) <- Keyword.get_lazy(env, :identity, &serving_identity/0) do
       connection =
         Connection.unix!(Path.join(state.state_dir, "incus.sock"), owner: {:macus, key})
 
@@ -74,5 +81,24 @@ defmodule Macus.Proxy do
     end
   rescue
     _ -> :error
+  end
+
+  # The running gateway's own state directory is authoritative.
+  defp state(%Macus.Gateway{state: state}), do: {:ok, state}
+  defp state(nil), do: Configuration.new(Application.get_env(:macus, :state_dir))
+
+  # The running gateway's public identity with the configured verified
+  # backend extensions.
+  defp serving_identity do
+    case Macus.Gateway.identity() do
+      nil ->
+        nil
+
+      identity ->
+        extensions =
+          Keyword.get(Application.get_env(:macus, __MODULE__, []), :api_extensions, [])
+
+        identity ++ [api_extensions: extensions]
+    end
   end
 end

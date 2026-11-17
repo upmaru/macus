@@ -86,8 +86,7 @@ defmodule Macus.Proxy.Host do
   def identity(_request, %{identity: identity, connection: connection}) do
     with {:ok, origin} <- Keyword.fetch(identity, :origin),
          {:ok, addresses} <- Keyword.fetch(identity, :addresses),
-         {:ok, file} <- Keyword.fetch(identity, :certificate_file),
-         {:ok, certificate} <- public_certificate(file),
+         {:ok, certificate} <- identity_certificate(identity),
          extensions when is_list(extensions) <- Keyword.get(identity, :api_extensions, []) do
       {:ok,
        %{
@@ -99,6 +98,19 @@ defmodule Macus.Proxy.Host do
        }}
     else
       _ -> {:error, :identity_unavailable}
+    end
+  end
+
+  # The running gateway supplies its checked leaf certificate; otherwise it
+  # is read from the configured file.
+  defp identity_certificate(identity) do
+    case Keyword.fetch(identity, :certificate) do
+      {:ok, pem} when is_binary(pem) ->
+        with {:ok, der} <- Trust.der(pem), do: {:ok, Trust.pem(der)}
+
+      _ ->
+        with {:ok, file} <- Keyword.fetch(identity, :certificate_file),
+             do: public_certificate(file)
     end
   end
 

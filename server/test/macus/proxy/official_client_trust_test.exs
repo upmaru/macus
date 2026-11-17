@@ -192,13 +192,18 @@ defmodule Macus.Proxy.OfficialClientTrustTest do
           })
       end
 
+    {output, status} = drive(context, input)
+    assert status == 0, output
+    Jason.decode!(output)
+  end
+
+  defp drive(context, input) do
     path = Path.join(context.root, "client-#{System.unique_integer([:positive])}.json")
     File.write!(path, Jason.encode!(input))
     File.chmod!(path, 0o600)
-    {output, status} = System.cmd(@driver, [path], stderr_to_stdout: true)
+    result = System.cmd(@driver, [path], stderr_to_stdout: true)
     File.rm!(path)
-    assert status == 0, output
-    Jason.decode!(output)
+    result
   end
 
   defp supported, do: Enum.filter(@extensions, &(&1 in Identity.supported_extensions()))
@@ -341,5 +346,109 @@ defmodule Macus.Proxy.OfficialClientTrustTest do
     assert expired["error_status"] == 403, inspect(expired)
     assert {:ok, [_admin]} = Trust.entries(context.store)
     refute_received {:backend, _, _}
+  end
+
+  describe "the production gateway listener" do
+    # Macus.Gateway's own TLS listener with its generated self-signed
+    # identity, instead of the fixture listener above.
+    setup context do
+      revision = String.duplicate("ab12", 10)
+      build = Application.fetch_env(:macus, Macus.Build)
+      Application.put_env(:macus, Macus.Build, revision: revision)
+
+      on_exit(fn ->
+        case build do
+          {:ok, value} -> Application.put_env(:macus, Macus.Build, value)
+          :error -> Application.delete_env(:macus, Macus.Build)
+        end
+      end)
+
+      {:ok, socket} = :gen_tcp.listen(0, ip: {127, 0, 0, 1})
+      {:ok, port} = :inet.port(socket)
+      :gen_tcp.close(socket)
+
+      path = Path.join(Macus.Configuration.gateway_dir(context.store.state), "gateway.json")
+      File.write!(path, Jason.encode!(%{"schema_version" => 1, "port" => port}))
+      File.chmod!(path, 0o600)
+
+      {:ok, gateway} =
+        Macus.Gateway.prepare(
+          state: context.store.state,
+          uid: context.store.uid,
+          expected_revision: revision,
+          now: DateTime.utc_now()
+        )
+
+      start_supervised!(Macus.Gateway.listener(gateway))
+      start_supervised!({Macus.Gateway.Publisher, gateway})
+
+      # opsmaru_incus 0.2.1 answers native routes only for a public origin,
+      # so the advertised identity here is public while the listener and
+      # its certificate are the production ones.
+      Application.put_env(
+        :macus,
+        Macus.Proxy,
+        Keyword.put(Application.get_env(:macus, Macus.Proxy), :identity,
+          origin: @origin,
+          addresses: @addresses,
+          certificate: gateway.certificate.pem,
+          api_extensions: @extensions
+        )
+      )
+
+      %{
+        gateway: gateway,
+        pinned: %{
+          "url" => "https://127.0.0.1:#{port}",
+          "server_cert" => gateway.certificate.pem,
+          "tls_ca" => ""
+        }
+      }
+    end
+
+    test "the official client pins the generated identity and is authenticated by trust",
+         context do
+      %{"server" => anonymous} = client(context, nil, "server", context.pinned)
+      assert anonymous["auth"] == "untrusted"
+      refute_received {:backend, _, _}
+
+      %{"server" => server} = client(context, context.admin, "server", context.pinned)
+      assert server["auth"] == "trusted"
+      assert server["environment"]["certificate"] == context.gateway.certificate.pem
+      assert server["environment"]["addresses"] == @addresses
+      assert_received {:backend, "GET", "/1.0"}
+
+      # The served certificate is the generated one, not the fixture's.
+      wrong =
+        Map.merge(context.pinned, %{
+          "server_cert" => File.read!(context.server.certfile),
+          "action" => "server"
+        })
+
+      assert {output, status} = drive(context, wrong)
+      assert status != 0
+      assert output =~ "failed to verify certificate"
+    end
+
+    test "the official client enrolls with a token through the production listener",
+         context do
+      issued =
+        EnrollmentFixtures.issue!(
+          context.store,
+          "laptop",
+          context.gateway.certificate.der,
+          @addresses
+        )
+
+      enrolled =
+        client(context, context.laptop, "enroll", Map.put(context.pinned, "token", issued.token))
+
+      refute enrolled["error"], inspect(enrolled)
+      assert enrolled["fingerprint_match"] == true
+      refute_received {:backend, _, _}
+
+      %{"server" => server} = client(context, context.laptop, "server", context.pinned)
+      assert server["auth"] == "trusted"
+    end
   end
 end

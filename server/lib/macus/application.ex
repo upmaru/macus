@@ -5,25 +5,34 @@ defmodule Macus.Application do
 
   use Application
 
+  require Logger
+
   @impl true
   def start(_type, _args) do
-    children =
-      [
-        MacusWeb.Telemetry,
-        {Phoenix.PubSub, name: Macus.PubSub}
-      ] ++
-        Macus.Auth.Streams.child_specs() ++
-        Macus.Proxy.child_specs() ++
-        dex_children() ++
-        [
-          # Start to serve requests, typically the last entry
-          MacusWeb.Endpoint
-        ]
+    # The public listener starts only when serving and after its preflight;
+    # a failed preflight stops startup instead of falling back.
+    case Macus.Gateway.children() do
+      {:ok, gateway} ->
+        children =
+          [
+            MacusWeb.Telemetry,
+            {Phoenix.PubSub, name: Macus.PubSub}
+          ] ++
+            Macus.Auth.Streams.child_specs() ++
+            Macus.Proxy.child_specs() ++
+            dex_children() ++
+            [MacusWeb.Endpoint] ++
+            gateway
 
-    # See https://elixir.hexdocs.pm/Supervisor.html
-    # for other strategies and supported options
-    opts = [strategy: :one_for_one, name: Macus.Supervisor]
-    Supervisor.start_link(children, opts)
+        # See https://elixir.hexdocs.pm/Supervisor.html
+        # for other strategies and supported options
+        opts = [strategy: :one_for_one, name: Macus.Supervisor]
+        Supervisor.start_link(children, opts)
+
+      {:error, reason} ->
+        Logger.error("Macus gateway did not start: " <> Macus.Gateway.describe(reason))
+        {:error, {:gateway, reason}}
+    end
   end
 
   # The operation index starts only when explicitly enabled; a default start
