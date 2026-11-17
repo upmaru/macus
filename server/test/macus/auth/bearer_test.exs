@@ -63,6 +63,41 @@ defmodule Macus.Auth.BearerTest do
       end
     end
 
+    test "verifiers and scopes match the Swift administration commands" do
+      # The same vector is asserted by Tests/MacusTests/ServerAdministrationTests.swift.
+      assert Token.verifier("secret") ==
+               "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b"
+
+      swift =
+        File.read!(
+          Path.expand("../../../../Sources/Macus/Gateway/BearerTokenStore.swift", __DIR__)
+        )
+
+      [scopes] = Regex.run(~r/static let scopes = \[(.*?)\]/s, swift, capture: :all_but_first)
+
+      assert Regex.scan(~r/"([a-z.]+)"/, scopes, capture: :all_but_first) |> List.flatten() ==
+               Token.scopes()
+    end
+
+    test "a store written by macus server token issue verifies", %{state: state} do
+      secret = String.duplicate("A", 43)
+      id = "e73c0aba13ed3243"
+      path = Bearer.path(%Macus.Configuration{state_dir: state})
+
+      # The exact shape the Swift command writes: sorted keys, explicit nulls, a newline.
+      File.write!(
+        path,
+        ~s({"schema_version":1,"tokens":[{"created_at":"2026-11-17T10:04:01Z","expires_at":null,) <>
+          ~s("id":"#{id}","principal":"ci@host","revoked_at":null,"scopes":["incus.read","incus.exec"],) <>
+          ~s("verifier":"#{Token.verifier(secret)}"}]}\n)
+      )
+
+      File.chmod!(path, 0o600)
+
+      assert {:ok, %{principal: "ci@host", scopes: ["incus.read", "incus.exec"]}} =
+               Bearer.verify("macus.#{id}.#{secret}")
+    end
+
     test "Macus scopes are distinct and never native" do
       assert Token.scopes() == Enum.uniq(Token.scopes())
       refute Enum.any?(Token.scopes(), &String.starts_with?(&1, "incus.native."))

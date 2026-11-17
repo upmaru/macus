@@ -139,6 +139,13 @@ public enum MacusCLI {
     Client:
       client setup [--remote NAME] [--set-default] [--incus ABSOLUTE_PATH]
 
+    Server administration (owner-local; never starts services or touches VM disks):
+      server token issue --principal NAME --scope SCOPE [--scope SCOPE ...]
+                         [--expires-in DURATION] --output ABSOLUTE_PATH
+        Issue a scoped bearer token into a new 0600 file. The token is never printed.
+      server token list               List tokens without secrets or verifiers.
+      server token revoke ID          Refuse a token from the server's next request.
+
     Common examples:
       macus start
       macus runtime status
@@ -146,6 +153,7 @@ public enum MacusCLI {
       macus capabilities --json
       macus --state-dir /tmp/macus-demo start --progress plain
       macus client setup --remote macus
+      macus server token issue --principal laptop --scope incus.read --output ~/macus.token
 
     Options:
       --json            Machine results on stdout, errors on stderr.
@@ -177,6 +185,10 @@ public enum MacusCLI {
     client setup (1...3600). macus start defaults to \(startTimeout) seconds, still within
     1...3600, and uses one deadline across download, boot, the expected kernel restart and
     client setup. A restart or Homebrew install may need a larger value.
+    Bearer scopes: incus.read, incus.write, incus.exec, incus.delete, runtime.read,
+    runtime.write and runtime.delete; native Incus scopes are never issued. DURATION is a
+    count with s, m, h or d (1 minute to 3650 days); without it a token does not expire.
+    Tokens live in STATE/server/bearer-tokens.json as SHA-256 verifiers.
     --progress auto animates only on an interactive terminal; plain and JSON avoid cursor
     escapes. --progress none suppresses progress. Exit status is 0 on success, 1 on
     operational failure, 2 on invalid arguments and 130 when start is interrupted.
@@ -200,6 +212,9 @@ private enum Command {
   case doctor
   case clientSetup(remote: String, setDefault: Bool, incus: String?)
   case start(remote: String, setDefault: Bool, incus: String?, progress: ProgressSelection)
+  case serverTokenIssue(principal: String, scopes: [String], expiresIn: Int?, output: String)
+  case serverTokenList
+  case serverTokenRevoke(id: String)
 }
 
 private struct Invocation {
@@ -215,7 +230,8 @@ private func requestsJSON(_ arguments: [String]) -> Bool {
     let token = arguments[index]
     if token == "--json" { return true }
     if token == "--timeout" || token == "--state-dir" || token == "--remote"
-      || token == "--incus" || token == "--progress"
+      || token == "--incus" || token == "--progress" || token == "--principal"
+      || token == "--scope" || token == "--expires-in" || token == "--output"
     {
       index += 2
       continue
@@ -233,7 +249,9 @@ private func defaultTimeout(_ command: Command) -> Int {
   switch command {
   case .runtimeStart, .runtimeStop, .runtimeRestart, .clientSetup: MacusCLI.lifecycleTimeout
   case .start: MacusCLI.startTimeout
-  case .capabilities, .runtimeStatus, .doctor: MacusCLI.readOnlyTimeout
+  case .capabilities, .runtimeStatus, .doctor, .serverTokenIssue, .serverTokenList,
+    .serverTokenRevoke:
+    MacusCLI.readOnlyTimeout
   }
 }
 
@@ -247,6 +265,10 @@ private func parse(_ arguments: [String]) throws -> Invocation {
   var remote: String?
   var incusOverride: String?
   var progress: String?
+  var principal: String?
+  var scopes: [String] = []
+  var expiresIn: Int?
+  var output: String?
   var positionals: [String] = []
   func value(for flag: String) throws -> String {
     guard index + 1 < arguments.count, !arguments[index + 1].hasPrefix("-") else {
@@ -300,6 +322,23 @@ private func parse(_ arguments: [String]) throws -> Invocation {
         throw UsageError(message: "--progress must be auto, plain or none")
       }
       progress = raw
+    case "--principal":
+      guard principal == nil else { throw UsageError(message: "Duplicate --principal") }
+      principal = try value(for: "--principal")
+    case "--scope":
+      scopes.append(try value(for: "--scope"))
+    case "--expires-in":
+      guard expiresIn == nil else { throw UsageError(message: "Duplicate --expires-in") }
+      guard let parsed = ServerAdministration.expiry(try value(for: "--expires-in")) else {
+        throw UsageError(
+          message: "--expires-in must be a count with s, m, h or d, from 1 minute to 3650 days")
+      }
+      expiresIn = parsed
+    case "--output":
+      guard output == nil else { throw UsageError(message: "Duplicate --output") }
+      let raw = try value(for: "--output")
+      guard isAbsolute(raw) else { throw UsageError(message: "--output requires an absolute path") }
+      output = raw
     default:
       if token.hasPrefix("-") { throw UsageError(message: "Unknown flag \(token)") }
       positionals.append(token)
@@ -329,6 +368,23 @@ private func parse(_ arguments: [String]) throws -> Invocation {
     command = .start(
       remote: remote ?? MacusCLI.defaultRemoteName, setDefault: setDefault, incus: incusOverride,
       progress: ProgressSelection(rawValue: progress ?? "auto") ?? .auto)
+  } else if positionals == ["server", "token", "issue"] {
+    guard let principal else {
+      throw UsageError(message: "server token issue requires --principal")
+    }
+    guard let output else {
+      throw UsageError(
+        message: "server token issue requires --output, a new private file for the token")
+    }
+    guard !scopes.isEmpty else {
+      throw UsageError(message: "server token issue requires at least one --scope")
+    }
+    command = .serverTokenIssue(
+      principal: principal, scopes: scopes, expiresIn: expiresIn, output: output)
+  } else if positionals == ["server", "token", "list"] {
+    command = .serverTokenList
+  } else if positionals.count == 4, positionals.prefix(3) == ["server", "token", "revoke"] {
+    command = .serverTokenRevoke(id: positionals[3])
   } else if positionals == ["list"] || positionals.first == "show" {
     throw UsageError(
       message:
@@ -357,6 +413,23 @@ private func parse(_ arguments: [String]) throws -> Invocation {
     } else {
       throw UsageError(message: "--progress is only valid with start")
     }
+  }
+  if principal != nil || !scopes.isEmpty || expiresIn != nil || output != nil {
+    if case .serverTokenIssue = command {
+    } else {
+      throw UsageError(
+        message:
+          "--principal, --scope, --expires-in and --output are only valid with server token issue"
+      )
+    }
+  }
+  switch command {
+  case .serverTokenIssue, .serverTokenList, .serverTokenRevoke:
+    // Local administration has no request deadline to bound.
+    guard timeout == nil else {
+      throw UsageError(message: "server commands do not accept --timeout")
+    }
+  default: break
   }
   return Invocation(
     stateDirectory: stateDirectory, json: json, timeout: timeout, command: command)
@@ -435,6 +508,16 @@ private func execute(
       directory: directory, remote: remote, setDefault: setDefault, incusOverride: incus,
       progress: progress, timeout: timeout, json: json, environment: environment,
       transport: transport, runner: runner, streams: streams, overrides: overrides)
+  case .serverTokenIssue(let principal, let scopes, let expiresIn, let output):
+    try ServerAdministration.issue(
+      principal: principal, scopes: scopes, expiresIn: expiresIn, output: output,
+      directory: directory, json: json, streams: streams, presentation: presentation)
+  case .serverTokenList:
+    try ServerAdministration.list(
+      directory: directory, json: json, streams: streams, presentation: presentation)
+  case .serverTokenRevoke(let id):
+    try ServerAdministration.revoke(
+      id: id, directory: directory, json: json, streams: streams, presentation: presentation)
   }
 }
 
