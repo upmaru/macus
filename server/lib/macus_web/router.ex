@@ -8,4 +8,7 @@ defmodule MacusWeb.Router do
   scope "/api", MacusWeb do
     pipe_through :api
   end
+
+  # MCP owns its body framing and authentication; no pipeline runs first.
+  forward "/mcp", MacusWeb.MCP
 end

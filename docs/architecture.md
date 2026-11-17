@@ -23,7 +23,7 @@ Incus client, native gateway relay mechanics and shared Incus operation
 descriptors. It runs inside the existing Macus BEAM with no application
 callback, listener or process. `/mcp` advertises only `search` and `execute`
 over one catalogue of shared and Macus runtime operations; the separate tama-dex
-library (`Tama.Dex`) will index them into `<state-dir>/server/tama-dex.sqlite3`
+library (`Tama.Dex`) indexes them into `<state-dir>/server/tama-dex.sqlite3`
 at server start; `server/mix.lock` locks tama_dex 0.1.0 with tama_mcp 0.2.1.
 There is one public endpoint and the same
 two independently supervised Swift/Elixir processes. The
@@ -46,6 +46,14 @@ The Macus-owned `Macus.Runtime.Client` now provides passive private Unix HTTP
 requests to Swift, with native errors/budget payloads and bounded framing,
 deadlines and socket ownership checks. It is independent of the shared Incus
 client. The authenticated public routes are still pending implementation.
+
+`/mcp` is mounted: the TamaMCP Streamable HTTP transport serves
+`Macus.MCP.Server` (`search` and `execute`, synchronous, no task capability)
+at exactly that path with a 1 MiB body limit. `Macus.MCP.Authorization`
+requires a bearer credential and accepts it only from a configured verifier,
+which Macus's token store supplies with task 3.3; until then every request is
+refused with 401. The operation index subtree starts only when enabled, which
+waits on the gateway state directory and the release-bundled cassette.
 
 Optional explicit `macus connect [url]` will register only this selected Macus
 target with central Opsmaru and enable an outbound connector inside the same
