@@ -14,9 +14,19 @@ defmodule Macus.Proxy.Host do
   requests and streams within the gateway recheck interval (5 s). Bearer
   headers, request bodies and anything the guest Incus trusts are never
   identity. Without a trusted certificate the request is unauthenticated:
-  only the synthetic discovery responses and certificate enrollment
-  (`POST /1.0/certificates`, which this host refuses until enrollment tokens
-  exist, task 3.7) are answered, without backend access.
+  only the synthetic discovery responses and token enrollment are answered,
+  without backend access.
+
+  ## Enrollment
+
+  An untrusted client presenting a TLS certificate enrolls with a native
+  `trust_token` (`POST /1.0/certificates`, as `incus remote add NAME TOKEN`
+  sends it). The token must be an unconsumed, unrevoked, unexpired gateway
+  enrollment token (`Macus.Proxy.Enrollment`), which is consumed before the
+  certificate is trusted; the certificate must be within its validity
+  period. Any other unauthenticated certificate request is refused with
+  403, and native server-side token issuance (`"token": true`), restricted
+  and project-scoped requests are refused by the shared gateway with 400.
 
   ## Public identity
 
@@ -41,7 +51,7 @@ defmodule Macus.Proxy.Host do
 
   @behaviour Opsmaru.Incus.Gateway.Host
 
-  alias Macus.Proxy.Trust
+  alias Macus.Proxy.{Enrollment, Trust}
   alias Opsmaru.Incus.Gateway.Request
 
   @impl true
@@ -111,10 +121,19 @@ defmodule Macus.Proxy.Host do
   # Certificate trust
 
   @impl true
-  def certificates(_action, _request, nil, _input, _config) do
-    # Unauthenticated enrollment needs a gateway enrollment token (task 3.7).
-    {:error, 403}
+  def certificates(:create, %Request{peer: %{certificate: der}}, nil, %{body: body}, config)
+      when is_binary(der) and is_map_key(body, "trust_token") do
+    # Native token enrollment: only the token and the TLS peer certificate
+    # count; every other field comes from the issued token, as natively.
+    with {:ok, token} <- Enrollment.decode(body["trust_token"]) |> or_status(403),
+         true <- Trust.valid_at?(der, now(config)) || {:error, 400},
+         {:ok, fingerprint} <-
+           Enrollment.redeem(config.store, token.secret, der, now(config), enrollment(config)) do
+      {:ok, nil, [{"location", "/1.0/certificates/#{fingerprint}"}]}
+    end
   end
+
+  def certificates(_action, _request, nil, _input, _config), do: {:error, 403}
 
   def certificates(:list, request, _grant, _input, config) do
     with {:ok, recursion} <- list_options(request.query),
@@ -321,6 +340,11 @@ defmodule Macus.Proxy.Host do
 
     Base.encode16(:crypto.hash(:sha256, [json, "\n"]), case: :lower)
   end
+
+  defp or_status(:error, status), do: {:error, status}
+  defp or_status(ok, _status), do: ok
+
+  defp enrollment(config), do: Map.get(config, :enrollment) || Enrollment
 
   defp now(%{clock: clock}) when is_function(clock, 0), do: clock.()
   defp now(_config), do: DateTime.utc_now()

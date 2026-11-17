@@ -6,8 +6,8 @@ defmodule Macus.Proxy do
   conditions and streams after gateway authentication, with bounded
   resources and no ambiguous mutation replay.
 
-  Gateway identity and client-certificate trust are the gateway's own
-  (`Macus.Proxy.Trust`); the guest's certificates, addresses and trust store
+  Gateway identity, client-certificate trust and enrollment tokens are the
+  gateway's own (`Macus.Proxy.Trust`, `Macus.Proxy.Enrollment`); the guest's certificates, addresses and trust store
   never decide or describe access.
 
   ## Configuration
@@ -35,13 +35,14 @@ defmodule Macus.Proxy do
 
   @admission Macus.Proxy.Admission
 
-  @doc "Admission and trust-store processes for the application supervisor."
+  @doc "Admission, trust and enrollment processes for the application supervisor."
   def child_specs do
     max = Keyword.get(Application.get_env(:macus, __MODULE__, []), :max_exchanges, 64)
 
     [
       {Gateway.Admission, name: @admission, max_exchanges: max},
-      Macus.Proxy.Trust
+      Macus.Proxy.Trust,
+      Macus.Proxy.Enrollment
     ]
   end
 

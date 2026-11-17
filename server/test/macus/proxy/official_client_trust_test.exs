@@ -4,7 +4,15 @@ defmodule Macus.Proxy.OfficialClientTrustTest do
   use ExUnit.Case, async: false
 
   alias Macus.Proxy.Trust
-  alias Macus.TestSupport.{AuthFixtures, DexFixtures, HTTPFixture, TLSIdentity}
+
+  alias Macus.TestSupport.{
+    AuthFixtures,
+    DexFixtures,
+    EnrollmentFixtures,
+    HTTPFixture,
+    TLSIdentity
+  }
+
   alias Opsmaru.Incus.Gateway.Identity
 
   @driver Path.expand("../../../../.integration/incus-reference-driver", __DIR__)
@@ -38,6 +46,7 @@ defmodule Macus.Proxy.OfficialClientTrustTest do
     guest = TLSIdentity.self_signed(certs, "guest", "incus-guest")
     admin = TLSIdentity.self_signed(certs, "admin")
     laptop = TLSIdentity.self_signed(certs, "laptop")
+    phone = TLSIdentity.self_signed(certs, "phone")
     test = self()
 
     start_supervised!(
@@ -85,6 +94,7 @@ defmodule Macus.Proxy.OfficialClientTrustTest do
       guest: guest,
       admin: admin,
       laptop: laptop,
+      phone: phone,
       store: store
     }
   end
@@ -276,5 +286,71 @@ defmodule Macus.Proxy.OfficialClientTrustTest do
     after
       0 -> []
     end
+  end
+
+  # The pinned official client sends `"type": ""` (and the other zero-valued
+  # CertificatePut fields) beside `trust_token`. Native Incus ignores every
+  # field but the token when redeeming it; the shared gateway's claims check
+  # in opsmaru_incus 0.2.0 refuses the empty type with 400 before the host
+  # callback. Verified passing with that check accepting "" for token
+  # requests; enable with the opsmaru_incus release that does.
+  @tag skip: "needs opsmaru_incus to accept the official client's empty type with trust_token"
+  test "the official client enrolls once with a token, as incus remote add does", context do
+    issued =
+      EnrollmentFixtures.issue!(context.store, "laptop", context.server.der, @addresses)
+
+    enrolled = client(context, context.laptop, "enroll", %{"token" => issued.token})
+    refute enrolled["error"], inspect(enrolled)
+    assert enrolled["fingerprint_match"] == true
+    assert enrolled["client_name"] == "laptop"
+    assert enrolled["addresses"] == @addresses
+
+    # Enrollment answered without any backend request.
+    refute_received {:backend, _, _}
+
+    {:ok, [_admin, entry]} = Trust.entries(context.store)
+    assert entry["fingerprint"] == Trust.fingerprint(context.laptop.der)
+    assert entry["name"] == "laptop"
+
+    # The enrolled client now uses standard authenticated requests.
+    %{"server" => server} = client(context, context.laptop, "server")
+    assert server["auth"] == "trusted"
+    %{"certificates" => certificates} = client(context, context.laptop, "certificates")
+    assert length(certificates) == 2
+
+    # Replaying the consumed token from another client is refused.
+    flush_backend()
+    replay = client(context, context.phone, "enroll", %{"token" => issued.token})
+    assert replay["error_status"] == 403
+    assert client(context, context.phone, "certificates")["error_status"] == 403
+    assert {:ok, [_, _]} = Trust.entries(context.store)
+    refute_received {:backend, _, _}
+  end
+
+  # The pinned official client sends `"type": ""` (and the other zero-valued
+  # CertificatePut fields) beside `trust_token`. Native Incus ignores every
+  # field but the token when redeeming it; the shared gateway's claims check
+  # in opsmaru_incus 0.2.0 refuses the empty type with 400 before the host
+  # callback. Verified passing with that check accepting "" for token
+  # requests; enable with the opsmaru_incus release that does.
+  @tag skip: "needs opsmaru_incus to accept the official client's empty type with trust_token"
+  test "the official client is refused an expired token", context do
+    issued =
+      EnrollmentFixtures.issue!(context.store, "phone", context.server.der, @addresses,
+        expires_at: DateTime.add(DateTime.utc_now(), 60)
+      )
+
+    later = DateTime.add(DateTime.utc_now(), 120)
+
+    Application.put_env(
+      :macus,
+      Macus.Proxy,
+      Keyword.put(Application.get_env(:macus, Macus.Proxy), :clock, fn -> later end)
+    )
+
+    expired = client(context, context.phone, "enroll", %{"token" => issued.token})
+    assert expired["error_status"] == 403, inspect(expired)
+    assert {:ok, [_admin]} = Trust.entries(context.store)
+    refute_received {:backend, _, _}
   end
 end

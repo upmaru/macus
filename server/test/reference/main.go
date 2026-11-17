@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 
 	incus "github.com/lxc/incus/v7/client"
 	"github.com/lxc/incus/v7/shared/api"
+	localtls "github.com/lxc/incus/v7/shared/tls"
 )
 
 type Input struct {
@@ -34,6 +36,7 @@ type Input struct {
 	Certificate string `json:"certificate"`
 	Name        string `json:"name"`
 	Fingerprint string `json:"fingerprint"`
+	Token       string `json:"token"`
 }
 
 func main() {
@@ -176,6 +179,22 @@ func typedCall(client incus.InstanceServer, input Input) {
 		}
 	case "delete":
 		err = client.DeleteCertificate(input.Fingerprint)
+	case "enroll":
+		// As `incus remote add NAME TOKEN` (cmd/incus/remote.go addRemoteFromToken):
+		// decode the token, check the served certificate against its
+		// fingerprint, then send only the token.
+		var token *api.CertificateAddToken
+		token, err = localtls.CertificateTokenDecode(input.Token)
+		if err == nil {
+			result["client_name"] = token.ClientName
+			result["addresses"] = token.Addresses
+			var served *x509.Certificate
+			served, err = localtls.GetRemoteCertificate(input.URL, "")
+			if err == nil {
+				result["fingerprint_match"] = localtls.CertFingerprint(served) == token.Fingerprint
+				err = client.CreateCertificate(api.CertificatesPost{TrustToken: input.Token})
+			}
+		}
 	default:
 		err = fmt.Errorf("unknown fixture action")
 	}

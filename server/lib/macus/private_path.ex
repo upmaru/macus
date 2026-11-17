@@ -2,12 +2,14 @@ defmodule Macus.PrivatePath do
   @moduledoc """
   Owner-private path checks for Macus state beneath the selected state
   directory. Checks use `lstat`, so a symbolic link is never followed and
-  never accepted. Nothing is created or modified.
+  never accepted. Checks create and modify nothing.
 
   A private directory belongs to the verified owner, has mode 0700 and
   sits below ancestors that only the owner or root can write (root-owned
   sticky directories such as `/private/tmp` are accepted). A private entry
   belongs to the owner and has mode 0600.
+
+  `replace/2` is the only writer: it replaces a private file atomically.
 
   `{:error, :enoent}` is returned only when the checked directory or entry
   itself is absent; every other failure, including an unsafe or missing
@@ -99,6 +101,41 @@ defmodule Macus.PrivatePath do
     case File.read_link(alias_path) do
       {:ok, target} -> Path.expand(target, Path.dirname(alias_path)) == destination
       _ -> false
+    end
+  end
+
+  @doc """
+  Atomically replaces `path` with `bytes`: writes a new exclusive 0600
+  temporary file beside it, syncs it and renames it over `path`. The
+  caller must have checked the directory with `private_dir/2`. A failure
+  leaves `path` unchanged and removes the temporary file.
+  """
+  @spec replace(String.t(), iodata()) :: :ok | {:error, :unwritable}
+  def replace(path, bytes) do
+    base = path |> Path.basename() |> Path.rootname()
+
+    temporary =
+      Path.join(
+        Path.dirname(path),
+        ".#{base}.#{Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)}.tmp"
+      )
+
+    result =
+      with {:ok, device} <- :file.open(temporary, [:write, :exclusive, :binary, :raw]),
+           :ok <- File.chmod(temporary, 0o600),
+           :ok <- :file.write(device, bytes),
+           :ok <- :file.sync(device),
+           :ok <- :file.close(device) do
+        File.rename(temporary, path)
+      end
+
+    case result do
+      :ok ->
+        :ok
+
+      _ ->
+        File.rm(temporary)
+        {:error, :unwritable}
     end
   end
 end

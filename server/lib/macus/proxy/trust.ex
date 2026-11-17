@@ -146,35 +146,9 @@ defmodule Macus.Proxy.Trust do
          {:ok, bytes} <- Jason.encode(document),
          true <- byte_size(bytes) < @max_bytes,
          :ok <- PrivatePath.private_dir(Path.dirname(path(state)), store.uid) do
-      replace(path(state), bytes <> "\n")
+      PrivatePath.replace(path(state), bytes <> "\n")
     else
       _ -> {:error, :unwritable}
-    end
-  end
-
-  defp replace(path, bytes) do
-    temporary =
-      Path.join(
-        Path.dirname(path),
-        ".trusted-certificates.#{Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)}.tmp"
-      )
-
-    result =
-      with {:ok, device} <- :file.open(temporary, [:write, :exclusive, :binary, :raw]),
-           :ok <- File.chmod(temporary, 0o600),
-           :ok <- :file.write(device, bytes),
-           :ok <- :file.sync(device),
-           :ok <- :file.close(device) do
-        File.rename(temporary, path)
-      end
-
-    case result do
-      :ok ->
-        :ok
-
-      _ ->
-        File.rm(temporary)
-        {:error, :unwritable}
     end
   end
 

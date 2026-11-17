@@ -145,6 +145,13 @@ public enum MacusCLI {
         Issue a scoped bearer token into a new 0600 file. The token is never printed.
       server token list               List tokens without secrets or verifiers.
       server token revoke ID          Refuse a token from the server's next request.
+      server trust token issue --name NAME --address HOST:PORT [--address HOST:PORT ...]
+                         --server-certificate ABSOLUTE_PATH [--expires-in DURATION]
+                         --output ABSOLUTE_PATH
+        Issue a single-use enrollment token for `incus remote add` into a new 0600 file.
+        It expires after 1 hour by default and at most 30 days. It is never printed.
+      server trust token list         List enrollment tokens and their redemption.
+      server trust token revoke ID    Refuse an unredeemed enrollment token.
 
     Common examples:
       macus start
@@ -154,6 +161,8 @@ public enum MacusCLI {
       macus --state-dir /tmp/macus-demo start --progress plain
       macus client setup --remote macus
       macus server token issue --principal laptop --scope incus.read --output ~/macus.token
+      macus server trust token issue --name laptop --address macus.example.net:8443 \\
+        --server-certificate ~/gateway.crt --output ~/laptop.trust-token
 
     Options:
       --json            Machine results on stdout, errors on stderr.
@@ -215,6 +224,10 @@ private enum Command {
   case serverTokenIssue(principal: String, scopes: [String], expiresIn: Int?, output: String)
   case serverTokenList
   case serverTokenRevoke(id: String)
+  case serverTrustTokenIssue(
+    name: String, addresses: [String], serverCertificate: String, expiresIn: Int, output: String)
+  case serverTrustTokenList
+  case serverTrustTokenRevoke(id: String)
 }
 
 private struct Invocation {
@@ -232,6 +245,7 @@ private func requestsJSON(_ arguments: [String]) -> Bool {
     if token == "--timeout" || token == "--state-dir" || token == "--remote"
       || token == "--incus" || token == "--progress" || token == "--principal"
       || token == "--scope" || token == "--expires-in" || token == "--output"
+      || token == "--name" || token == "--address" || token == "--server-certificate"
     {
       index += 2
       continue
@@ -250,7 +264,7 @@ private func defaultTimeout(_ command: Command) -> Int {
   case .runtimeStart, .runtimeStop, .runtimeRestart, .clientSetup: MacusCLI.lifecycleTimeout
   case .start: MacusCLI.startTimeout
   case .capabilities, .runtimeStatus, .doctor, .serverTokenIssue, .serverTokenList,
-    .serverTokenRevoke:
+    .serverTokenRevoke, .serverTrustTokenIssue, .serverTrustTokenList, .serverTrustTokenRevoke:
     MacusCLI.readOnlyTimeout
   }
 }
@@ -269,6 +283,9 @@ private func parse(_ arguments: [String]) throws -> Invocation {
   var scopes: [String] = []
   var expiresIn: Int?
   var output: String?
+  var name: String?
+  var addresses: [String] = []
+  var serverCertificate: String?
   var positionals: [String] = []
   func value(for flag: String) throws -> String {
     guard index + 1 < arguments.count, !arguments[index + 1].hasPrefix("-") else {
@@ -339,6 +356,20 @@ private func parse(_ arguments: [String]) throws -> Invocation {
       let raw = try value(for: "--output")
       guard isAbsolute(raw) else { throw UsageError(message: "--output requires an absolute path") }
       output = raw
+    case "--name":
+      guard name == nil else { throw UsageError(message: "Duplicate --name") }
+      name = try value(for: "--name")
+    case "--address":
+      addresses.append(try value(for: "--address"))
+    case "--server-certificate":
+      guard serverCertificate == nil else {
+        throw UsageError(message: "Duplicate --server-certificate")
+      }
+      let raw = try value(for: "--server-certificate")
+      guard isAbsolute(raw) else {
+        throw UsageError(message: "--server-certificate requires an absolute path")
+      }
+      serverCertificate = raw
     default:
       if token.hasPrefix("-") { throw UsageError(message: "Unknown flag \(token)") }
       positionals.append(token)
@@ -385,6 +416,30 @@ private func parse(_ arguments: [String]) throws -> Invocation {
     command = .serverTokenList
   } else if positionals.count == 4, positionals.prefix(3) == ["server", "token", "revoke"] {
     command = .serverTokenRevoke(id: positionals[3])
+  } else if positionals == ["server", "trust", "token", "issue"] {
+    guard let name else {
+      throw UsageError(message: "server trust token issue requires --name")
+    }
+    guard !addresses.isEmpty else {
+      throw UsageError(
+        message: "server trust token issue requires --address, a HOST:PORT the client can reach")
+    }
+    guard let serverCertificate else {
+      throw UsageError(
+        message: "server trust token issue requires --server-certificate, the gateway certificate")
+    }
+    guard let output else {
+      throw UsageError(
+        message: "server trust token issue requires --output, a new private file for the token")
+    }
+    command = .serverTrustTokenIssue(
+      name: name, addresses: addresses, serverCertificate: serverCertificate,
+      expiresIn: expiresIn ?? TrustTokenStore.defaultLifetime, output: output)
+  } else if positionals == ["server", "trust", "token", "list"] {
+    command = .serverTrustTokenList
+  } else if positionals.count == 5, positionals.prefix(4) == ["server", "trust", "token", "revoke"]
+  {
+    command = .serverTrustTokenRevoke(id: positionals[4])
   } else if positionals == ["list"] || positionals.first == "show" {
     throw UsageError(
       message:
@@ -414,17 +469,34 @@ private func parse(_ arguments: [String]) throws -> Invocation {
       throw UsageError(message: "--progress is only valid with start")
     }
   }
-  if principal != nil || !scopes.isEmpty || expiresIn != nil || output != nil {
+  if principal != nil || !scopes.isEmpty {
     if case .serverTokenIssue = command {
+    } else {
+      throw UsageError(message: "--principal and --scope are only valid with server token issue")
+    }
+  }
+  if name != nil || !addresses.isEmpty || serverCertificate != nil {
+    if case .serverTrustTokenIssue = command {
     } else {
       throw UsageError(
         message:
-          "--principal, --scope, --expires-in and --output are only valid with server token issue"
+          "--name, --address and --server-certificate are only valid with server trust token issue"
+      )
+    }
+  }
+  if expiresIn != nil || output != nil {
+    switch command {
+    case .serverTokenIssue, .serverTrustTokenIssue: break
+    default:
+      throw UsageError(
+        message:
+          "--expires-in and --output are only valid with server token issue and server trust token issue"
       )
     }
   }
   switch command {
-  case .serverTokenIssue, .serverTokenList, .serverTokenRevoke:
+  case .serverTokenIssue, .serverTokenList, .serverTokenRevoke, .serverTrustTokenIssue,
+    .serverTrustTokenList, .serverTrustTokenRevoke:
     // Local administration has no request deadline to bound.
     guard timeout == nil else {
       throw UsageError(message: "server commands do not accept --timeout")
@@ -517,6 +589,18 @@ private func execute(
       directory: directory, json: json, streams: streams, presentation: presentation)
   case .serverTokenRevoke(let id):
     try ServerAdministration.revoke(
+      id: id, directory: directory, json: json, streams: streams, presentation: presentation)
+  case .serverTrustTokenIssue(
+    let name, let addresses, let serverCertificate, let expiresIn, let output):
+    try ServerAdministration.issueTrustToken(
+      name: name, addresses: addresses, serverCertificate: serverCertificate,
+      expiresIn: expiresIn, output: output, directory: directory, json: json, streams: streams,
+      presentation: presentation)
+  case .serverTrustTokenList:
+    try ServerAdministration.listTrustTokens(
+      directory: directory, json: json, streams: streams, presentation: presentation)
+  case .serverTrustTokenRevoke(let id):
+    try ServerAdministration.revokeTrustToken(
       id: id, directory: directory, json: json, streams: streams, presentation: presentation)
   }
 }
