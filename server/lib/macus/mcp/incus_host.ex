@@ -1,7 +1,10 @@
 defmodule Macus.MCP.IncusHost do
   @moduledoc """
   The Macus `Opsmaru.Incus.Operations.Host`: every trust decision for shared
-  Incus operations run through `execute`.
+  Incus operations run through `execute`, composite
+  (`Opsmaru.Incus.Operations.Composite`) and native
+  (`Opsmaru.Incus.Operations.Native`) alike. Each needs its own scope in the
+  caller's verified scopes.
 
   The `caller` is the verified `TamaMCP.Context` that tama-dex passes to the
   executor. Only its `principal`, `owner_key` and `scopes` are read, and
@@ -49,41 +52,66 @@ defmodule Macus.MCP.IncusHost do
 
   alias Macus.{Configuration, PrivatePath}
   alias Opsmaru.Incus.{Connection, Context}
-  alias Opsmaru.Incus.Operations.Composite
+  alias Opsmaru.Incus.Operations.{Composite, Native}
 
   @protocols ["simplestreams", "incus", "oci"]
   @default_timeout 30_000
+
+  # Native operation scopes, read from the library's generated document.
+  @native_scopes Map.new(Native.openapi()["paths"], fn {_, %{"post" => operation}} ->
+                   {operation["operationId"], hd(operation["x-tama-scopes"])}
+                 end)
 
   @impl true
   def binding(caller, operation) do
     with {:ok, config} <- config(),
          {:ok, principal} <- verify(caller, config),
-         {:ok, _descriptor} <- descriptor(operation) do
-      socket = Configuration.incus_socket(config.state)
-      owner = {:macus, config.owner_key}
-
-      connection = Connection.unix!(socket, owner: owner, timeout: config.timeout)
-
-      context =
-        Context.new!(
-          owner: owner,
-          identity: principal,
-          ready?: fn -> ready?(config, socket) end
-        )
-
-      {:ok, connection, context}
+         {:ok, _scope} <- scope(operation) do
+      backend(config, principal)
     end
+  end
+
+  @doc """
+  The shared `Opsmaru.Incus` client for a verified caller, on the same
+  owner-bound `incus.sock` connection and readiness check that operations
+  use. For the library's file, transfer, event, console, copy and raw
+  upgrade clients, which have no operation of their own; the caller's
+  scopes are the consumer's to check.
+  """
+  @spec client(TamaMCP.Context.t()) :: {:ok, Opsmaru.Incus.t()} | {:error, term()}
+  def client(caller) do
+    with {:ok, config} <- config(),
+         {:ok, principal} <- verify(caller, config),
+         {:ok, connection, context} <- backend(config, principal) do
+      Opsmaru.Incus.connect(connection, context)
+    end
+  end
+
+  defp backend(config, principal) do
+    socket = Configuration.incus_socket(config.state)
+    owner = {:macus, config.owner_key}
+
+    connection = Connection.unix!(socket, owner: owner, timeout: config.timeout)
+
+    context =
+      Context.new!(
+        owner: owner,
+        identity: principal,
+        ready?: fn -> ready?(config, socket) end
+      )
+
+    {:ok, connection, context}
   end
 
   @impl true
   def authorize(caller, operation, input) when is_map(input) do
     with {:ok, config} <- config(),
          {:ok, _principal} <- verify(caller, config),
-         {:ok, descriptor} <- descriptor(operation) do
+         {:ok, scope} <- scope(operation) do
       # The executor passes the scopes tama-dex checked; they must also be
       # the verified caller's own.
       cond do
-        descriptor.scope not in caller.scopes -> {:error, :forbidden}
+        scope not in caller.scopes -> {:error, :forbidden}
         not project_allowed?(config.projects, input) -> {:error, :forbidden_project}
         true -> :ok
       end
@@ -126,14 +154,21 @@ defmodule Macus.MCP.IncusHost do
   defp project_allowed?(projects, %{"project" => project}), do: project in projects
   defp project_allowed?(_projects, _input), do: true
 
-  defp descriptor(operation) when is_binary(operation) do
+  # The scope a composite or native operation requires.
+  defp scope(operation) when is_binary(operation) do
     case Composite.fetch(operation) do
-      {:ok, descriptor} -> {:ok, descriptor}
-      :error -> {:error, :unknown_operation}
+      {:ok, descriptor} ->
+        {:ok, descriptor.scope}
+
+      :error ->
+        case Map.fetch(@native_scopes, operation) do
+          {:ok, scope} -> {:ok, scope}
+          :error -> {:error, :unknown_operation}
+        end
     end
   end
 
-  defp descriptor(_operation), do: {:error, :unknown_operation}
+  defp scope(_operation), do: {:error, :unknown_operation}
 
   defp ready?(config, socket) do
     {module, function, args} = config.ready

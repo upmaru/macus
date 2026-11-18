@@ -175,8 +175,25 @@ macus server token issue --principal laptop --scope incus.read --scope runtime.r
 ```
 
 Scopes are `incus.read`, `incus.write`, `incus.exec`, `incus.delete`,
-`runtime.read`, `runtime.write` and `runtime.delete`; native Incus scopes are
-never issued, and `macus-local-cli` is reserved. Tokens are
+`runtime.read`, `runtime.write` and `runtime.delete`, plus the native Incus
+scopes `incus.native.read`, `incus.native.write`, `incus.native.delete` and
+`incus.native.admin`. `macus-local-cli` is reserved.
+
+The `incus.*` scopes reach the shared composite Incus operations. The
+`incus.native.*` scopes reach opsmaru_incus's one-to-one native operations
+and are granted only when you name them: no other scope implies them, and
+without one a native operation is neither listed by `search` nor run by
+`execute`. `incus.native.admin` includes the guest's own certificate and
+cluster operations. Those edit the trust store inside the guest, which never
+grants access through the gateway (see
+[Gateway trust, not guest trust](#gateway-trust-not-guest-trust)).
+
+```bash
+macus server token issue --principal ops --scope incus.native.read \
+  --expires-in 1d --output /Users/me/ops.token
+```
+
+Tokens are
 `macus.<id>.<secret>`; the store keeps the secret's SHA-256 verifier only, and
 `macus server token list` shows neither.
 

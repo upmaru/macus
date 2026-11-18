@@ -203,7 +203,9 @@ public enum MacusCLI {
     1...3600, and uses one deadline across download, boot, the expected kernel restart and
     client setup. A restart or Homebrew install may need a larger value.
     Bearer scopes: incus.read, incus.write, incus.exec, incus.delete, runtime.read,
-    runtime.write and runtime.delete; native Incus scopes are never issued. DURATION is a
+    runtime.write and runtime.delete, plus incus.native.read, incus.native.write,
+    incus.native.delete and incus.native.admin for the native client operations, which no
+    other scope implies and which are granted only when named. DURATION is a
     count with s, m, h or d (1 minute to 3650 days); without it a token does not expire.
     Tokens live in STATE/server/bearer-tokens.json as SHA-256 verifiers. macus start
     prepares the local CLI's own runtime token once in STATE/server/local-cli.token;

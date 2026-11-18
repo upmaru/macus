@@ -108,17 +108,22 @@ defmodule Macus.MCP.SearchTest do
       assert %{"results" => [], "truncated" => false} = search!(%{"query" => "instance"}, [])
     end
 
-    test "native operations never appear, even for a caller holding native scopes" do
-      scopes = @all_incus ++ Native.scopes()
-
+    test "native operations appear only to a caller holding native scopes" do
       for arguments <- [
             %{"limit" => 20},
-            %{"query" => "native", "limit" => 20},
+            %{"query" => "instance", "limit" => 20},
             %{"source" => "opsmaru_incus_native", "limit" => 20}
           ] do
-        %{"results" => results} = search!(arguments, scopes)
-        refute Enum.any?(results, &(&1["source"] == "opsmaru_incus_native"))
+        %{"results" => results} = search!(arguments, @all_incus)
+        refute Enum.any?(results, &(&1["source"] == "opsmaru_incus_native")), inspect(arguments)
       end
+
+      %{"results" => results} =
+        search!(%{"source" => "opsmaru_incus_native", "limit" => 20}, ["incus.native.read"])
+
+      assert results != []
+      assert Enum.all?(results, &(&1["source"] == "opsmaru_incus_native"))
+      assert Enum.all?(results, &(&1["scopes"] == ["incus.native.read"]))
     end
 
     test "a search result does not bypass execute authorization" do

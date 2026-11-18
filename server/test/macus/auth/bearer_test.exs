@@ -32,9 +32,9 @@ defmodule Macus.Auth.BearerTest do
       assert Regex.match?(~r/\A[A-Za-z0-9\-._~+\/]+=*\z/, token)
     end
 
-    test "new/3 refuses native, unknown, duplicate or empty scopes" do
+    test "new/3 refuses unknown, duplicate or empty scopes" do
       for scopes <- [
-            ["incus.native.read"],
+            ["incus.native"],
             ["incus.native.instances.write"],
             ["admin"],
             ["incus.read", "incus.read"],
@@ -98,9 +98,16 @@ defmodule Macus.Auth.BearerTest do
                Bearer.verify("macus.#{id}.#{secret}")
     end
 
-    test "Macus scopes are distinct and never native" do
+    test "Macus scopes are distinct; native scopes are the library's and opt-in" do
       assert Token.scopes() == Enum.uniq(Token.scopes())
-      refute Enum.any?(Token.scopes(), &String.starts_with?(&1, "incus.native."))
+
+      assert Enum.filter(Token.scopes(), &String.starts_with?(&1, "incus.native.")) ==
+               Opsmaru.Incus.Operations.Native.scopes()
+
+      assert {:ok, _, %{"scopes" => ["incus.read"]}} = Token.new("agent", ["incus.read"])
+
+      assert {:ok, _, %{"scopes" => ["incus.native.read"]}} =
+               Token.new("agent", ["incus.native.read"])
     end
   end
 
@@ -156,9 +163,9 @@ defmodule Macus.Auth.BearerTest do
       assert Bearer.verify(token) == {:error, :invalid_token}
     end
 
-    test "records with native or invalid scopes never verify", %{state: state} do
+    test "records with unknown or invalid scopes never verify", %{state: state} do
       for scopes <- [
-            ["incus.native.read"],
+            ["incus.native"],
             ["incus.read", "incus.native.instances.write"],
             ["incus.read", "incus.read"],
             ["admin"],

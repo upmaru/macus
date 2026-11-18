@@ -195,6 +195,15 @@ defmodule Macus.ServerDocsTest do
            }
   end
 
+  test "the documented bearer scopes are the ones Macus issues" do
+    [_, section] = String.split(File.read!(@doc_path), "## Bearer tokens\n", parts: 2)
+    [section, _] = String.split(section, "\n## ", parts: 2)
+    [scopes, _] = String.split(section, "`macus-local-cli` is reserved", parts: 2)
+    documented = Regex.scan(~r/`((?:incus|runtime)\.[a-z.]+)`/, scopes) |> Enum.map(&List.last/1)
+    assert Enum.sort(documented) == Enum.sort(Macus.Auth.Token.scopes())
+    assert section =~ "granted only when you name them"
+  end
+
   test "the documented native paths and stream limits are the gateway's" do
     [_, native] = String.split(File.read!(@doc_path), "## Native Incus\n", parts: 2)
     [native, _] = String.split(native, "\n## ", parts: 2)

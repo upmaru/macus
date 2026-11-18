@@ -8,29 +8,29 @@ defmodule Macus.MCP do
   with verified caller scopes and the Macus operations host. Operations are
   synchronous; durable MCP tasks are deferred.
 
-  Native operations (`incus.native.*` scopes, source
-  `opsmaru_incus_native`) stay hidden from every Macus caller this
-  milestone: no executor is registered for them, and `caller/1` drops
-  `incus.native.*` scopes before tama-dex sees the caller.
+  Native operations (source `opsmaru_incus_native`) run through
+  `Macus.Dex.NativeExecutor` and need `incus.native.*` scopes. A token
+  carries those only when its owner issued it with them explicitly; the
+  composite `incus.*` scopes never imply them, so a caller without them can
+  neither find nor run a native operation.
   """
-
-  @native_prefix "incus.native."
 
   @doc """
   Executors by operation source: `opsmaru_incus` runs through
-  `Macus.Dex.IncusExecutor` and `macus` through `Macus.Dex.RuntimeExecutor`.
-  No executor is registered for `opsmaru_incus_native`.
+  `Macus.Dex.IncusExecutor`, `opsmaru_incus_native` through
+  `Macus.Dex.NativeExecutor` and `macus` through `Macus.Dex.RuntimeExecutor`.
   """
   @spec executors() :: %{String.t() => module() | {module(), keyword()}}
   def executors,
-    do: %{"opsmaru_incus" => Macus.Dex.IncusExecutor, "macus" => Macus.Dex.RuntimeExecutor}
+    do: %{
+      "opsmaru_incus" => Macus.Dex.IncusExecutor,
+      "opsmaru_incus_native" => Macus.Dex.NativeExecutor,
+      "macus" => Macus.Dex.RuntimeExecutor
+    }
 
-  @doc "The caller as tama-dex and the executors see it: without `incus.native.*` scopes."
+  @doc "The caller as tama-dex and the executors see it: its verified scopes, or none."
   @spec caller(TamaMCP.Context.t()) :: TamaMCP.Context.t()
-  def caller(%TamaMCP.Context{scopes: scopes} = context) when is_list(scopes) do
-    %{context | scopes: Enum.reject(scopes, &native_scope?/1)}
-  end
-
+  def caller(%TamaMCP.Context{scopes: scopes} = context) when is_list(scopes), do: context
   def caller(%TamaMCP.Context{} = context), do: %{context | scopes: []}
 
   @doc """
@@ -66,6 +66,4 @@ defmodule Macus.MCP do
       }
     }
   end
-
-  defp native_scope?(scope), do: is_binary(scope) and String.starts_with?(scope, @native_prefix)
 end

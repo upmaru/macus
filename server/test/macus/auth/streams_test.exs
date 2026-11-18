@@ -146,7 +146,7 @@ defmodule Macus.Auth.StreamsTest do
           fn _record -> [] end,
           fn record -> [%{record | "verifier" => String.duplicate("b", 64)}] end,
           fn record -> [%{record | "scopes" => ["incus.read", "incus.write"]}] end,
-          fn record -> [%{record | "scopes" => ["incus.native.read"]}] end
+          fn record -> [%{record | "scopes" => ["incus.native.instances.write"]}] end
         ] do
       {token, record} = AuthFixtures.token!(["incus.read"])
       AuthFixtures.store!(state, [record])

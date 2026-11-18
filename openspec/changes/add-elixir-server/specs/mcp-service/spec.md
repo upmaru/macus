@@ -43,10 +43,10 @@ Macus SHALL keep one tama-dex index holding two cassettes, each a namespace of `
 - **WHEN** Macus loads its runtime document into the `opsmaru_incus` cassette name
 - **THEN** the load fails with a cassette conflict and the imported cassette is unchanged
 
-#### Scenario: Native source without an executor
+#### Scenario: Native operations are opt-in
 
-- **WHEN** the imported `opsmaru_incus` cassette includes its `opsmaru_incus_native` source and Macus registers no native executor
-- **THEN** Macus refuses to issue `incus.native.*` scopes, so no caller can discover or execute a native operation
+- **WHEN** the imported `opsmaru_incus` cassette includes its `opsmaru_incus_native` source and Macus registers its native executor
+- **THEN** a caller discovers or executes a native operation only with a bearer token issued explicitly with the matching `incus.native.*` scope, which no composite scope implies, and a caller without it gets a not-found result with nothing sent to Incus
 
 #### Scenario: Shared cassette upgrade
 

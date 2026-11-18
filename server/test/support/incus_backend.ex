@@ -6,10 +6,27 @@ defmodule Macus.TestSupport.IncusBackend do
   request is reported to `observer` as `{:incus, method, path, qs, headers}`.
   """
 
-  @doc "Serves the fixture at `path` until the test exits."
-  def start!(path, observer, guest_pem \\ "") do
+  @doc """
+  Serves the fixture at `path` until the test exits. `opts` is the guest
+  certificate PEM, or a keyword list of `:guest_pem`, `:extensions` (the
+  discovery record's API extensions) and `:script`, a function of
+  `%{method, path, qs, headers, body}` answering scripted routes (see
+  `Handler`) or `nil` for the built-in ones. Returns `%{ref, connections}`;
+  `open_connections/1` counts backend connections still open.
+  """
+  def start!(path, observer, opts \\ "") do
+    opts = if is_binary(opts), do: [guest_pem: opts], else: opts
     ref = {__MODULE__, make_ref()}
-    state = %{observer: observer, guest_pem: guest_pem}
+    connections = :counters.new(1, [:atomics])
+
+    state = %{
+      observer: observer,
+      guest_pem: Keyword.get(opts, :guest_pem, ""),
+      extensions: Keyword.get(opts, :extensions, ["certificate_update", "instances"]),
+      script: Keyword.get(opts, :script),
+      channels: :ets.new(__MODULE__, [:set, :public])
+    }
+
     dispatch = :cowboy_router.compile([{:_, [{:_, __MODULE__.Handler, state}]}])
     inner = path <> ".cowboy"
 
@@ -27,7 +44,7 @@ defmodule Macus.TestSupport.IncusBackend do
       :gen_tcp.listen(0, [:binary, active: false, ip: {:local, String.to_charlist(path)}])
 
     File.chmod!(path, 0o600)
-    acceptor = spawn(fn -> accept(listener, inner) end)
+    acceptor = spawn(fn -> accept(listener, inner, connections) end)
     :ok = :gen_tcp.controlling_process(listener, acceptor)
 
     ExUnit.Callbacks.on_exit(fn ->
@@ -37,16 +54,32 @@ defmodule Macus.TestSupport.IncusBackend do
       File.rm(inner)
     end)
 
-    ref
+    %{ref: ref, connections: connections}
   end
 
-  defp accept(listener, inner) do
+  @doc "Backend connections accepted and not yet closed."
+  def open_connections(%{connections: connections}), do: :counters.get(connections, 1)
+
+  defp accept(listener, inner, connections) do
     case :gen_tcp.accept(listener) do
       {:ok, client} ->
-        pid = spawn(fn -> receive(do: (:go -> splice(client, inner))) end)
+        :counters.add(connections, 1, 1)
+
+        pid =
+          spawn(fn ->
+            receive do
+              :go ->
+                try do
+                  splice(client, inner)
+                after
+                  :counters.sub(connections, 1, 1)
+                end
+            end
+          end)
+
         :ok = :gen_tcp.controlling_process(client, pid)
         send(pid, :go)
-        accept(listener, inner)
+        accept(listener, inner, connections)
 
       {:error, _} ->
         :ok
@@ -63,6 +96,13 @@ defmodule Macus.TestSupport.IncusBackend do
     up = spawn_link(fn -> pipe(client, server) end)
     :ok = :gen_tcp.controlling_process(client, up)
     pipe(server, client)
+    ref = Process.monitor(up)
+
+    receive do
+      {:DOWN, ^ref, _, _, _} -> :ok
+    after
+      5_000 -> Process.exit(up, :kill)
+    end
   end
 
   defp head(socket, acc) do
@@ -95,23 +135,110 @@ defmodule Macus.TestSupport.IncusBackend do
   @doc "The deterministic export body of `chunks` 64 KiB chunks."
   def export_chunk(i), do: :binary.copy(<<rem(i, 256), 0, 255, 13, 10>>, 13_107) <> <<i::8>>
 
+  @exec_ok "e0000000-0000-4000-8000-000000000001"
+  @exec_hang "e0000000-0000-4000-8000-000000000002"
+
+  @doc "The exec operation whose output channels finish normally."
+  def exec_ok, do: @exec_ok
+  @doc "The exec operation whose output channels end only after a signal."
+  def exec_hang, do: @exec_hang
+
   defmodule Handler do
     @moduledoc false
+    @exec_ok "e0000000-0000-4000-8000-000000000001"
+    @exec_hang "e0000000-0000-4000-8000-000000000002"
 
     def init(req, state) do
       send(state.observer, {:incus, req.method, req.path, req.qs, req.headers})
 
       if :cowboy_req.header("upgrade", req, "") |> String.downcase() == "websocket" do
-        {:cowboy_websocket, req, Map.put(state, :path, req.path),
-         %{idle_timeout: 60_000, max_frame_size: 1_048_576}}
+        secret = :cowboy_req.parse_qs(req) |> List.keyfind("secret", 0)
+        state = Map.merge(state, %{path: req.path, secret: secret && elem(secret, 1)})
+        {:cowboy_websocket, req, state, %{idle_timeout: 60_000, max_frame_size: 1_048_576}}
       else
-        {:ok, http(req.method, req.path, req, state), state}
+        {:ok, route(req, state), state}
       end
+    end
+
+    defp route(req, %{script: script} = state) when is_function(script, 1) do
+      {body, req} = body(req, "")
+
+      request = %{
+        method: req.method,
+        path: req.path,
+        qs: req.qs,
+        headers: req.headers,
+        body: body
+      }
+
+      send(state.observer, {:incus_request_body, req.method, req.path, body})
+
+      case script.(request) do
+        nil -> http(req.method, req.path, req, state)
+        response -> scripted(response, req)
+      end
+    end
+
+    defp route(req, state), do: http(req.method, req.path, req, state)
+
+    defp body(req, acc) do
+      if :cowboy_req.has_body(req) do
+        case :cowboy_req.read_body(req) do
+          {:ok, data, req} -> {acc <> data, req}
+          {:more, data, req} -> body(req, acc <> data)
+        end
+      else
+        {acc, req}
+      end
+    end
+
+    # Scripted responses: {:sync, metadata}, {:sync, status, metadata,
+    # headers}, {:async, operation}, {:error, status, message},
+    # {:binary, status, headers, body}, {:stream, headers, chunks} and
+    # {:sleep, ms, response}.
+    defp scripted({:sync, metadata}, req), do: sync(req, 200, metadata)
+
+    defp scripted({:sync, status, metadata, headers}, req),
+      do: sync(req, status, metadata, headers)
+
+    defp scripted({:error, status, message}, req), do: error(req, status, message)
+
+    defp scripted({:async, operation}, req) do
+      body =
+        Jason.encode!(%{
+          "type" => "async",
+          "status" => "Operation created",
+          "status_code" => 100,
+          "operation" => "/1.0/operations/" <> operation["id"],
+          "metadata" => operation
+        })
+
+      headers = %{
+        "content-type" => "application/json",
+        "location" => "/1.0/operations/" <> operation["id"]
+      }
+
+      :cowboy_req.reply(202, headers, body, req)
+    end
+
+    defp scripted({:binary, status, headers, body}, req),
+      do: :cowboy_req.reply(status, headers, body, req)
+
+    defp scripted({:stream, headers, chunks}, req) do
+      req = :cowboy_req.stream_reply(200, headers, req)
+      for chunk <- chunks, do: :ok = :cowboy_req.stream_body(chunk, :nofin, req)
+      :ok = :cowboy_req.stream_body("", :fin, req)
+      req
+    end
+
+    defp scripted({:sleep, ms, response}, req) do
+      Process.sleep(ms)
+      scripted(response, req)
     end
 
     defp http("GET", "/1.0", req, state) do
       sync(req, 200, %{
-        "api_extensions" => ["certificate_update", "instances"],
+        "api_extensions" => state.extensions,
         "api_status" => "stable",
         "api_version" => "1.0",
         "auth" => "trusted",
@@ -222,10 +349,56 @@ defmodule Macus.TestSupport.IncusBackend do
       {[{:text, event}], state}
     end
 
+    # Exec channels: secrets s0 (stdin), s1 (stdout), s2 (stderr) and sc
+    # (control) of operation exec_ok/0, or exec_hang/0 whose outputs end only
+    # after a control signal. Console channels: c0 (echo) and cc (control).
+    def websocket_init(%{path: "/1.0/operations/" <> rest, secret: secret} = state)
+        when secret in ["s0", "s1", "s2", "sc", "c0", "cc"] do
+      [operation, "websocket"] = String.split(rest, "/")
+      :ets.insert(state.channels, {state.secret, self()})
+      send(state.observer, {:incus_channel, operation, state.secret})
+      state = Map.merge(state, %{operation: operation, stdin: ""})
+
+      frames =
+        case {operation, state.secret} do
+          {@exec_ok, "s1"} -> [{:binary, "hello "}, {:binary, "world\n"}, {:text, ""}]
+          {@exec_ok, "s2"} -> [{:binary, "warn\n"}, {:text, ""}]
+          {@exec_hang, "s1"} -> [{:binary, "partial"}]
+          _ -> []
+        end
+
+      {frames, state}
+    end
+
     def websocket_init(state) do
       send(state.observer, {:incus_ws, self(), state.path})
       {[{:text, ~s({"command":"window-resize","args":{"width":"80","height":"24"}})}], state}
     end
+
+    def websocket_handle({:binary, data}, %{secret: "s0"} = state),
+      do: {[], %{state | stdin: state.stdin <> data}}
+
+    def websocket_handle({:text, ""}, %{secret: "s0"} = state) do
+      send(state.observer, {:exec_stdin, state.stdin})
+      {[], state}
+    end
+
+    def websocket_handle({:text, control}, %{secret: secret} = state)
+        when secret in ["sc", "cc"] do
+      message = Jason.decode!(control)
+      send(state.observer, {:incus_control, state.operation, message})
+
+      if message["command"] == "signal" do
+        for name <- ["s1", "s2"],
+            [{_, pid}] <- [:ets.lookup(state.channels, name)],
+            do: send(pid, :eof)
+      end
+
+      {[], state}
+    end
+
+    def websocket_handle({:binary, data}, %{secret: "c0"} = state),
+      do: {[{:binary, data}], state}
 
     def websocket_handle({:text, "close-me"}, state), do: {[{:close, 4000, "bye"}], state}
 
@@ -251,10 +424,15 @@ defmodule Macus.TestSupport.IncusBackend do
       {[{:binary, <<i::32, :binary.copy(<<rem(i, 256)>>, 65_532)::binary>>}], state}
     end
 
+    def websocket_info(:eof, state), do: {[{:text, ""}], state}
     def websocket_info(_message, state), do: {[], state}
 
     def terminate(reason, _req, state) do
       if Map.has_key?(state, :path), do: send(state.observer, {:incus_ws_closed, reason})
+
+      if Map.has_key?(state, :operation),
+        do: send(state.observer, {:incus_channel_closed, state.operation, state.secret})
+
       :ok
     end
   end

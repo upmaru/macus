@@ -10,14 +10,16 @@ defmodule Macus.Auth.Token do
 
   A record is `%{"id", "verifier", "principal", "scopes", "created_at",
   "expires_at", "revoked_at"}` (timestamps are ISO 8601 UTC or `nil`).
-  Scopes are limited to `scopes/0`: Macus never issues or accepts
-  `incus.native.*` scopes.
+  Scopes are limited to `scopes/0`. The `incus.native.*` scopes reach the
+  native client operations and are granted only when named explicitly; no
+  other scope implies them.
 
   `new/3` is pure. Writing records to the private store is the owner's
   administration command (task 3.4).
   """
 
-  @scopes ~w(incus.read incus.write incus.exec incus.delete runtime.read runtime.write runtime.delete)
+  @scopes ~w(incus.read incus.write incus.exec incus.delete runtime.read runtime.write runtime.delete
+             incus.native.read incus.native.write incus.native.delete incus.native.admin)
   @token ~r/\Amacus\.([0-9a-f]{16})\.([A-Za-z0-9_-]{43})\z/
   @principal ~r/\A[A-Za-z0-9][A-Za-z0-9._@-]{0,127}\z/
 
@@ -28,7 +30,7 @@ defmodule Macus.Auth.Token do
   @doc """
   Creates a token and its record for `principal` with `scopes`. Options:
   `:expires_at` (a future `DateTime`, default none) and `:now`.
-  Refuses unknown scopes, including every `incus.native.*` scope.
+  Refuses unknown, duplicate or empty scopes.
   """
   @spec new(String.t(), [String.t()], keyword()) ::
           {:ok, String.t(), map()}

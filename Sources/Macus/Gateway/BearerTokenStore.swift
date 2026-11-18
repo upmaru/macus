@@ -29,6 +29,7 @@ public struct BearerTokenStore: Sendable {
   public static let scopes = [
     "incus.read", "incus.write", "incus.exec", "incus.delete",
     "runtime.read", "runtime.write", "runtime.delete",
+    "incus.native.read", "incus.native.write", "incus.native.delete", "incus.native.admin",
   ]
   static let maxTokens = 4_096
   /// The principal of the credential `macus start` prepares for the local CLI. `token issue`

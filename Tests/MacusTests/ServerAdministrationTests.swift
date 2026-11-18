@@ -102,13 +102,30 @@ private func validRecord(id: String, extra: [String: Any] = [:]) -> [String: Any
   #expect(!stored.contains(secret))
 }
 
+@Test func nativeScopesAreIssuedOnlyWhenNamed() throws {
+  let fixture = try AdminFixture()
+  defer { fixture.remove() }
+  let composite = try fixture.store.issue(
+    principal: "agent", scopes: ["incus.read", "incus.write", "incus.exec", "incus.delete"],
+    expiresAt: nil, output: fixture.output("composite"))
+  #expect(!composite.scopes.contains { $0.hasPrefix("incus.native.") })
+  let native = try fixture.store.issue(
+    principal: "admin-agent", scopes: ["incus.read", "incus.native.read", "incus.native.admin"],
+    expiresAt: nil, output: fixture.output("native"))
+  #expect(native.scopes == ["incus.read", "incus.native.read", "incus.native.admin"])
+  #expect(
+    BearerTokenStore.scopes.filter { $0.hasPrefix("incus.native.") } == [
+      "incus.native.read", "incus.native.write", "incus.native.delete", "incus.native.admin",
+    ])
+}
+
 @Test func issuanceRefusesUnsupportedScopesPrincipalsAndExpiryWithoutWriting() throws {
   let fixture = try AdminFixture()
   defer { fixture.remove() }
   let now = Date()
   let cases: [(String, [String], Date?)] = [
-    ("laptop", ["incus.native.read"], nil),
-    ("laptop", ["incus.read", "incus.native.instances.write"], nil),
+    ("laptop", ["incus.native.instances.write"], nil),
+    ("laptop", ["incus.read", "incus.native"], nil),
     ("laptop", ["admin"], nil),
     ("laptop", ["incus.read", "incus.read"], nil),
     ("laptop", [], nil),

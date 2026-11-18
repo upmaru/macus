@@ -88,9 +88,10 @@ defmodule Macus.MCP.ExecuteTest do
       end
     end
 
-    test "registers the shared Incus and Macus runtime executors, and no native one" do
+    test "registers the shared composite, native and Macus runtime executors" do
       assert MCP.executors() == %{
                "opsmaru_incus" => Macus.Dex.IncusExecutor,
+               "opsmaru_incus_native" => Macus.Dex.NativeExecutor,
                "macus" => Macus.Dex.RuntimeExecutor
              }
     end
@@ -253,25 +254,18 @@ defmodule Macus.MCP.ExecuteTest do
     end
   end
 
-  describe "sources without an executor" do
-    test "native operations stay hidden even from a caller holding native scopes", ctx do
+  describe "native operations" do
+    test "run through the Macus host only with their own native scope", ctx do
       native = ctx.native_operation
-      scopes = ["incus.read" | Native.scopes()]
+      composite = ["incus.read", "incus.write", "incus.exec", "incus.delete"]
 
+      # Composite scopes never imply native ones: not found, nothing sent.
       assert %{"error" => %{"kind" => "not_found", "dispatched" => false}} =
-               call!(%{"operation_id" => native}, scopes, :tool_error)
+               call!(%{"operation_id" => native, "input" => %{}}, composite, :tool_error)
 
-      # Without the scope filter tama-dex would find it, and still refuse it.
-      assert %{"error" => %{"kind" => "no_executor", "dispatched" => false}} =
-               Tama.Dex.MCP.handle_execute(
-                 Macus.Dex.Index,
-                 %{"cassette" => "opsmaru_incus", "operation_id" => native, "input" => %{}},
-                 context(scopes),
-                 MCP.executors()
-               )
-
-      assert MCP.caller(context(scopes)).scopes == ["incus.read"]
       assert HTTPFixture.requests(ctx.fixture) == []
+      assert MCP.executors()["opsmaru_incus_native"] == Macus.Dex.NativeExecutor
+      assert MCP.caller(context(["incus.native.read"])).scopes == ["incus.native.read"]
     end
 
     test "the runtime executor refuses an operation the runtime document does not define" do

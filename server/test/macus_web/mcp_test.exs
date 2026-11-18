@@ -343,7 +343,7 @@ defmodule MacusWeb.MCPTest do
         valid_record,
         %{revoked_record | "revoked_at" => "2026-01-01T00:00:00Z"},
         %{expired_record | "expires_at" => "2020-01-01T00:00:00Z"},
-        %{native_record | "scopes" => ["incus.read", "incus.native.read"]},
+        %{native_record | "scopes" => ["incus.read", "incus.native.instances.write"]},
         runtime_record
       ])
 
