@@ -86,9 +86,12 @@ operation descriptors and runner. Durable tasks and connector work belong to
 later milestones. Macus owns its gateway authentication/policy, private Swift
 runtime adapter, runtime operations and the `/mcp` `search`/`execute` tools;
 the separate tama-dex index library backs `search`. Avoid a duplicate portable client, task
-engine, Opsmaru endpoint or third service. The checked historical inventory
-and Cowboy trial are reference/consumer evidence, not proof that the dependency
-is implemented or integrated. See the current tasks for the adoption gates.
+engine, Opsmaru endpoint or third service. The Cowboy trial is consumer
+evidence, not proof that the dependency is implemented or integrated. The
+library's coverage is read from the locked package: after changing its lock,
+run `mise exec -- mix macus.incus.coverage --diff <previous inventory.json>`
+and regenerate `docs/incus-coverage.md` with `mise exec -- mix
+macus.incus.coverage` (see [the shared Incus client](incus-client.md)).
 
 The private Swift adapter can be checked independently from that library:
 

@@ -20,6 +20,7 @@ defmodule Macus.Application do
           ] ++
             Macus.Auth.Streams.child_specs() ++
             Macus.Proxy.child_specs() ++
+            Macus.Incus.child_specs(gateway) ++
             dex_children(gateway) ++
             [MacusWeb.Endpoint] ++
             Macus.Gateway.children(gateway)

@@ -36,11 +36,15 @@ inventory evidence; proxy breadth is not client-port evidence.
 
 `server/mix.lock` locks `:opsmaru_incus` 0.2.3 from Hex, which delivers the
 client, gateway, composite/native operations and their release cassette. Its coverage still reports
-`complete_port=false`, so no complete-client claim is made. Durable tasks and
+`complete_port=false`, so no complete-client claim is made
+([coverage](incus-coverage.md)). Durable tasks and
 central connectors are later milestones. No fallback client or duplicate task
-engine is implemented here. Historical Macus reference inputs
-can be transferred with notices, while Macus-specific bridge, identity and
-runtime evidence remains in this repository.
+engine is implemented here. Macus binds the library to the owner's
+`incus.sock` with a readiness-gated host context and, with the serving
+gateway, starts its optional bounded client workers; the Macus reference pin,
+inventory and generator moved to the library with their notices, while
+Macus-specific bridge, identity and runtime evidence remains in this
+repository. See [the shared Incus client](incus-client.md).
 
 The Macus-owned `Macus.Runtime.Client` now provides passive private Unix HTTP
 requests to Swift, with native errors/budget payloads and bounded framing,

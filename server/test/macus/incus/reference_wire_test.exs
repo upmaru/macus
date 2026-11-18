@@ -16,7 +16,7 @@ defmodule Macus.Incus.ReferenceWireTest do
 
     module = Jason.decode!(module)
     assert module["Version"] == "v7.0.1"
-    inventory = Jason.decode!(File.read!("priv/incus/inventory.json"))
+    inventory = Macus.Incus.Coverage.inventory()
 
     for source <- inventory["sources"] do
       digest = :crypto.hash(:sha256, File.read!(Path.join(module["Dir"], source["path"])))
@@ -99,7 +99,7 @@ defmodule Macus.Incus.ReferenceWireTest do
 
   defp exercise(transport, root, tls_opts \\ []) do
     fixtures = Jason.decode!(File.read!(@fixtures))
-    pin = Jason.decode!(File.read!("priv/incus/reference.json"))
+    pin = Macus.Incus.Coverage.reference()
     assert fixtures["reference_revision"] == pin["revision"]
 
     for {fixture, index} <- Enum.with_index(fixtures["cases"]) do

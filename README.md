@@ -221,6 +221,7 @@ mise run spec:validate
 - [Macus server: HTTPS, trust and credentials](docs/server.md)
 - [Runtime API and tama-machine contract](docs/api.md)
 - [MCP: search and execute](docs/mcp.md) and the [operation manifest](docs/mcp-operations.md)
+- [The shared Incus client](docs/incus-client.md) and its [coverage](docs/incus-coverage.md)
 - [Architecture and scope](docs/architecture.md)
 - [Per-user launchd packaging](Packaging/README.md)
 - [OpenSpec design and decisions](openspec/changes/archive/2026-10-04-native-incus-runtime/design.md)
