@@ -195,6 +195,33 @@ defmodule Macus.ServerDocsTest do
            }
   end
 
+  test "the documented native paths and stream limits are the gateway's" do
+    [_, native] = String.split(File.read!(@doc_path), "## Native Incus\n", parts: 2)
+    [native, _] = String.split(native, "\n## ", parts: 2)
+
+    limits = Macus.Proxy.limits()
+
+    connection =
+      Opsmaru.Incus.Connection.unix!("/private/tmp/macus-docs.sock", owner: {:macus, "docs"})
+
+    row = fn name ->
+      [_, value] = Regex.run(~r/^\| #{name} \| ([^|]+) \|/m, native)
+      String.trim(value)
+    end
+
+    assert row.("Concurrent native exchanges") == Integer.to_string(limits.max_exchanges)
+    assert row.("Idle stream") =~ "#{div(limits.idle_timeout, 1000)} seconds"
+    assert limits.max_lifetime == 3_600_000 and row.("Exchange lifetime") == "1 hour"
+    assert connection.max_stream_bytes == 1_073_741_824 and connection.max_chunk_bytes == 65_536
+    assert row.("Body per stream") == "1 GiB, read 64 KiB at a time"
+    assert row.("Revocation and expiry") == "#{div(limits.recheck_interval, 1000)} seconds"
+
+    # The raw routes named are exactly the shared handler's.
+    assert native =~ "`GET /1.0/instances/NAME/sftp` and `/nbd`"
+    assert native =~ "`GET /1.0/storage-pools/POOL/volumes/TYPE/NAME/sftp` and `/nbd`"
+    assert native =~ "There is no `/incus`"
+  end
+
   defp free_port do
     {:ok, socket} = :gen_tcp.listen(0, ip: {127, 0, 0, 1})
     {:ok, port} = :inet.port(socket)

@@ -118,6 +118,52 @@ unredeemed tokens. Enrolled certificates are managed with the standard
 `--server-certificate` is the gateway certificate clients pin: the operator
 certificate, or `<state-dir>/server/gateway.crt` for the generated identity.
 
+## Native Incus
+
+Native Incus clients use the same HTTPS listener as the runtime API and `/mcp`,
+at the canonical paths only: `/`, `/1.0` and `/1.0/*`. There is no `/incus`
+prefix or other alias, and nothing else listens. Standard clients such as
+`incus` connect unmodified, with no patch or Macus plugin. Requests,
+WebSockets and raw upgrades reach the guest's `incus.sock` only after the
+client certificate is found in gateway trust. Requests keep their method,
+path, query, conditional headers, body and status, and errors arrive in
+Incus's own shape. Hop-by-hop headers (`Connection` and the headers it names,
+`Keep-Alive`, `TE`, `Upgrade`, `Proxy-*`), credentials and forwarding headers
+are not passed on.
+
+| Native path | Through the gateway |
+| --- | --- |
+| HTTP requests under `/1.0` | Relayed and streamed, including binary uploads and chunked downloads |
+| WebSockets (`/1.0/events`, operation channels) | Data and Incus JSON control frames relayed both ways; ping/pong answered locally on each side; close codes and reasons preserved |
+| `GET /1.0/instances/NAME/sftp` and `/nbd`, `GET /1.0/storage-pools/POOL/volumes/TYPE/NAME/sftp` and `/nbd` | HTTP/1.1 `Upgrade` switched to a byte tunnel only after the guest itself accepts it; bytes sent along with the handshake, binary traffic and half-close are preserved |
+
+The gateway's identity differs from the guest's in four places:
+
+- Anonymous `GET /` and `GET /1.0` are answered by the gateway itself and
+  never reach the guest.
+- An authenticated `GET /1.0` reports the gateway's certificate and
+  advertised addresses instead of the guest's. Its `api_extensions` are
+  limited to those both the guest and the gateway support.
+- `/1.0/certificates` manages gateway trust and redeems enrollment tokens. It
+  never touches the guest's own trust store.
+- If `incus.sock` can't be reached, native requests fail with
+  `502 Backend is unavailable`, while `/runtime/status` stays readable (see
+  [the API](api.md)).
+
+Native streams have fixed limits:
+
+| Limit | Value | When it is reached |
+| --- | --- | --- |
+| Concurrent native exchanges | 64 | The next native request is a `503 Gateway is at capacity`. `/runtime` and `/mcp` are not counted. A finished, failed or disconnected exchange frees its slot |
+| Idle stream | 60 seconds without bytes in either direction | The exchange is closed |
+| Exchange lifetime | 1 hour | The exchange is closed, even if still active |
+| Body per stream | 1 GiB, read 64 KiB at a time | The request or response fails |
+| Revocation and expiry | 5 seconds | Open exchanges for a removed or expired certificate close |
+
+A slow reader holds the guest back rather than making the gateway buffer.
+A transfer or interactive session that runs past an hour is closed at that
+limit.
+
 ## Bearer tokens
 
 `/mcp` takes scoped bearer tokens instead of client certificates; the

@@ -263,24 +263,58 @@ defmodule Macus.TestSupport.NativeBackend do
   defp serve(socket, opts) do
     try do
       {head, body} = read_head(socket, "")
-      send(opts.observer, {:backend_request, head})
-      protocol = opts.protocol
-      reply_protocol = Map.get(opts, :reply_protocol, protocol)
 
-      :ok =
-        :gen_tcp.send(socket, [
-          "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: ",
-          reply_protocol,
-          "\r\n\r\n",
-          opts.initial
-        ])
-
-      if Map.get(opts, :half_close, false), do: :gen_tcp.shutdown(socket, :write)
-      echo(socket, body, opts)
+      if String.starts_with?(head, "GET /1.0 ") do
+        discovery(socket)
+      else
+        upgrade(socket, head, body, opts)
+      end
     after
       :gen_tcp.close(socket)
       send(opts.observer, {:backend_closed, self()})
     end
+  end
+
+  # Plain GET /1.0 as an official client's connection sends first.
+  defp discovery(socket) do
+    body =
+      Jason.encode!(%{
+        type: "sync",
+        status: "Success",
+        status_code: 200,
+        metadata: %{
+          api_version: "1.0",
+          api_extensions: ["instance_nbd"],
+          api_status: "stable",
+          auth: "trusted",
+          public: false,
+          environment: %{addresses: ["10.0.2.15:8443"], certificate: ""}
+        }
+      })
+
+    :gen_tcp.send(socket, [
+      "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: ",
+      Integer.to_string(byte_size(body)),
+      "\r\nconnection: close\r\n\r\n",
+      body
+    ])
+  end
+
+  defp upgrade(socket, head, body, opts) do
+    send(opts.observer, {:backend_request, head})
+    protocol = opts.protocol
+    reply_protocol = Map.get(opts, :reply_protocol, protocol)
+
+    :ok =
+      :gen_tcp.send(socket, [
+        "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: ",
+        reply_protocol,
+        "\r\n\r\n",
+        opts.initial
+      ])
+
+    if Map.get(opts, :half_close, false), do: :gen_tcp.shutdown(socket, :write)
+    echo(socket, body, opts)
   end
 
   defp read_head(socket, bytes) do

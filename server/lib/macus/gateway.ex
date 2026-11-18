@@ -46,6 +46,12 @@ defmodule Macus.Gateway do
   occupied port fails startup; ranch's `SO_REUSEADDR` does not let it share
   an address another socket is listening on.
 
+  Every request enters `Opsmaru.Incus.Gateway.CowboyHandler`, which
+  switches native SFTP/NBD upgrades under `/1.0` to the shared raw tunnel
+  after `Macus.Proxy` host policy, and hands all other requests (native
+  HTTP and WebSockets, `/runtime`, `/mcp`) to `MacusWeb.Endpoint`. The
+  library opens no listener of its own.
+
   ## Endpoint metadata
 
   Once listening, the gateway atomically replaces the owner-private
@@ -233,7 +239,7 @@ defmodule Macus.Gateway do
   @spec listener(t()) :: Supervisor.child_spec()
   def listener(%__MODULE__{config: config, certificate: certificate}) do
     dispatch =
-      :cowboy_router.compile([{:_, [{:_, Plug.Cowboy.Handler, {MacusWeb.Endpoint, []}}]}])
+      :cowboy_router.compile([{:_, [{:_, Opsmaru.Incus.Gateway.CowboyHandler, handler()}]}])
 
     transport = %{
       num_acceptors: 8,
@@ -262,6 +268,16 @@ defmodule Macus.Gateway do
     @listener
     |> :ranch.child_spec(:ranch_ssl, transport, :cowboy_tls, protocol)
     |> Supervisor.child_spec(id: @listener)
+  end
+
+  @doc false
+  # Native raw upgrades through the shared gateway, everything else through
+  # the Phoenix endpoint.
+  def handler do
+    %{
+      gateway: {Macus.Proxy, :gateway, []},
+      fallback: {Plug.Cowboy.Handler, {MacusWeb.Endpoint, []}}
+    }
   end
 
   @doc false

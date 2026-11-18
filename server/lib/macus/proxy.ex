@@ -22,7 +22,9 @@ defmodule Macus.Proxy do
           api_extensions: ["certificate_update", ...]
         ],
         max_exchanges: 64,
-        recheck_interval: 5_000
+        recheck_interval: 5_000,
+        idle_timeout: 60_000,
+        max_lifetime: 3_600_000
 
   plus `config :macus, :state_dir`. When serving, the running gateway's
   (`Macus.Gateway`) state directory is used, and `owner_uid`, `owner_key`
@@ -38,6 +40,16 @@ defmodule Macus.Proxy do
   expires: the shared gateway rechecks the grant within it, including
   callback and interruption time, and closes the exchange when it no longer
   holds. New requests are refused at once.
+
+  `max_exchanges` (default 64) caps concurrent native exchanges, so
+  saturated or idle native streams leave the listener's other connections
+  for `/runtime`, `/mcp` and new authentication; one beyond it is refused
+  with 503 before backend access, and a finished, failed or disconnected
+  exchange returns its slot. `idle_timeout` (default 60 s, the longest
+  silence in either direction) and `max_lifetime` (default 1 hour, the
+  absolute budget of one exchange) end streams that stop moving or run too
+  long; both are passed to the shared gateway, which also bounds bodies to
+  1 GiB per stream and reads at most 64 KiB at a time.
   Without valid configuration `gateway/0` returns `:error` and every native
   request is refused with 503 before backend access.
   """
@@ -48,10 +60,34 @@ defmodule Macus.Proxy do
   @admission Macus.Proxy.Admission
   # The documented revocation bound for active native exchanges.
   @recheck_interval 5_000
+  @max_exchanges 64
+  @idle_timeout 60_000
+  @max_lifetime 3_600_000
+
+  @doc """
+  The native stream limits in effect: concurrent exchanges, idle and
+  lifetime budgets and the revocation bound, in ms.
+  """
+  @spec limits() :: %{
+          max_exchanges: pos_integer(),
+          idle_timeout: pos_integer(),
+          max_lifetime: pos_integer(),
+          recheck_interval: pos_integer()
+        }
+  def limits do
+    env = Application.get_env(:macus, __MODULE__, [])
+
+    %{
+      max_exchanges: Keyword.get(env, :max_exchanges, @max_exchanges),
+      idle_timeout: Keyword.get(env, :idle_timeout, @idle_timeout),
+      max_lifetime: Keyword.get(env, :max_lifetime, @max_lifetime),
+      recheck_interval: Keyword.get(env, :recheck_interval, @recheck_interval)
+    }
+  end
 
   @doc "Admission, trust and enrollment processes for the application supervisor."
   def child_specs do
-    max = Keyword.get(Application.get_env(:macus, __MODULE__, []), :max_exchanges, 64)
+    max = limits().max_exchanges
 
     [
       {Gateway.Admission, name: @admission, max_exchanges: max},
@@ -76,6 +112,8 @@ defmodule Macus.Proxy do
       connection =
         Connection.unix!(Path.join(state.state_dir, "incus.sock"), owner: {:macus, key})
 
+      limits = limits()
+
       Gateway.new!(
         connection: connection,
         host: Macus.Proxy.Host,
@@ -86,7 +124,9 @@ defmodule Macus.Proxy do
           clock: Keyword.get(env, :clock)
         },
         admission: @admission,
-        recheck_interval: Keyword.get(env, :recheck_interval, @recheck_interval),
+        recheck_interval: limits.recheck_interval,
+        idle_timeout: limits.idle_timeout,
+        max_lifetime: limits.max_lifetime,
         identity_scope:
           Keyword.get_lazy(env, :identity_scope, fn ->
             Macus.Gateway.identity_scope() || :public

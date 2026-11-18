@@ -179,6 +179,30 @@ func typedCall(client incus.InstanceServer, input Input) {
 		}
 	case "delete":
 		err = client.DeleteCertificate(input.Fingerprint)
+	case "list":
+		result["instances"], err = client.GetInstanceNames(api.InstanceTypeAny)
+	case "events":
+		// The client derives the events WebSocket URL from its remote URL.
+		var listener *incus.EventListener
+		listener, err = client.GetEvents()
+		if err == nil {
+			received := make(chan api.Event, 1)
+			_, err = listener.AddHandler(nil, func(event api.Event) {
+				select {
+				case received <- event:
+				default:
+				}
+			})
+			if err == nil {
+				select {
+				case event := <-received:
+					result["event"] = event
+				case <-time.After(3 * time.Second):
+					err = fmt.Errorf("no event received")
+				}
+			}
+			listener.Disconnect()
+		}
 	case "enroll":
 		// As `incus remote add NAME TOKEN` (cmd/incus/remote.go addRemoteFromToken):
 		// decode the token, check the served certificate against its
