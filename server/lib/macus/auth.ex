@@ -17,6 +17,23 @@ defmodule Macus.Auth do
   @spec owner_key(non_neg_integer()) :: String.t()
   def owner_key(uid) when is_integer(uid) and uid >= 0, do: "macus-owner:#{uid}"
 
+  @doc """
+  Fills `:owner_uid` and `:owner_key` from the serving gateway, which
+  verified its owner at start, unless `env` names them. Without a serving
+  gateway `env` is returned unchanged, so missing configuration still
+  denies.
+  """
+  @spec owner_defaults(keyword()) :: keyword()
+  def owner_defaults(env) when is_list(env) do
+    case Macus.Gateway.current() do
+      %Macus.Gateway{uid: uid} ->
+        env |> Keyword.put_new(:owner_uid, uid) |> Keyword.put_new(:owner_key, owner_key(uid))
+
+      nil ->
+        env
+    end
+  end
+
   @max_token_bytes 4_096
   # RFC 6750 b64token characters.
   @token ~r/\A[A-Za-z0-9\-._~+\/]+=*\z/

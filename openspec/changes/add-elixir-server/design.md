@@ -227,7 +227,7 @@ Both carry matched immutable Macus source revision/package version metadata. The
 1. Read the locked `opsmaru_incus` version from `server/mix.lock`.
 2. Download `opsmaru_incus-<version>.tama-cassette` and its `.sha256` from that upmaru/opsmaru-incus GitHub Release.
 3. Verify the hash and the provenance attestation (`gh attestation verify --repo upmaru/opsmaru-incus`).
-4. Bundle the file and record its SHA-256 in build metadata as the import pin.
+4. Bundle the file at `priv/cassettes/opsmaru_incus-<version>.tama-cassette` and record its SHA-256 in build metadata as the import pin (`MACUS_CASSETTE_SHA256` at release build time, read as `config :macus, Macus.Build, cassette_sha256:`). A build without a valid pin starts with that cassette reported as failed (`unpinned_bundle`), never importing an unpinned file.
 
 Any failure fails the build. There is no hand-maintained second pin. Keep signatures, real hashes and build-platform provenance; development artifacts retain their honest ad-hoc status.
 

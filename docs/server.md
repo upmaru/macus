@@ -166,8 +166,9 @@ limit.
 
 ## Bearer tokens
 
-`/mcp` takes scoped bearer tokens instead of client certificates; the
-`runtime.*` scopes are for the public runtime API:
+`/mcp` takes scoped bearer tokens instead of client certificates (see
+[the MCP guide](mcp.md)); the `runtime.*` scopes are also for the public
+runtime API:
 
 ```bash
 macus server token issue --principal laptop --scope incus.read --scope runtime.read \

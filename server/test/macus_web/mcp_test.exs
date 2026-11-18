@@ -79,6 +79,24 @@ defmodule MacusWeb.MCPTest do
                %{"name" => "macus", "version" => Macus.MCP.Server.version()}
     end
 
+    test "resource, prompt, task, subscription and completion methods are not served" do
+      for {method, params, name} <- [
+            {"resources/list", %{}, nil},
+            {"resources/read", %{"uri" => "file:///etc/hosts"}, "file:///etc/hosts"},
+            {"resources/templates/list", %{}, nil},
+            {"resources/subscribe", %{"uri" => "file:///etc/hosts"}, nil},
+            {"prompts/list", %{}, nil},
+            {"prompts/get", %{"name" => "shell"}, "shell"},
+            {"tasks/list", %{}, nil},
+            {"tasks/get", %{"taskId" => "t1"}, "t1"},
+            {"completion/complete", %{}, nil}
+          ] do
+        %{body: body} = rpc(method, params, name: name)
+        refute Map.has_key?(body, "result"), method
+        assert body["error"]["code"] == -32601, "#{method}: #{inspect(body["error"])}"
+      end
+    end
+
     test "the server version follows the project version" do
       assert Macus.MCP.Server.version() == Mix.Project.config()[:version]
     end

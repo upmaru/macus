@@ -16,6 +16,17 @@ defmodule Macus.Build do
   equal the revision the launching Swift component expects, and the loaded
   `:opsmaru_incus` must be the locked version. It reads only loaded
   application metadata and opens nothing.
+
+  ## Bundled operation cassette
+
+  The release bundles the opsmaru_incus tama-dex cassette for the locked
+  version at `priv/cassettes/opsmaru_incus-<version>.tama-cassette`, and
+  records its SHA-256 at build time,
+
+      config :macus, Macus.Build, cassette_sha256: "<64 lowercase hex>"
+
+  set from `MACUS_CASSETTE_SHA256`. `cassette/0` is the import the
+  operation index installs from them; nothing is ever downloaded at start.
   """
 
   @lock Path.expand("../../mix.lock", __DIR__)
@@ -72,6 +83,36 @@ defmodule Macus.Build do
       true -> :ok
     end
   end
+
+  @doc """
+  The bundled `opsmaru_incus` cassette import for `Macus.Dex.Config`:
+  `%{cassette, path, sha256}` for the locked version, or `%{cassette,
+  unavailable: :unpinned_bundle}` when the build recorded no valid pin, so
+  the index reports that cassette as failed instead of importing an
+  unpinned file.
+  """
+  @spec cassette() ::
+          %{cassette: String.t(), path: String.t(), sha256: String.t()}
+          | %{cassette: String.t(), unavailable: :unpinned_bundle}
+  def cassette do
+    pin = Keyword.get(Application.get_env(:macus, __MODULE__, []), :cassette_sha256)
+
+    if is_binary(pin) and Regex.match?(~r/\A[0-9a-f]{64}\z/, pin) do
+      %{cassette: "opsmaru_incus", path: cassette_path(), sha256: pin}
+    else
+      %{cassette: "opsmaru_incus", unavailable: :unpinned_bundle}
+    end
+  end
+
+  @doc "Where the release bundles the cassette for the locked `:opsmaru_incus` version."
+  @spec cassette_path() :: String.t()
+  def cassette_path,
+    do:
+      Application.app_dir(:macus, [
+        "priv",
+        "cassettes",
+        "opsmaru_incus-#{@opsmaru_incus.version}.tama-cassette"
+      ])
 
   defp revision, do: Keyword.get(Application.get_env(:macus, __MODULE__, []), :revision)
 

@@ -29,11 +29,13 @@ defmodule Macus.MCP.IncusHost do
   `config :macus, Macus.MCP.IncusHost, ...`:
 
   - `:owner_uid`: the verified host owner, who must own `incus.sock` and
-    its directory.
-  - `:owner_key`: the owner key verified callers carry (required).
+    its directory. Defaults to the serving gateway's owner.
+  - `:owner_key`: the owner key verified callers carry. Defaults to the
+    serving gateway owner's `Macus.Auth.owner_key/1`.
   - `:ready`: `{module, function, args}` returning `true` when the host
-    identity and Incus backend are ready (required; without it nothing is
-    dispatched).
+    identity and Incus backend are ready. Defaults to
+    `Macus.Gateway.serving?/0` while the gateway serves; without a serving
+    gateway or this setting nothing is dispatched.
   - `:image_remotes`: approved remotes, `%{name => %{"server" =>
     "https://...", "protocol" => "simplestreams" | "incus" | "oci"}}`.
     Default `%{}`.
@@ -181,7 +183,10 @@ defmodule Macus.MCP.IncusHost do
   # Read per call, so a configuration change takes effect without a restart
   # and an invalid one denies instead of crashing.
   defp config do
-    env = Application.get_env(:macus, __MODULE__, [])
+    env =
+      Application.get_env(:macus, __MODULE__, [])
+      |> Macus.Auth.owner_defaults()
+      |> default_ready()
 
     with {:ok, state} <- Configuration.new(Application.get_env(:macus, :state_dir)),
          {:ok, uid} <- fetch(env, :owner_uid, &(is_integer(&1) and &1 >= 0)),
@@ -205,6 +210,14 @@ defmodule Macus.MCP.IncusHost do
     else
       _ -> {:error, :host_unconfigured}
     end
+  end
+
+  # While the gateway serves, its own identity check is the default
+  # readiness; without it nothing is dispatched.
+  defp default_ready(env) do
+    if Macus.Gateway.serving?(),
+      do: Keyword.put_new(env, :ready, {Macus.Gateway, :serving?, []}),
+      else: env
   end
 
   defp fetch(env, key, valid?) do

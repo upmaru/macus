@@ -11,7 +11,7 @@ defmodule Macus.Application do
   def start(_type, _args) do
     # The public listener starts only when serving and after its preflight;
     # a failed preflight stops startup instead of falling back.
-    case Macus.Gateway.children() do
+    case Macus.Gateway.serving() do
       {:ok, gateway} ->
         children =
           [
@@ -20,9 +20,9 @@ defmodule Macus.Application do
           ] ++
             Macus.Auth.Streams.child_specs() ++
             Macus.Proxy.child_specs() ++
-            dex_children() ++
+            dex_children(gateway) ++
             [MacusWeb.Endpoint] ++
-            gateway
+            Macus.Gateway.children(gateway)
 
         # See https://elixir.hexdocs.pm/Supervisor.html
         # for other strategies and supported options
@@ -35,10 +35,14 @@ defmodule Macus.Application do
     end
   end
 
-  # The operation index starts only when explicitly enabled; a default start
-  # stays passive and opens or creates nothing. It is a temporary child, so
-  # an index failure never stops the server.
-  defp dex_children do
+  # The operation index starts with the serving gateway, owned by its user
+  # and under its state directory. Without a serving gateway it starts only
+  # when explicitly enabled, so a default start opens or creates nothing. It
+  # is a temporary child, so an index failure never stops the server.
+  defp dex_children(%Macus.Gateway{} = gateway),
+    do: Macus.Dex.children(Application.get_env(:macus, Macus.Dex, []), gateway)
+
+  defp dex_children(nil) do
     state =
       case Macus.Configuration.new(Application.get_env(:macus, :state_dir)) do
         {:ok, config} -> config

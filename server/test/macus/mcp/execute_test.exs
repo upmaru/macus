@@ -295,6 +295,59 @@ defmodule Macus.MCP.ExecuteTest do
     end
   end
 
+  describe "owner defaults from the serving gateway" do
+    setup do
+      root = Application.fetch_env!(:macus, :state_dir)
+      {:ok, state} = Macus.Configuration.new(root)
+      uid = File.stat!(root).uid
+      # The host settings name no owner and no readiness check.
+      Application.put_env(:macus, IncusHost, [])
+      on_exit(&Macus.Gateway.clear_current/0)
+
+      gateway = %Macus.Gateway{state: state, uid: uid, config: nil, certificate: nil, build: nil}
+      %{gateway: gateway, owner_key: Macus.Auth.owner_key(uid)}
+    end
+
+    test "a serving gateway supplies the owner and readiness", ctx do
+      Macus.Gateway.put_current(ctx.gateway)
+
+      arguments = %{
+        "cassette" => "opsmaru_incus",
+        "operation_id" => "incus_server_get",
+        "input" => %{}
+      }
+
+      assert %{"result" => %{"item" => %{"api_version" => "1.0"}}} =
+               MCP.execute(arguments, %{context(["incus.read"]) | owner_key: ctx.owner_key})
+
+      assert [%{method: "GET", target: "/1.0"} | _] = HTTPFixture.requests(ctx.fixture)
+
+      sent = length(HTTPFixture.requests(ctx.fixture))
+
+      # A caller verified for another owner is still refused, before any request.
+      assert %{"operation_error" => %{"error" => %{"kind" => "host_binding_failed"}}} =
+               MCP.execute(arguments, context(["incus.read"]))
+
+      assert length(HTTPFixture.requests(ctx.fixture)) == sent
+    end
+
+    test "without a serving gateway or settings nothing is dispatched", ctx do
+      Macus.Gateway.clear_current()
+
+      assert %{"operation_error" => %{"error" => %{"kind" => "host_binding_failed"}}} =
+               MCP.execute(
+                 %{
+                   "cassette" => "opsmaru_incus",
+                   "operation_id" => "incus_server_get",
+                   "input" => %{}
+                 },
+                 %{context(["incus.read"]) | owner_key: ctx.owner_key}
+               )
+
+      assert HTTPFixture.requests(ctx.fixture) == []
+    end
+  end
+
   defmodule RaisingExecutor do
     @behaviour Tama.Dex.Executor
     @impl true

@@ -109,6 +109,9 @@ defmodule Macus.Dex.Bootstrap do
 
   def handle_info(_message, state), do: {:noreply, state}
 
+  defp start_import(%{cassette: name, unavailable: reason}, state),
+    do: put_entry(state, name, :imported, {:failed, reason})
+
   defp start_import(spec, state) do
     name = spec.cassette
 
@@ -240,6 +243,9 @@ defmodule Macus.Dex.Bootstrap do
   defp guidance(:sha256_mismatch),
     do:
       "The bundled cassette does not match the SHA-256 pin recorded at build time. " <> @reinstall
+
+  defp guidance(:unpinned_bundle),
+    do: "This build recorded no SHA-256 pin for its bundled cassette. " <> @reinstall
 
   defp guidance({:file, :enoent}), do: "The bundled cassette is missing. " <> @reinstall
   defp guidance({:file, _}), do: "The bundled cassette cannot be read. " <> @reinstall

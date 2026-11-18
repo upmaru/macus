@@ -50,10 +50,13 @@ client. The authenticated public routes are still pending implementation.
 `/mcp` is mounted: the TamaMCP Streamable HTTP transport serves
 `Macus.MCP.Server` (`search` and `execute`, synchronous, no task capability)
 at exactly that path with a 1 MiB body limit. `Macus.MCP.Authorization`
-requires a bearer credential and accepts it only from a configured verifier,
-which Macus's token store supplies with task 3.3; until then every request is
-refused with 401. The operation index subtree starts only when enabled, which
-waits on the gateway state directory and the release-bundled cassette.
+verifies bearer tokens against Macus's token store (`Macus.Auth.Bearer`) and
+refuses anything else with 401. The operation index subtree starts with the
+serving gateway, owned by its user: it imports the release-bundled
+`opsmaru_incus` cassette, pinned by the SHA-256 recorded at build time, and
+loads the `macus` runtime document. The Incus operations host and the
+runtime executor take their owner from the same gateway. See
+[the MCP guide](mcp.md) and [the operation manifest](mcp-operations.md).
 
 Optional explicit `macus connect [url]` will register only this selected Macus
 target with central Opsmaru and enable an outbound connector inside the same

@@ -23,10 +23,11 @@ defmodule Macus.Dex.RuntimeExecutor do
 
   The state directory is `config :macus, :state_dir`. Executor settings are
   `config :macus, Macus.Dex.RuntimeExecutor, ...`: `:owner_uid` (owner of
-  `runtime.sock`), `:owner_key` (the key verified callers carry),
+  `runtime.sock`), `:owner_key` (the key verified callers carry), both
+  defaulting to the serving gateway's owner (`Macus.Auth.owner_defaults/1`),
   `:read_timeout_ms` (default 15 000) and `:mutation_timeout_ms` (default
-  25 000, below the MCP request deadline). Missing configuration denies
-  every call.
+  25 000, below the MCP request deadline). Missing configuration, with no
+  serving gateway to default from, denies every call.
   """
 
   @behaviour Tama.Dex.Executor
@@ -249,7 +250,7 @@ defmodule Macus.Dex.RuntimeExecutor do
   # Configuration, read per call; anything invalid denies.
 
   defp config do
-    env = Application.get_env(:macus, __MODULE__, [])
+    env = Macus.Auth.owner_defaults(Application.get_env(:macus, __MODULE__, []))
 
     with {:ok, state} <- Configuration.new(Application.get_env(:macus, :state_dir)),
          uid when is_integer(uid) and uid >= 0 <- Keyword.get(env, :owner_uid),

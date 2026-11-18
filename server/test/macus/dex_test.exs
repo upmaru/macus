@@ -284,6 +284,120 @@ defmodule Macus.DexTest do
     end
   end
 
+  describe "starting with the serving gateway" do
+    setup ctx do
+      {:ok, state} = Configuration.new(ctx.root)
+
+      gateway = %Macus.Gateway{
+        state: state,
+        uid: ctx.uid,
+        config: nil,
+        certificate: nil,
+        build: nil
+      }
+
+      previous = Application.fetch_env(:macus, Macus.Build)
+
+      on_exit(fn ->
+        case previous do
+          {:ok, value} -> Application.put_env(:macus, Macus.Build, value)
+          :error -> Application.delete_env(:macus, Macus.Build)
+        end
+      end)
+
+      %{gateway: gateway}
+    end
+
+    test "is on by default, owned by the gateway user, with the bundled cassette", ctx do
+      pin = String.duplicate("ab", 32)
+      Application.put_env(:macus, Macus.Build, cassette_sha256: pin)
+
+      # The environment cannot move the index or change its owner.
+      env = [owner_uid: ctx.uid + 1, index_path: "/private/tmp/elsewhere.sqlite3"]
+      assert [%{restart: :temporary, start: {_, _, [opts]}}] = Dex.children(env, ctx.gateway)
+      assert {:ok, config} = opts[:config]
+      assert config.owner_uid == ctx.uid
+      assert config.index_path == ctx.index_path
+      assert config.documents == [Dex.runtime_document()]
+
+      version = Macus.Build.identity().opsmaru_incus.version
+      assert [%{cassette: "opsmaru_incus", path: path, sha256: ^pin}] = config.imports
+      assert path == Macus.Build.cassette_path()
+      assert Path.basename(path) == "opsmaru_incus-#{version}.tama-cassette"
+      assert path |> Path.dirname() |> Path.basename() == "cassettes"
+
+      assert Dex.children([enabled: false], ctx.gateway) == []
+    end
+
+    test "a build without a cassette pin fails only that cassette", ctx do
+      Application.put_env(:macus, Macus.Build, [])
+      assert %{cassette: "opsmaru_incus", unavailable: :unpinned_bundle} = Macus.Build.cassette()
+
+      [spec] = Dex.children([], ctx.gateway)
+      start_supervised!(spec)
+
+      assert_receive {:dex_event, "opsmaru_incus", :failed}, 5_000
+      assert_receive {:dex_event, "macus", :ready}, 5_000
+
+      readiness = Dex.readiness()
+      assert readiness.status == :degraded
+      assert {:failed, :unpinned_bundle} = readiness.cassettes["opsmaru_incus"].status
+      assert readiness.cassettes["opsmaru_incus"].guidance =~ "no SHA-256 pin"
+      assert readiness.cassettes["macus"].status == :ready
+      assert File.regular?(ctx.index_path)
+    end
+
+    test "a pinned bundle that is absent is reported, never fetched", ctx do
+      Application.put_env(:macus, Macus.Build, cassette_sha256: String.duplicate("cd", 32))
+      [spec] = Dex.children([], ctx.gateway)
+      start_supervised!(spec)
+
+      assert_receive {:dex_event, "opsmaru_incus", :failed}, 5_000
+      readiness = Dex.readiness()
+      assert {:failed, {:file, :enoent}} = readiness.cassettes["opsmaru_incus"].status
+      assert readiness.cassettes["opsmaru_incus"].guidance =~ "missing"
+      refute File.exists?(Macus.Build.cassette_path())
+    end
+
+    test "execute answers not_ready, undispatched, while a first import runs", ctx do
+      dex = start_dex!(config!(ctx, documents: [macus_document()]))
+      assert_receive {:dex_event, "macus", :ready}, 5_000
+      cassette = incus_cassette!(ctx, "1", ["incus_fixture_get"])
+
+      # Hold the index writer so the import is accepted but not yet committed.
+      writer = :sys.get_state(dex.index).writer
+      :sys.suspend(writer)
+
+      {:ok, ref} =
+        Tama.Dex.import(dex.index, cassette.path, sha256: cassette.sha256, async: true)
+
+      context = %TamaMCP.Context{
+        request_id: 1,
+        principal: "owner",
+        owner_key: "owner",
+        claims: %{},
+        scopes: @scopes
+      }
+
+      arguments = %{
+        "cassette" => "opsmaru_incus",
+        "operation_id" => "incus_fixture_get",
+        "input" => %{}
+      }
+
+      assert %{"error" => %{"kind" => "not_ready", "dispatched" => false}} =
+               Macus.MCP.execute(arguments, context, dex.index)
+
+      :sys.resume(writer)
+      assert_receive {:tama_dex_import, ^ref, {:ok, _}}, 5_000
+
+      refute match?(
+               %{"error" => %{"kind" => "not_ready"}},
+               Macus.MCP.execute(arguments, context, dex.index)
+             )
+    end
+  end
+
   describe "isolation from the rest of Macus" do
     test "a missed deadline fails only that cassette", ctx do
       cassette = incus_cassette!(ctx, "1", ["incus_fixture_get"])

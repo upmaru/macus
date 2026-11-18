@@ -10,8 +10,9 @@ defmodule Macus.Dex do
   gateway readiness, separate from VM readiness.
 
   The subtree is a temporary child, so an index failure can never stop the
-  Macus server or affect the VM. It starts only when `Macus.Dex` is enabled
-  in the application environment; otherwise nothing is opened or created.
+  Macus server or affect the VM. It starts with the serving gateway (see
+  `children/2`); without one, only when `Macus.Dex` is enabled in the
+  application environment, and otherwise nothing is opened or created.
   """
 
   alias Macus.Dex.{Bootstrap, Config}
@@ -44,14 +45,38 @@ defmodule Macus.Dex do
 
   @doc """
   Builds the child specifications from the `:macus, Macus.Dex` application
-  environment. Returns `[]` unless `enabled: true`, so a default start opens
-  and creates nothing.
+  environment.
 
-  The index path is derived from the selected state directory. `:owner_uid`,
-  `:imports` and `:documents` come from the environment; see
-  `Macus.Dex.Config`. `:documents` defaults to `runtime_document/0`.
+  With a serving `%Macus.Gateway{}` the subtree starts unless the
+  environment says `enabled: false`. The index lives under the gateway's
+  state directory and belongs to the gateway's user, whatever the
+  environment says; `:imports` defaults to the bundled cassette
+  (`Macus.Build.cassette/0`) and `:documents` to `runtime_document/0`.
+
+  Otherwise (a `%Macus.Configuration{}` or `nil`) it returns `[]` unless
+  `enabled: true`, so a default start opens and creates nothing; the
+  environment must then name `:owner_uid` and `:imports`. See
+  `Macus.Dex.Config`.
   """
-  @spec children(keyword(), Macus.Configuration.t() | nil) :: [Supervisor.child_spec()]
+  @spec children(keyword(), Macus.Gateway.t() | Macus.Configuration.t() | nil) ::
+          [Supervisor.child_spec()]
+  def children(env, %Macus.Gateway{state: state, uid: uid}) do
+    if Keyword.get(env, :enabled, true) do
+      config =
+        env
+        |> Keyword.drop([:enabled, :owner_uid, :index_path])
+        |> Keyword.put(:index_path, Config.index_path(state))
+        |> Keyword.put(:owner_uid, uid)
+        |> Keyword.put_new_lazy(:imports, fn -> [Macus.Build.cassette()] end)
+        |> Keyword.put_new(:documents, [runtime_document()])
+        |> Config.new()
+
+      [child_spec(config: config)]
+    else
+      []
+    end
+  end
+
   def children(env, state) do
     if Keyword.get(env, :enabled, false) do
       config =

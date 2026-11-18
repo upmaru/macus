@@ -381,6 +381,43 @@ defmodule Macus.Dex.RuntimeTest do
     end
   end
 
+  describe "owner defaults from the serving gateway" do
+    test "a serving gateway supplies the runtime owner", ctx do
+      Application.delete_env(:macus, RuntimeExecutor)
+      {:ok, state} = Macus.Configuration.new(ctx.root)
+      uid = File.stat!(ctx.root).uid
+      on_exit(&Macus.Gateway.clear_current/0)
+
+      Macus.Gateway.put_current(%Macus.Gateway{
+        state: state,
+        uid: uid,
+        config: nil,
+        certificate: nil,
+        build: nil
+      })
+
+      script(ctx, %{{"GET", "/v1/runtime/status"} => {200, %{"state" => "stopped"}}})
+
+      assert %{"result" => %{"state" => "stopped"}} =
+               Macus.MCP.execute(
+                 %{
+                   "cassette" => "macus",
+                   "operation_id" => "macus_runtime_status",
+                   "input" => %{}
+                 },
+                 context(["runtime.read"], Macus.Auth.owner_key(uid))
+               )
+
+      assert %{
+               "operation_error" => %{
+                 "error" => %{"code" => "unauthorized", "outcome" => "not_dispatched"}
+               }
+             } = run("macus_runtime_status", %{}, ["runtime.read"])
+
+      assert [%{target: "/v1/runtime/status"}] = HTTPFixture.requests(ctx.fixture)
+    end
+  end
+
   # Runs through the execute path: tama-dex checks, then the executor.
   defp run(operation, input, scopes) do
     Macus.MCP.execute(

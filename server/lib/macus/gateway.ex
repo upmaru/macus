@@ -105,22 +105,34 @@ defmodule Macus.Gateway do
   """
   @spec children() :: {:ok, [Supervisor.child_spec() | {module(), term()}]} | {:error, term()}
   def children do
+    with {:ok, gateway} <- serving(), do: {:ok, children(gateway)}
+  end
+
+  @doc "The listener and endpoint publisher for a prepared gateway; none for `nil`."
+  @spec children(t() | nil) :: [Supervisor.child_spec() | {module(), term()}]
+  def children(nil), do: []
+  def children(%__MODULE__{} = gateway), do: [listener(gateway), {__MODULE__.Publisher, gateway}]
+
+  @doc """
+  The prepared gateway when the release is told to serve, after a
+  successful preflight; `{:ok, nil}` when not serving.
+  """
+  @spec serving() :: {:ok, t() | nil} | {:error, term()}
+  def serving do
     env = Application.get_env(:macus, __MODULE__, [])
 
     if Keyword.get(env, :serve, false) == true do
       with {:ok, state} <- Configuration.new(Application.get_env(:macus, :state_dir)),
-           {:ok, uid} <- owner_uid(env),
-           {:ok, gateway} <-
-             prepare(
-               state: state,
-               uid: uid,
-               expected_revision: Keyword.get(env, :expected_revision),
-               now: DateTime.utc_now()
-             ) do
-        {:ok, [listener(gateway), {__MODULE__.Publisher, gateway}]}
+           {:ok, uid} <- owner_uid(env) do
+        prepare(
+          state: state,
+          uid: uid,
+          expected_revision: Keyword.get(env, :expected_revision),
+          now: DateTime.utc_now()
+        )
       end
     else
-      {:ok, []}
+      {:ok, nil}
     end
   end
 
@@ -329,6 +341,13 @@ defmodule Macus.Gateway do
   @doc "The running gateway, or nil when not serving."
   @spec current() :: t() | nil
   def current, do: :persistent_term.get(@current, nil)
+
+  @doc """
+  Whether a gateway is serving with its published identity. The default
+  readiness check for the operations host (`Macus.MCP.IncusHost`).
+  """
+  @spec serving?() :: boolean()
+  def serving?, do: match?(%__MODULE__{}, current())
 
   @doc false
   def put_current(gateway), do: :persistent_term.put(@current, gateway)

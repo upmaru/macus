@@ -11,6 +11,8 @@ defmodule Macus.Dex.Config do
     local path, sha256: pin}` with an optional `:as`. Every import must carry
     a SHA-256 pin, so tama-dex never silently rebuilds an unpinned cassette.
     The path is a file Macus bundles at build time; nothing is downloaded.
+    A bundle the build could not pin is `%{cassette: name, unavailable:
+    reason}`, which installs nothing and reports that cassette as failed.
   - `:documents`: local cassettes, each `%{cassette: name, document: map |
     {module, function, args}}`.
   - `:import_timeout` and `:load_timeout`: deadlines in milliseconds.
@@ -31,12 +33,14 @@ defmodule Macus.Dex.Config do
     load_timeout: 15_000
   ]
 
-  @type import_spec :: %{
-          required(:cassette) => String.t(),
-          required(:path) => String.t(),
-          required(:sha256) => String.t(),
-          optional(:as) => String.t()
-        }
+  @type import_spec ::
+          %{
+            required(:cassette) => String.t(),
+            required(:path) => String.t(),
+            required(:sha256) => String.t(),
+            optional(:as) => String.t()
+          }
+          | %{cassette: String.t(), unavailable: atom()}
   @type document_spec :: %{cassette: String.t(), document: map() | mfa()}
   @type t :: %__MODULE__{
           index_path: String.t() | :memory,
@@ -90,6 +94,13 @@ defmodule Macus.Dex.Config do
   end
 
   defp imports_opt(_), do: {:error, :invalid_imports}
+
+  defp import_spec(%{cassette: name, unavailable: reason} = spec)
+       when map_size(spec) == 2 and is_atom(reason) do
+    if name?(name),
+      do: {:ok, %{cassette: name, unavailable: reason}},
+      else: {:error, {:invalid_cassette_name, name}}
+  end
 
   defp import_spec(%{cassette: name, path: path} = spec) do
     cond do

@@ -24,3 +24,6 @@ erl_crash.dump
 
 # Ignore package tarball (built via "mix hex.build").
 macus-*.tar
+
+# The release build bundles the pinned opsmaru_incus cassette here (task 9.7).
+/priv/cassettes/
