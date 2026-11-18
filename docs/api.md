@@ -1,6 +1,6 @@
 # Local API contract
 
-The bundled `macus` client calls the control socket and can register `incus.sock` with the standard Incus CLI. See [the CLI reference](cli.md). It does not add daemon routes or implement workload operations. The daemon serves two owner-only Unix sockets in its state directory, default `~/.tama/incus-mac`. `runtime.sock` controls the outer VM. `incus.sock` carries unmodified Incus HTTP, WebSockets, exec, events and streaming operations. Possession of either socket grants privileged control of the Linux appliance; run clients as the same macOS user. No TCP listener or SSH is used.
+The bundled `macus` client calls the [public runtime API](#public-runtime-api) over the Macus server's pinned HTTPS endpoint for `runtime`, `doctor` and setup readiness, uses the control socket only while `macus start` activates the service, and can register `incus.sock` with the standard Incus CLI. See [the CLI reference](cli.md). It does not add daemon routes or implement workload operations. The daemon serves two owner-only Unix sockets in its state directory, default `~/.tama/incus-mac`. `runtime.sock` controls the outer VM. `incus.sock` carries unmodified Incus HTTP, WebSockets, exec, events and streaming operations. Possession of either socket grants privileged control of the Linux appliance; run clients as the same macOS user. No TCP listener or SSH is used.
 
 ## Public runtime API
 
@@ -60,7 +60,7 @@ Macus never changes the runtime implicitly. Directory shares, resources and time
 
 ## Private runtime API v1
 
-The Swift daemon serves these routes on `runtime.sock`. They are the private backend of the public API above and remain available to same-user clients such as `macus` itself.
+The Swift daemon serves these routes on `runtime.sock`. They are the private backend of the public API above and remain available to same-user clients such as `macus start` while it activates the service.
 
 | Method | Path | Payload / response |
 | --- | --- | --- |

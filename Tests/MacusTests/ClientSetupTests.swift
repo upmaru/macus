@@ -6,7 +6,7 @@ import Testing
 
 @Test func clientSetupInstallsDiscoversAndPreservesConfiguration() async throws {
   let runtime = try readyRuntime()
-  defer { runtime.socket.stop() }
+  defer { runtime.stop() }
   let tools = try ToolFixture()
   defer { tools.remove() }
   try tools.writeBrew(mode: .install)
@@ -52,7 +52,7 @@ import Testing
 
 @Test func clientSetupConflictsAndSkipsInstallWhenRuntimeIsNotReady() async throws {
   let runtime = try readyRuntime()
-  defer { runtime.socket.stop() }
+  defer { runtime.stop() }
   let tools = try ToolFixture()
   defer { tools.remove() }
   try tools.writeBrew(mode: .install)
@@ -77,12 +77,10 @@ import Testing
   let stoppedTools = try ToolFixture()
   defer { stoppedTools.remove() }
   try stoppedTools.writeBrew(mode: .install)
-  let stopped = try ScriptedSocket(name: "runtime.sock") { _, _, _ in
-    mustJSON(200, statusObject(state: "stopped", incus: "/tmp/unused.sock"))
-  }
+  let stopped = try ScriptedGateway { _, _, _ in mustJSON(200, publicStatus(state: "stopped")) }
   defer { stopped.stop() }
   let blocked = try await runMacus(
-    ["--state-dir", stopped.socket.directory.path, "--timeout", "5", "client", "setup"],
+    ["--state-dir", stopped.directory.path, "--timeout", "5", "client", "setup"],
     environment: stoppedTools.environment())
   #expect(blocked.status == 1)
   #expect(blocked.stderr.contains("not ready"))
@@ -91,7 +89,7 @@ import Testing
 
 @Test func missingHomebrewIsGuidanceAndBrewFailureDoesNotRegister() async throws {
   let runtime = try readyRuntime()
-  defer { runtime.socket.stop() }
+  defer { runtime.stop() }
   let missing = try ToolFixture()
   defer { missing.remove() }
   let absent = try await runMacus(
@@ -115,7 +113,7 @@ import Testing
 
 @Test func brewInstallTimeoutReapsTheChild() async throws {
   let runtime = try readyRuntime()
-  defer { runtime.socket.stop() }
+  defer { runtime.stop() }
   let tools = try ToolFixture()
   defer { tools.remove() }
   try tools.writeBrew(mode: .sleep)
@@ -136,7 +134,7 @@ import Testing
 
 @Test func explicitIncusOverrideSkipsPathAndHomebrew() async throws {
   let runtime = try readyRuntime()
-  defer { runtime.socket.stop() }
+  defer { runtime.stop() }
   let decoy = try ToolFixture()
   defer { decoy.remove() }
   try decoy.writeBrew(mode: .fail)
@@ -159,7 +157,7 @@ import Testing
 
 @Test func unreadableIncusDefaultFailsBeforeRegistration() async throws {
   let runtime = try readyRuntime()
-  defer { runtime.socket.stop() }
+  defer { runtime.stop() }
   let tools = try ToolFixture()
   defer { tools.remove() }
   try tools.writeIncus(defaultRemote: "other", remotes: ["other": ["unix:/tmp/other.sock"]])
@@ -177,19 +175,23 @@ import Testing
   #expect(try tools.readState().remotes["macus"] == nil)
 }
 
+/// A ready runtime behind the public server, with the private Incus bridge the remote still
+/// names until setup registers the server's HTTPS endpoint (task 8.5).
 private struct ReadyRuntime {
-  var socket: PrivateUNIXSocket
+  var gateway: ScriptedGateway
   var incus: PrivateUNIXSocket
-  var directory: String { socket.directory.path }
+  var directory: String { gateway.directory.path }
   var incusPath: String { incus.url.path }
+  func stop() {
+    incus.stop()
+    gateway.stop()
+  }
 }
 
 private func readyRuntime() throws -> ReadyRuntime {
-  let incus = try PrivateUNIXSocket(name: "incus.sock")
-  let runtime = try ScriptedSocket(name: "runtime.sock") { _, _, _ in
-    mustJSON(200, statusObject(state: "ready", incus: incus.url.path))
-  }
-  return ReadyRuntime(socket: runtime.socket, incus: incus)
+  let gateway = try ScriptedGateway { _, _, _ in mustJSON(200, publicStatus(state: "ready")) }
+  let incus = try PrivateUNIXSocket(name: "incus.sock", directory: gateway.directory)
+  return ReadyRuntime(gateway: gateway, incus: incus)
 }
 
 private enum BrewMode { case install, fail, sleep }

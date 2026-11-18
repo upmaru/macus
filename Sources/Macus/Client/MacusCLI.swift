@@ -33,17 +33,19 @@ public enum MacusCLI {
     arguments: [String],
     environment: [String: String] = ProcessInfo.processInfo.environment,
     transport: any LocalHTTPTransport = UnixHTTPClient(),
+    gateway: any GatewayTransport = HTTPSGatewayClient(),
     streams: MacusStreams = .standard
   ) async -> Int32 {
     await run(
-      arguments: arguments, environment: environment, transport: transport, streams: streams,
-      overrides: StartupOverrides())
+      arguments: arguments, environment: environment, transport: transport, gateway: gateway,
+      streams: streams, overrides: StartupOverrides())
   }
 
   static func run(
     arguments: [String],
     environment: [String: String] = ProcessInfo.processInfo.environment,
     transport: any LocalHTTPTransport = UnixHTTPClient(),
+    gateway: any GatewayTransport = HTTPSGatewayClient(),
     streams: MacusStreams = .standard,
     overrides: StartupOverrides
   ) async -> Int32 {
@@ -67,8 +69,8 @@ public enum MacusCLI {
       let timeout = invocation.timeout ?? defaultTimeout(invocation.command)
       try await execute(
         invocation.command, directory: directory, timeout: timeout, json: invocation.json,
-        environment: environment, transport: transport, runner: ProcessCommandRunner(),
-        streams: streams, overrides: overrides)
+        environment: environment, transport: transport, gateway: gateway,
+        runner: ProcessCommandRunner(), streams: streams, overrides: overrides)
       return 0
     } catch let error as UsageError {
       emit(
@@ -588,8 +590,8 @@ private func parse(_ arguments: [String]) throws -> Invocation {
 
 private func execute(
   _ command: Command, directory: URL, timeout: Int, json: Bool, environment: [String: String],
-  transport: any LocalHTTPTransport, runner: any LocalCommandRunner, streams: MacusStreams,
-  overrides: StartupOverrides
+  transport: any LocalHTTPTransport, gateway: any GatewayTransport,
+  runner: any LocalCommandRunner, streams: MacusStreams, overrides: StartupOverrides
 ) async throws {
   let presentation = HumanPresentation(streams: streams, environment: environment)
   switch command {
@@ -607,36 +609,35 @@ private func execute(
       presentation.capabilities(try jsonObject(data))
     }
   case .runtimeStatus:
-    let response = try await control(
-      "GET", "/v1/runtime/status", Data(), directory: directory, timeout: timeout,
-      transport: transport)
+    let response = try await gatewayRequest(
+      "GET", "/runtime/status", directory: directory, timeout: timeout, transport: gateway)
     if json {
       streams.writeOutput(try jsonText(jsonObject(response.body)))
     } else {
       presentation.runtime(try jsonObject(response.body), directory: directory)
     }
   case .runtimeStart:
-    let response = try await control(
-      "POST", "/v1/runtime/start", Data(), directory: directory, timeout: timeout,
-      transport: transport)
+    let response = try await gatewayRequest(
+      "POST", "/runtime/start", directory: directory, timeout: timeout, transport: gateway)
     if json {
       streams.writeOutput(try jsonText(jsonObject(response.body)))
     } else {
       presentation.runtime(try jsonObject(response.body), directory: directory)
     }
   case .runtimeStop(let force):
-    let response = try await control(
-      "POST", "/v1/runtime/stop", try jsonData(["force": force]), directory: directory,
-      timeout: timeout, transport: transport)
+    // The public API asks for an explicit confirmation of a forced stop.
+    let body: [String: Any] = force ? ["force": true, "confirm": "force-stop"] : ["force": false]
+    let response = try await gatewayRequest(
+      "POST", "/runtime/stop", try jsonData(body), directory: directory, timeout: timeout,
+      transport: gateway)
     if json {
       streams.writeOutput(try jsonText(jsonObject(response.body)))
     } else {
       presentation.runtime(try jsonObject(response.body), directory: directory)
     }
   case .runtimeRestart:
-    let response = try await control(
-      "POST", "/v1/runtime/restart", Data(), directory: directory, timeout: timeout,
-      transport: transport)
+    let response = try await gatewayRequest(
+      "POST", "/runtime/restart", directory: directory, timeout: timeout, transport: gateway)
     if json {
       streams.writeOutput(try jsonText(jsonObject(response.body)))
     } else {
@@ -647,12 +648,12 @@ private func execute(
       runner: overrides.runner ?? runner, streams: streams, environment: environment
     ).setup(
       remote: remote, setDefault: setDefault, incusOverride: incus, directory: directory,
-      timeout: timeout, transport: transport)
+      timeout: timeout, gateway: gateway)
     let object = clientResultObject(result)
     if json { streams.writeOutput(try jsonText(object)) } else { presentation.client(result) }
   case .doctor:
     try await doctor(
-      directory: directory, timeout: timeout, json: json, transport: transport, streams: streams,
+      directory: directory, timeout: timeout, json: json, gateway: gateway, streams: streams,
       presentation: presentation)
   case .start(let remote, let setDefault, let incus, let progress):
     try await runStart(
@@ -693,15 +694,6 @@ private func execute(
   }
 }
 
-private func control(
-  _ method: String, _ path: String, _ body: Data, directory: URL, timeout: Int,
-  transport: any LocalHTTPTransport
-) async throws -> LocalHTTPResponse {
-  let socket = try socketURL(directory.appendingPathComponent("runtime.sock"))
-  return try await send(
-    socket: socket, method: method, path: path, body: body, timeout: timeout, transport: transport)
-}
-
 private func clientResultObject(_ result: IncusSetupResult) -> [String: Any] {
   [
     "address": result.address,
@@ -730,30 +722,26 @@ private func isRemoteByte(_ byte: UInt8) -> Bool {
 }
 
 private func doctor(
-  directory: URL, timeout: Int, json: Bool, transport: any LocalHTTPTransport,
+  directory: URL, timeout: Int, json: Bool, gateway: any GatewayTransport,
   streams: MacusStreams,
   presentation: HumanPresentation
 ) async throws {
-  let socket = try socketURL(directory.appendingPathComponent("runtime.sock"))
-  let statusResponse = try await send(
-    socket: socket, method: "GET", path: "/v1/runtime/status", body: Data(), timeout: timeout,
-    transport: transport)
+  let statusResponse = try await gatewayRequest(
+    "GET", "/runtime/status", directory: directory, timeout: timeout, transport: gateway)
   let status = try jsonObject(statusResponse.body)
   var capabilities: [String: Any]?
   var health: [String: Any]?
   var observations: [String: String] = [:]
   do {
-    let response = try await send(
-      socket: socket, method: "GET", path: "/v1/runtime/capabilities",
-      body: Data(), timeout: timeout, transport: transport)
+    let response = try await gatewayRequest(
+      "GET", "/runtime/capabilities", directory: directory, timeout: timeout, transport: gateway)
     capabilities = try jsonObject(response.body)
   } catch {
     observations["host"] = (error as? RuntimeError)?.message ?? error.localizedDescription
   }
   do {
-    let response = try await send(
-      socket: socket, method: "GET", path: "/v1/runtime/health",
-      body: Data(), timeout: timeout, transport: transport)
+    let response = try await gatewayRequest(
+      "GET", "/runtime/health", directory: directory, timeout: timeout, transport: gateway)
     health = try jsonObject(response.body)
   } catch {
     observations["guest"] = (error as? RuntimeError)?.message ?? error.localizedDescription
@@ -806,26 +794,6 @@ private func readinessError(
     )
   }
   return nil
-}
-
-private func send(
-  socket: URL, method: String, path: String, body: Data, timeout: Int,
-  transport: any LocalHTTPTransport
-) async throws -> LocalHTTPResponse {
-  let response = try await transport.request(
-    socket: socket, method: method, path: path, body: body, timeout: timeout)
-  guard (200...299).contains(response.status) else {
-    throw responseFailure(status: response.status, body: response.body)
-  }
-  return response
-}
-
-private func socketURL(_ url: URL) throws -> URL {
-  guard url.isFileURL, url.path.hasPrefix("/"), url.path.utf8.count < 104 else {
-    throw RuntimeError(
-      .invalidConfiguration, "Unix socket path exceeds 103 bytes; choose a shorter state directory")
-  }
-  return url
 }
 
 func responseFailure(status: Int, body: Data) -> RuntimeError {

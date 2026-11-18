@@ -47,9 +47,9 @@ Exit status is 0 on success, 1 on operational failure and 2 on invalid arguments
 
 ## Outer runtime and the standard Incus CLI
 
-`runtime` commands and `doctor` describe the outer Apple VZ appliance through `/v1/runtime/*`. `runtime stop --force` sends `{"force":true}`. These commands do not list or mutate instances.
+`runtime` commands and `doctor` describe the outer Apple VZ appliance through the Macus server's public `/runtime/*` API (see [the API contract](api.md#public-runtime-api)). `runtime stop` sends `{"force":false}`; `runtime stop --force` sends `{"confirm":"force-stop","force":true}`. These commands do not list or mutate instances.
 
-`client setup` reads runtime status and continues only when API version is 1 and the outer runtime is ready. It does not boot a stopped appliance. It validates the returned `incus_socket` as a private owner-only socket, then registers `unix:<path>` with standard `incus remote` commands. It honors `INCUS_CONF`. Repeating setup for the same name and socket is idempotent. A name that already points elsewhere fails with `conflict` and is not overwritten. The default remote changes only with `--set-default`. Unrelated remotes, projects, aliases and certificates are left in place. Connectivity is `incus list <remote>:`, so instance listing stays an Incus operation.
+`client setup` reads `/runtime/status` from the Macus server and continues only when API version is 1, the outer runtime is ready and `runtime_ready` is not false. It does not boot a stopped appliance. It then validates `<state-dir>/incus.sock` as a private owner-only socket and registers `unix:<path>` with standard `incus remote` commands; registering the server's HTTPS endpoint instead is a later step of the server transition. It honors `INCUS_CONF`. Repeating setup for the same name and socket is idempotent. A name that already points elsewhere fails with `conflict` and is not overwritten. The default remote changes only with `--set-default`. Unrelated remotes, projects, aliases and certificates are left in place. Connectivity is `incus list <remote>:`, so instance listing stays an Incus operation.
 
 If `--incus` is omitted, setup uses an `incus` executable on `PATH`. Otherwise, when Homebrew is already installed (`PATH`, `/opt/homebrew/bin/brew` or `/usr/local/bin/brew`), it runs `brew install incus` for the official formula and discovers the binary through `brew --prefix` even if that bin directory is not on `PATH`. `HOMEBREW_NO_AUTO_UPDATE=1` is set when absent so setup does not update unrelated formulae. An existing Homebrew copy is reused without reinstalling. If Homebrew is missing, setup tells the operator to install it from https://brew.sh and does not install Homebrew, use a shell installer, sudo, another package manager or a custom tap. `MACUS_BREW_FALLBACK=0` disables the two standard Homebrew locations for tests; users should not set it.
 
@@ -57,7 +57,9 @@ Subprocesses use fixed argument arrays, preserve the relevant environment, drain
 
 ## Transport limits
 
-The client opens a new nonblocking Unix connection per control request. Headers are limited to 16 KiB and bodies to 16 MiB. It accepts content-length, chunked and connection-close bodies, and rejects ambiguous or truncated framing. Before connecting, it rejects unsafe symlink ancestry, a non-socket endpoint, and a socket or parent directory that is not mode-private and owned by the current user. The peer UID must match. These checks do not create or chmod state.
+`runtime`, `doctor` and the readiness check in `client setup` use only the published HTTPS server. The client reads `<state-dir>/server/endpoint.json` and its own credential `<state-dir>/server/local-cli.token`, both 0600 regular files owned by the current user in the 0700 `server` directory, opened without following links and with safe ancestry; it creates and repairs nothing. The endpoint must be schema version 1 with an `https` base URL (no user information, path, query or fragment) and a lowercase SHA-256 `certificate_fingerprint`. Each request sends `Authorization: Bearer` with that credential to a `/runtime/*` path only, requires TLS 1.3 and the exact leaf certificate the metadata records (checked before any request byte is sent), and uses no proxy, cache, cookies, stored credentials or redirects. A missing endpoint or credential, a refused connection or a rejected credential is `unavailable` and asks for `macus start`; the client never falls back to `runtime.sock`. Responses are limited to 16 MiB and the selected timeout is one deadline for the whole exchange.
+
+`macus start` still reaches the daemon directly while it activates the service. It opens a new nonblocking Unix connection per control request. Headers are limited to 16 KiB and bodies to 16 MiB. It accepts content-length, chunked and connection-close bodies, and rejects ambiguous or truncated framing. Before connecting, it rejects unsafe symlink ancestry, a non-socket endpoint, and a socket or parent directory that is not mode-private and owned by the current user. The peer UID must match. These checks do not create or chmod state.
 
 ## Installation
 
@@ -102,8 +104,7 @@ Macus runtime: Stopped
 Runtime
   Status: Stopped
   Uptime: 1m 12s
-  Control socket: /tmp/macus-demo/runtime.sock
-  Incus socket: /tmp/macus-demo/incus.sock
+  Server: https://127.0.0.1:8443
 
 Next steps
   macus --state-dir /tmp/macus-demo runtime start

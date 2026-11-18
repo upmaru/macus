@@ -97,7 +97,7 @@ struct IncusClientService: Sendable {
 
   func setup(
     remote: String, setDefault: Bool, incusOverride: String?, directory: URL, timeout: Int,
-    transport: any LocalHTTPTransport
+    gateway: any GatewayTransport
   ) async throws -> IncusSetupResult {
     if let incusOverride {
       guard isAbsoluteExecutablePath(incusOverride),
@@ -106,9 +106,12 @@ struct IncusClientService: Sendable {
         throw RuntimeError(.invalidConfiguration, "--incus must be an executable file")
       }
     }
-    let status = try await readyRuntimeStatus(
-      directory: directory, timeout: timeout, transport: transport, command: "client setup")
-    let socket = URL(fileURLWithPath: status.incusSocket)
+    // Readiness comes from the public server, never from the private runtime socket.
+    try await readyRuntimeStatus(
+      directory: directory, timeout: timeout, gateway: gateway, command: "client setup")
+    // Registration still names the private Incus bridge until it moves to the server's HTTPS
+    // endpoint (task 8.5).
+    let socket = try controlSocketURL(directory.appendingPathComponent("incus.sock"))
     try validatePrivateUnixSocket(socket)
     return try await register(
       remote: remote, setDefault: setDefault, incusOverride: incusOverride,
@@ -343,34 +346,31 @@ func isAbsoluteExecutablePath(_ path: String) -> Bool {
 struct ReadyRuntimeStatus {
   let apiVersion: Int
   let state: String
-  let incusSocket: String
 }
 
+/// The runtime status from the public server, which must report a ready runtime.
+@discardableResult
 func readyRuntimeStatus(
-  directory: URL, timeout: Int, transport: any LocalHTTPTransport, command: String
+  directory: URL, timeout: Int, gateway: any GatewayTransport, command: String
 ) async throws -> ReadyRuntimeStatus {
-  let socket = try controlSocketURL(directory.appendingPathComponent("runtime.sock"))
-  let response = try await transport.request(
-    socket: socket, method: "GET", path: "/v1/runtime/status", body: Data(), timeout: timeout)
-  guard (200...299).contains(response.status) else {
-    throw responseFailure(status: response.status, body: response.body)
-  }
+  let response = try await gatewayRequest(
+    "GET", "/runtime/status", directory: directory, timeout: timeout, transport: gateway)
   let object = try jsonObject(response.body)
-  guard let api = jsonInt(object["api_version"]), let state = jsonString(object["state"]),
-    let incus = jsonString(object["incus_socket"]), incus.hasPrefix("/")
-  else { throw RuntimeError(.io, "Malformed runtime status") }
+  guard let api = jsonInt(object["api_version"]), let state = jsonString(object["state"]) else {
+    throw RuntimeError(.io, "Malformed runtime status")
+  }
   guard api == 1 else {
     throw RuntimeError(
       .invalidConfiguration,
       "Incompatible runtime API version \(api); this macus client supports version 1")
   }
-  guard state == "ready" else {
+  guard state == "ready", jsonBool(object["runtime_ready"]) != false else {
     throw RuntimeError(
       .unavailable,
       "Runtime is \(state), not ready. macus \(command) does not start the appliance; run macus runtime start"
     )
   }
-  return ReadyRuntimeStatus(apiVersion: api, state: state, incusSocket: incus)
+  return ReadyRuntimeStatus(apiVersion: api, state: state)
 }
 
 func controlSocketURL(_ url: URL) throws -> URL {
