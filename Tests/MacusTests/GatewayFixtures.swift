@@ -253,3 +253,22 @@ func publicStatus(state: String, url: String = "https://127.0.0.1:8443") -> [Str
     "runtime_ready": state == "ready",
   ]
 }
+
+/// Stands in for the server probe: answers as a serving (or absent) Macus server and counts asks.
+final class FakeServerProbe: ServerProbe, @unchecked Sendable {
+  private let lock = NSLock()
+  private var answer: Bool
+  private var count = 0
+  init(serving: Bool = true) { answer = serving }
+  var serving: Bool {
+    get { lock.withLock { answer } }
+    set { lock.withLock { answer = newValue } }
+  }
+  var asks: Int { lock.withLock { count } }
+  func serving(stateDirectory: URL, timeout: Int) async throws -> Bool {
+    lock.withLock {
+      count += 1
+      return answer
+    }
+  }
+}

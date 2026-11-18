@@ -5,6 +5,8 @@ struct StartupDependencies: Sendable {
   var runner: any LocalCommandRunner
   var downloader: any ApplianceDownloader
   var launchControl: any LaunchControl
+  /// Recognizes a serving Macus server only through its authenticated, pinned gateway.
+  var server: any ServerProbe = GatewayServerProbe()
   var capabilities: @Sendable () async -> HostCapabilities
   var hasEntitlement: @Sendable () -> Bool
   var executablePath: @Sendable () -> String
@@ -35,6 +37,8 @@ private final class StartContext: @unchecked Sendable {
   var operationID: String
   var serviceOwnership = "launchd"
   var serviceLabel: String?
+  var serverOwnership = "launchd"
+  var serverLabel: String?
   var startDispatched = false
   var currentStage: StartupStage = .preflight
 
@@ -59,6 +63,8 @@ private final class StartContext: @unchecked Sendable {
       try BearerTokenStore(stateDirectory: paths.directory).prepareLocalCredential()
       serviceLabel = LaunchAgentPlan.label(
         stateDirectory: paths.directory, home: dependencies.homeDirectory)
+      serverLabel = LaunchAgentPlan.label(
+        stateDirectory: paths.directory, home: dependencies.homeDirectory, role: .server)
       try await rejectLegacy(paths)
       let kind = try BootstrapStore.existingRuntime(paths.directory)
       let manifest: URL
@@ -172,19 +178,51 @@ private final class StartContext: @unchecked Sendable {
     let label = LaunchAgentPlan.label(
       stateDirectory: paths.directory, home: dependencies.homeDirectory)
     serviceLabel = label
+    let server = LaunchAgentPlan.label(
+      stateDirectory: paths.directory, home: dependencies.homeDirectory, role: .server)
+    serverLabel = server
     try await rejectLegacy(paths)
     let executable = dependencies.executablePath()
     guard isAbsoluteExecutablePath(executable) else {
       throw RuntimeError(.invalidConfiguration, "Service executable path must be absolute")
     }
-    let expected = LaunchAgentPlan.arguments(
-      executable: executable, stateDirectory: paths.directory)
-    // A registered job is identified from launchctl before any start or bootstrap.
-    if let loaded = try await dependencies.launchControl.printJob(
+    let launcher = ServerRelease.launcher(forServiceExecutable: executable)
+    // Both registrations are identified from launchctl before either job is started or created.
+    let runtimeJob = try await dependencies.launchControl.printJob(
       label: label, timeout: try budget.remainingSeconds(at: dependencies.now()))
-    {
-      // Identity comes from launchctl, not the mutable on-disk plist.
-      try validateLoadedJob(loaded, label: label, arguments: expected)
+    if let runtimeJob {
+      try validateLoadedJob(
+        runtimeJob, label: label,
+        arguments: LaunchAgentPlan.arguments(
+          executable: executable, stateDirectory: paths.directory),
+        environment: nil)
+    }
+    let serverJob = try await dependencies.launchControl.printJob(
+      label: server, timeout: try budget.remainingSeconds(at: dependencies.now()))
+    if let serverJob {
+      try validateLoadedJob(
+        serverJob, label: server,
+        arguments: LaunchAgentPlan.arguments(
+          executable: launcher, stateDirectory: paths.directory, role: .server),
+        environment: LaunchAgentPlan.environment(stateDirectory: paths.directory, role: .server))
+    } else if try await !serverServing(paths) {
+      // A server job will have to be created: its release must be installed before any job is
+      // started, so a missing payload never leaves a half-activated pair.
+      try ServerRelease.requireInstalled(launcher: launcher)
+    }
+    let ownership = try await ensureRuntimeJob(
+      paths, label: label, executable: executable, registered: runtimeJob)
+    try await ensureServerJob(paths, label: server, launcher: launcher, registered: serverJob)
+    emit(.serviceActivation, .complete, detail: activationDetail)
+    return ownership
+  }
+
+  private var activationDetail: String?
+
+  private func ensureRuntimeJob(
+    _ paths: RuntimePaths, label: String, executable: String, registered: LaunchJob?
+  ) async throws -> (ownership: String, label: String?) {
+    if let loaded = registered {
       if !loaded.loaded {
         try Task.checkCancellation()
         try await dependencies.launchControl.kickstart(
@@ -196,31 +234,72 @@ private final class StartContext: @unchecked Sendable {
         throw RuntimeError(.timeout, "Startup deadline exceeded")
       }
       serviceOwnership = "launchd"
-      emit(.serviceActivation, .complete, detail: loaded.loaded ? "reused" : "kickstarted")
+      activationDetail = loaded.loaded ? "reused" : "kickstarted"
       return ("launchd", label)
     }
     if try await compatibleDaemon(paths) {
       serviceOwnership = "foreground"
-      emit(.serviceActivation, .complete, detail: "foreground")
+      activationDetail = "foreground"
       return ("foreground", nil)
     }
     let plist = try LaunchAgentPlan.write(
       stateDirectory: paths.directory, home: dependencies.homeDirectory,
       launchAgents: dependencies.launchAgentsDirectory, executable: executable)
-    if !LaunchAgentPlan.isDefault(paths.directory, home: dependencies.homeDirectory) {
-      let def = dependencies.launchAgentsDirectory.appendingPathComponent("com.upmaru.macus.plist")
-      if FileManager.default.fileExists(atPath: def.path),
-        try plistArguments(def)?.contains(paths.directory.path) != true
-      {
-        // Isolated registration must not replace the default agent. Leaving it untouched is required.
-      }
-    }
     try await dependencies.launchControl.bootstrap(
       plist: plist, timeout: try budget.remainingSeconds(at: dependencies.now()))
     try await waitForEndpoint(paths)
     serviceOwnership = "launchd"
-    emit(.serviceActivation, .complete)
+    activationDetail = nil
     return ("launchd", label)
+  }
+
+  /// The server job is recovered on its own: kickstarting or bootstrapping it never stops,
+  /// restarts or recreates the Swift job or the VM.
+  private func ensureServerJob(
+    _ paths: RuntimePaths, label: String, launcher: String, registered: LaunchJob?
+  ) async throws {
+    if let registered {
+      if !registered.loaded {
+        try Task.checkCancellation()
+        try await dependencies.launchControl.kickstart(
+          label: label, timeout: try budget.remainingSeconds(at: dependencies.now()))
+      }
+      try await waitForServer(paths)
+      serverOwnership = "launchd"
+      return
+    }
+    if try await serverServing(paths) {
+      // A server already serves this state's pinned endpoint outside launchd: reuse it.
+      serverOwnership = "foreground"
+      return
+    }
+    try ServerRelease.requireInstalled(launcher: launcher)
+    let plist = try LaunchAgentPlan.write(
+      stateDirectory: paths.directory, home: dependencies.homeDirectory,
+      launchAgents: dependencies.launchAgentsDirectory, executable: launcher, role: .server)
+    try Task.checkCancellation()
+    try await dependencies.launchControl.bootstrap(
+      plist: plist, timeout: try budget.remainingSeconds(at: dependencies.now()))
+    try await waitForServer(paths)
+    serverOwnership = "launchd"
+  }
+
+  private func serverServing(_ paths: RuntimePaths) async throws -> Bool {
+    let remaining = try budget.remainingSeconds(at: dependencies.now())
+    return try await dependencies.server.serving(
+      stateDirectory: paths.directory, timeout: min(remaining, 5))
+  }
+
+  private func waitForServer(_ paths: RuntimePaths) async throws {
+    while dependencies.now() < budget.deadline {
+      try Task.checkCancellation()
+      if try await serverServing(paths) { return }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+    throw RuntimeError(
+      .timeout,
+      "The Macus server did not answer on its published endpoint before the deadline. The runtime and its data were preserved."
+    )
   }
 
   private func createRuntime(_ paths: RuntimePaths, manifest: URL) async throws {
@@ -345,7 +424,8 @@ private final class StartContext: @unchecked Sendable {
   }
 
   private func validateLoadedJob(
-    _ job: LaunchJob, label: String, arguments expected: [String]
+    _ job: LaunchJob, label: String, arguments expected: [String],
+    environment: [String: String]?
   ) throws {
     guard !job.programArguments.isEmpty else {
       throw RuntimeError(
@@ -355,7 +435,8 @@ private final class StartContext: @unchecked Sendable {
     }
     guard let executable = expected.first,
       ServiceExecutable.matches(reported: job.executable, expected: executable),
-      job.programArguments == expected
+      job.programArguments == expected,
+      LaunchAgentPlan.environmentMatches(job.environment, expected: environment)
     else {
       throw RuntimeError(
         .conflict,
@@ -374,6 +455,18 @@ private final class StartContext: @unchecked Sendable {
     try LaunchAgentPlan.refuseConflictingDestination(
       chosen, label: label,
       arguments: LaunchAgentPlan.arguments(executable: executable, stateDirectory: paths.directory))
+    let launcher = ServerRelease.launcher(forServiceExecutable: executable)
+    let serverLabel = LaunchAgentPlan.label(
+      stateDirectory: paths.directory, home: dependencies.homeDirectory, role: .server)
+    let serverExpected = LaunchAgentPlan.arguments(
+      executable: launcher, stateDirectory: paths.directory, role: .server)
+    let serverEnvironment = LaunchAgentPlan.environment(
+      stateDirectory: paths.directory, role: .server)
+    try LaunchAgentPlan.refuseConflictingDestination(
+      LaunchAgentPlan.plistURL(
+        stateDirectory: paths.directory, home: dependencies.homeDirectory,
+        launchAgents: dependencies.launchAgentsDirectory, role: .server),
+      label: serverLabel, arguments: serverExpected, environment: serverEnvironment)
     let directories = [
       dependencies.launchAgentsDirectory,
       paths.directory.appendingPathComponent("launchd", isDirectory: true),
@@ -384,31 +477,43 @@ private final class StartContext: @unchecked Sendable {
       }
       for name in names where name.hasSuffix(".plist") {
         let url = directory.appendingPathComponent(name)
-        guard let arguments = try plistArguments(url) else { continue }
+        guard let object = try dependencies.launchControl.plist(at: url),
+          LaunchAgentPlan.targets(plist: object, stateDirectory: paths.directory)
+        else { continue }
+        let arguments = object["ProgramArguments"] as? [String] ?? []
+        let variables = object["EnvironmentVariables"] as? [String: String]
         let label = (name as NSString).deletingPathExtension
         let legacy = LegacyService.labels.contains(label) || label.hasPrefix("com.kritama.")
-        let ours = label == serviceLabel
-        if LaunchAgentPlan.targets(arguments, stateDirectory: paths.directory) {
-          if legacy {
-            throw RuntimeError(
-              .conflict,
-              "Legacy service \(label) targets this state. Unload it explicitly and remove its plist before macus start. Data was preserved and no second daemon was created."
-            )
-          }
-          if !ours && label != "com.upmaru.macus" && !label.hasPrefix("com.upmaru.macus.") {
-            throw RuntimeError(
-              .conflict,
-              "Service \(label) already targets this state. macus start will not replace it or start a second daemon."
-            )
-          }
-          let expected = LaunchAgentPlan.arguments(
-            executable: dependencies.executablePath(), stateDirectory: paths.directory)
-          if arguments != expected && ours {
-            throw RuntimeError(
-              .conflict,
-              "Service \(label) points at a different executable or state. macus start will not replace that plist."
-            )
-          }
+        if legacy {
+          throw RuntimeError(
+            .conflict,
+            "Legacy service \(label) targets this state. Unload it explicitly and remove its plist before macus start. Data was preserved and no second daemon was created."
+          )
+        }
+        // Only the two Macus jobs may target a state; anything else (an Opsmaru or other
+        // foreign job included) is a conflict, never a third service.
+        guard LaunchAgentPlan.isMacusLabel(label) else {
+          throw RuntimeError(
+            .conflict,
+            "Service \(label) already targets this state. macus start will not replace it or start a second daemon."
+          )
+        }
+        let matches: Bool
+        if label == serviceLabel {
+          matches =
+            arguments
+            == LaunchAgentPlan.arguments(
+              executable: executable, stateDirectory: paths.directory) && variables == nil
+        } else if label == serverLabel {
+          matches = arguments == serverExpected && variables == serverEnvironment
+        } else {
+          matches = true
+        }
+        if !matches {
+          throw RuntimeError(
+            .conflict,
+            "Service \(label) points at a different executable or state. macus start will not replace that plist."
+          )
         }
       }
     }
@@ -492,11 +597,6 @@ private final class StartContext: @unchecked Sendable {
       try JSONSerialization.jsonObject(with: Data(contentsOf: paths.config)) as? [String: Any]
     guard let path = object?["appliance_manifest_path"] as? String else { return nil }
     return URL(fileURLWithPath: path)
-  }
-
-  private func plistArguments(_ url: URL) throws -> [String]? {
-    guard let object = try dependencies.launchControl.plist(at: url) else { return nil }
-    return object["ProgramArguments"] as? [String]
   }
 
   private func interruptedMessage() async -> String {

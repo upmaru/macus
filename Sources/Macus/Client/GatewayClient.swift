@@ -375,3 +375,30 @@ func gatewayRequest(
   }
   return response
 }
+
+/// Whether the Macus server for a state is serving. Only an authenticated `/runtime/status`
+/// answered over the pinned published identity counts: a port that merely accepts connections, or
+/// an endpoint record left by an earlier process, does not.
+protocol ServerProbe: Sendable {
+  func serving(stateDirectory: URL, timeout: Int) async throws -> Bool
+}
+
+struct GatewayServerProbe: ServerProbe {
+  var transport: any GatewayTransport = HTTPSGatewayClient()
+
+  func serving(stateDirectory: URL, timeout: Int) async throws -> Bool {
+    do {
+      _ = try await gatewayRequest(
+        "GET", "/runtime/status", directory: stateDirectory, timeout: max(1, timeout),
+        transport: transport)
+      return true
+    } catch let error as RuntimeError where error.code == .invalidConfiguration {
+      // Unsafe endpoint or credential files are never worked around.
+      throw error
+    } catch is CancellationError {
+      throw CancellationError()
+    } catch {
+      return false
+    }
+  }
+}

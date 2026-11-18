@@ -417,6 +417,7 @@ private func plistDependencies(
     runner: BudgetRunner(delayMilliseconds: 1, mode: .incus),
     downloader: UnusedProbeDownloader(),
     launchControl: launch,
+    server: FakeServerProbe(),
     capabilities: { HostCapabilities(supported: true, nestedVirtualization: false) },
     hasEntitlement: { true },
     executablePath: { "/usr/bin/true" },
@@ -432,7 +433,7 @@ private final class LockedPath: @unchecked Sendable {
   var value = ""
 }
 
-private struct StartTools {
+struct StartTools {
   let root: URL
   let incus: String
   let environment: [String: String]
@@ -482,6 +483,7 @@ private struct StartTools {
       hasEntitlement: { true },
       downloader: downloader,
       launchControl: launchControl ?? FakeLaunchControl(),
+      server: FakeServerProbe(),
       executablePath: { "/usr/bin/true" },
       homeDirectory: root,
       launchAgentsDirectory: agents ?? root.appendingPathComponent("LaunchAgents"),
@@ -741,7 +743,9 @@ func registeredServiceWithTrailingSpaceStateIsMatched(state: String) async throw
   let launch = ProcessLaunchControl(runner: runner, environment: [:], uid: 501)
   let sentinel = try Data(contentsOf: fixture.paths.dataDisk)
   #expect(await fixture.start(launch: launch, timeout: 5) == 0)
-  var expectedCommands = [["print", "gui/501/\(fixture.label)"]]
+  var expectedCommands = [
+    ["print", "gui/501/\(fixture.label)"], ["print", "gui/501/\(fixture.serverLabel)"],
+  ]
   if state == "not running" { expectedCommands.append(["kickstart", "gui/501/\(fixture.label)"]) }
   #expect(runner.commands == expectedCommands)
   #expect(try Data(contentsOf: fixture.plist) == fixture.plistBytes)
@@ -762,7 +766,8 @@ func registeredServiceWithTrailingSpaceStateIsMatched(state: String) async throw
   #expect(status == 0)
   #expect(
     runner.commands == [
-      ["print", "gui/501/\(fixture.label)"], ["kickstart", "gui/501/\(fixture.label)"],
+      ["print", "gui/501/\(fixture.label)"], ["print", "gui/501/\(fixture.serverLabel)"],
+      ["kickstart", "gui/501/\(fixture.label)"],
     ])
   #expect(try Data(contentsOf: fixture.plist) == fixture.plistBytes)
   #expect(!runner.commands.contains { $0.first == "bootstrap" || $0.contains("-k") })
@@ -779,10 +784,13 @@ func registeredServiceWithTrailingSpaceStateIsMatched(state: String) async throw
   // Cold subprocess startup on CI can exceed 200 ms. Observe the print request
   // before asserting that no activation occurred while readiness is withheld.
   let deadline = ContinuousClock.now.advanced(by: .seconds(3))
-  while runner.commands.isEmpty && ContinuousClock.now < deadline {
+  while runner.commands.count < 2 && ContinuousClock.now < deadline {
     try await Task.sleep(for: .milliseconds(10))
   }
-  #expect(runner.commands == [["print", "gui/501/\(fixture.label)"]])
+  #expect(
+    runner.commands == [
+      ["print", "gui/501/\(fixture.label)"], ["print", "gui/501/\(fixture.serverLabel)"],
+    ])
   fixture.openEndpoint()
   #expect(await task.value == 0)
   #expect(!runner.commands.contains { $0.first == "kickstart" || $0.first == "bootstrap" })
@@ -939,6 +947,7 @@ private final class ServiceFixture: @unchecked Sendable {
   let paths: RuntimePaths
   let tools: StartTools
   let label: String
+  let serverLabel: String
   let expected: [String]
   let plist: URL
   let plistBytes: Data
@@ -958,6 +967,7 @@ private final class ServiceFixture: @unchecked Sendable {
     try Data("data-sentinel".utf8).write(to: paths.dataDisk)
     try Data("{\"appliance_manifest_path\":\"/tmp/manifest.json\"}".utf8).write(to: paths.config)
     label = LaunchAgentPlan.label(stateDirectory: state, home: root)
+    serverLabel = LaunchAgentPlan.label(stateDirectory: state, home: root, role: .server)
     expected = LaunchAgentPlan.arguments(executable: "/usr/bin/true", stateDirectory: state)
     plist = try LaunchAgentPlan.write(
       stateDirectory: state, home: root, launchAgents: root.appendingPathComponent("agents"),
@@ -999,6 +1009,8 @@ private final class LaunchctlScript: LocalCommandRunner, @unchecked Sendable {
   private var recordedCommands: [[String]] = []
   var commands: [[String]] { commandLock.withLock { recordedCommands } }
   var printText = ""
+  /// launchctl output for the server job; nil reports it as not registered.
+  var serverPrintText: String?
   var printStatus: Int32 = 0
   var kickstartStatus: Int32 = 0
   var printDelay: Duration = .zero
@@ -1011,6 +1023,13 @@ private final class LaunchctlScript: LocalCommandRunner, @unchecked Sendable {
     commandLock.withLock { recordedCommands.append(arguments) }
     if arguments.first == "print" {
       if printDelay > .zero { try await Task.sleep(for: printDelay) }
+      if arguments.last?.contains("/com.upmaru.macus.server") == true {
+        guard let serverPrintText else {
+          return LocalCommandResult(
+            status: 113, stdout: Data(), stderr: Data("Could not find service\n".utf8))
+        }
+        return LocalCommandResult(status: 0, stdout: Data(serverPrintText.utf8), stderr: Data())
+      }
       return LocalCommandResult(status: printStatus, stdout: Data(printText.utf8), stderr: Data())
     }
     if arguments.first == "kickstart" {
@@ -1033,7 +1052,7 @@ private final class LaunchctlScript: LocalCommandRunner, @unchecked Sendable {
   }
 }
 
-private func readyRuntime(method: String, path: String, directory: URL) -> Data {
+func readyRuntime(method: String, path: String, directory: URL) -> Data {
   if method == "POST" {
     return mustJSON(500, ["error": ["code": "io", "message": "unexpected mutation"]])
   }

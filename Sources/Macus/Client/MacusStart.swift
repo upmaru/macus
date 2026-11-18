@@ -6,6 +6,7 @@ struct StartupOverrides: Sendable {
   var hasEntitlement: (@Sendable () -> Bool)?
   var downloader: (any ApplianceDownloader)?
   var launchControl: (any LaunchControl)?
+  var server: (any ServerProbe)?
   var executablePath: (@Sendable () -> String)?
   var now: (@Sendable () -> ContinuousClock.Instant)?
   var homeDirectory: URL?
@@ -49,6 +50,7 @@ func runStart(
     launchControl: overrides.launchControl
       ?? ProcessLaunchControl(
         runner: runner, environment: environment, uid: overrides.uid ?? getuid()),
+    server: overrides.server ?? GatewayServerProbe(),
     capabilities: overrides.capabilities ?? { await MainActor.run { CapabilityDetector.detect() } },
     hasEntitlement: overrides.hasEntitlement ?? { currentProcessHasVirtualizationEntitlement() },
     executablePath: overrides.executablePath
