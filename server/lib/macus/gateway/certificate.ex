@@ -117,6 +117,11 @@ defmodule Macus.Gateway.Certificate do
     )
   end
 
+  # RFC 5280 section 4.1.2.5: UTCTime through 2049, GeneralizedTime after.
+  # OpenSSL and LibreSSL reject a GeneralizedTime before 2050.
+  defp time(%DateTime{year: year} = datetime) when year < 2050,
+    do: {:utcTime, datetime |> Calendar.strftime("%y%m%d%H%M%SZ") |> String.to_charlist()}
+
   defp time(datetime),
     do: {:generalTime, datetime |> Calendar.strftime("%Y%m%d%H%M%SZ") |> String.to_charlist()}
 

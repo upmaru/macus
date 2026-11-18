@@ -19,8 +19,9 @@ defmodule Macus.Auth.Bearer do
   turns into a decision; the owner key is `Macus.Auth.owner_key/1` of the
   configured owner.
 
-  Configuration: `config :macus, :state_dir` and `config :macus, Macus.Auth,
-  owner_uid: uid`.
+  Configuration: the running gateway's state and owner when serving, else
+  `config :macus, :state_dir` and `config :macus, Macus.Auth, owner_uid:
+  uid` (`Macus.Auth.owner/0`).
   """
 
   alias Macus.{Auth, Configuration, PrivatePath}
@@ -134,13 +135,5 @@ defmodule Macus.Auth.Bearer do
   defp timestamp?(_value), do: false
 
   @doc false
-  def config do
-    with {:ok, state} <- Configuration.new(Application.get_env(:macus, :state_dir)),
-         uid when is_integer(uid) and uid >= 0 <-
-           Keyword.get(Application.get_env(:macus, Auth, []), :owner_uid) do
-      {:ok, state, uid}
-    else
-      _ -> :error
-    end
-  end
+  def config, do: Auth.owner()
 end

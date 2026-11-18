@@ -29,9 +29,6 @@ defmodule Macus.MCP.Authorization do
   alias TamaMCP.Authorization.Decision
 
   @default_verifier {Macus.Auth.Bearer, :verify, []}
-  @max_token_bytes 4_096
-  # RFC 6750 b64token characters.
-  @token ~r/\A[A-Za-z0-9\-._~+\/]+=*\z/
 
   @impl true
   def authenticate(conn, _options) do
@@ -45,24 +42,7 @@ defmodule Macus.MCP.Authorization do
     end
   end
 
-  defp bearer(conn) do
-    case Plug.Conn.get_req_header(conn, "authorization") do
-      [header] ->
-        case String.split(header, " ", parts: 2) do
-          [scheme, token] ->
-            if String.downcase(scheme) == "bearer" and byte_size(token) <= @max_token_bytes and
-                 Regex.match?(@token, token),
-               do: {:ok, token},
-               else: :error
-
-          _ ->
-            :error
-        end
-
-      _ ->
-        :error
-    end
-  end
+  defp bearer(conn), do: Macus.Auth.bearer_token(conn)
 
   defp verify(token) do
     case Keyword.get(Application.get_env(:macus, __MODULE__, []), :verifier, @default_verifier) do

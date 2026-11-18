@@ -466,6 +466,15 @@ defmodule Macus.GatewayTest do
       assert text =~ "TLS Web Server Authentication"
       assert text =~ "DNS:localhost, IP Address:127.0.0.1, IP Address:0:0:0:0:0:0:0:1"
 
+      # RFC 5280 encodes validity before 2050 as UTCTime; TLS clients built
+      # on OpenSSL or LibreSSL (curl) reject a GeneralizedTime there.
+      [{:Certificate, der, _}] = certfile |> File.read!() |> :public_key.pem_decode()
+      {:OTPCertificate, tbs, _, _} = :public_key.pkix_decode_cert(der, :otp)
+      {:Validity, not_before, not_after} = elem(tbs, 5)
+      assert {:utcTime, _} = not_before
+      assert {:utcTime, _} = not_after
+      assert {_, 0} = System.cmd("openssl", ["verify", "-CAfile", certfile, certfile])
+
       for host <- ["127.0.0.1", "::1", "localhost"] do
         assert {:ok, _} =
                  Certificate.load(
@@ -622,6 +631,94 @@ defmodule Macus.GatewayTest do
       assert response =~ ~r/\AHTTP\/1.1 200/
       assert response =~ ~s("auth":"untrusted")
       refute response =~ "Gateway identity is unavailable"
+    end
+
+    test "native request bodies reach incus.sock byte for byte, unparsed", context do
+      test = self()
+
+      start_supervised!(
+        {Macus.TestSupport.HTTPFixture,
+         transport: :gen_tcp,
+         path: Path.join(context.state.state_dir, "incus.sock"),
+         handler: fn request ->
+           send(test, {:incus, request.method, request.target, request.body})
+           %{status: 200, body: %{"type" => "sync", "status_code" => 200, "metadata" => %{}}}
+         end}
+      )
+
+      gateway = serve!(context)
+      laptop = TLSIdentity.self_signed(context.root, "laptop")
+      trust!(context.state, [laptop])
+
+      {:ok, socket} =
+        tls(gateway.config.port, gateway.certificate.der,
+          certfile: laptop.certfile,
+          keyfile: laptop.keyfile
+        )
+
+      # A form-encoded body a blanket Plug.Parsers would consume.
+      body = "name=c1&source%5Btype%5D=none&raw=%00%FF"
+
+      :ok =
+        :ssl.send(socket, [
+          "POST /1.0/instances HTTP/1.1\r\nhost: 127.0.0.1\r\n",
+          "content-type: application/x-www-form-urlencoded\r\n",
+          "content-length: #{byte_size(body)}\r\nconnection: close\r\n\r\n",
+          body
+        ])
+
+      assert read(socket, "") =~ ~r/\AHTTP\/1.1 200/
+      assert_receive {:incus, "POST", "/1.0/instances", ^body}, 2_000
+    end
+
+    test "the gateway answers while the runtime service and guest are unavailable", context do
+      gateway = serve!(context)
+      laptop = TLSIdentity.self_signed(context.root, "laptop")
+      trust!(context.state, [laptop])
+      {token, record} = Macus.TestSupport.AuthFixtures.token!(["runtime.read"])
+      Macus.TestSupport.AuthFixtures.store!(context.state.state_dir, [record])
+
+      # Neither Swift socket exists: native workloads report the backend
+      # unavailable, and runtime status says the server is ready but the
+      # runtime is not.
+      {:ok, socket} =
+        tls(gateway.config.port, gateway.certificate.der,
+          certfile: laptop.certfile,
+          keyfile: laptop.keyfile
+        )
+
+      native = get(socket, "/1.0/instances")
+      assert native =~ ~r/\AHTTP\/1.1 502/
+      assert native =~ "Backend is unavailable"
+
+      {:ok, socket} = tls(gateway.config.port, gateway.certificate.der)
+      runtime = get(socket, "/runtime/status", "authorization: Bearer #{token}\r\n")
+      assert runtime =~ ~r/\AHTTP\/1.1 503/
+      [_, body] = String.split(runtime, "\r\n\r\n", parts: 2)
+      body = Jason.decode!(body)
+      assert body["server_ready"] == true and body["runtime_ready"] == false
+
+      # The documented curl command, pinned to the generated certificate.
+      if curl = System.find_executable("curl") do
+        certfile = Path.join(context.server, "gateway.crt")
+
+        {output, 0} =
+          System.cmd(
+            curl,
+            [
+              "--silent",
+              "--show-error",
+              "--cacert",
+              certfile,
+              "-H",
+              "Authorization: Bearer #{token}",
+              "https://127.0.0.1:#{gateway.config.port}/runtime/status"
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert Jason.decode!(output)["server_ready"] == true
+      end
     end
 
     # The shared gateway kills the revoked exchange, which Ranch logs.
