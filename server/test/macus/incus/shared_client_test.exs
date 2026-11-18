@@ -14,6 +14,8 @@ defmodule Macus.Incus.SharedClientTest do
   alias Opsmaru.Incus.{Events, Files, Session, Transfer}
 
   @owner_key "macus-owner:test"
+  @driver Path.expand("../../../../.integration/incus-reference-driver", __DIR__)
+  @reference_dir Path.expand("../../reference", __DIR__)
   @op_create "00000000-0000-4000-8000-000000000001"
   @op_snap "00000000-0000-4000-8000-000000000002"
   @op_import "00000000-0000-4000-8000-000000000003"
@@ -43,6 +45,15 @@ defmodule Macus.Incus.SharedClientTest do
 
     start_supervised!({Tama.Dex.Index, path: :memory, name: Macus.Dex.Index})
     {:ok, _} = Tama.Dex.import(Macus.Dex.Index, cassette.path, sha256: cassette.sha256)
+
+    {output, status} =
+      System.cmd("mise", ["exec", "--", "go", "build", "-o", @driver, "."],
+        cd: @reference_dir,
+        stderr_to_stdout: true,
+        env: [{"GOTOOLCHAIN", "local"}]
+      )
+
+    assert status == 0, output
     :ok
   end
 
@@ -155,6 +166,38 @@ defmodule Macus.Incus.SharedClientTest do
       assert_request("GET", "/1.0/certificates", "recursion=1")
       refute File.exists?(Path.join([ctx.root, "server", "trusted-certificates.json"]))
       assert not_found("incus_native_get_certificates", %{}, ["incus.native.read"])
+    end
+
+    test "requests match the official client's, including member selection", ctx do
+      guest!(ctx)
+
+      reference =
+        requests(fn ->
+          refute reference!(ctx, %{"action" => "access"})["error"]
+        end)
+
+      shared =
+        requests(fn ->
+          ok!("incus_project_list", %{}, ["incus.read"])
+          ok!("incus_profile_get", %{"name" => "default", "project" => "p1"}, ["incus.read"])
+          ok!("incus_native_get_project_access", %{"name" => "p1"}, ["incus.native.read"])
+          ok!("incus_native_get_certificates", %{}, ["incus.native.admin"])
+
+          # Member selection belongs to the client: no operation input names a
+          # member, so a caller can never retarget the configured backend.
+          {:ok, client} = IncusHost.client(context(@all))
+
+          {:ok, _} =
+            client |> Incus.member("member-2") |> Incus.call("GetInstance", %{"name" => "c1"}, [])
+        end)
+
+      assert shared == reference
+      assert {"GET", "/1.0/instances/c1", %{"target" => "member-2"}} in shared
+
+      for {_, %{"post" => operation}} <-
+            Map.merge(Composite.openapi()["paths"], Native.openapi()["paths"]),
+          input = get_in(operation, ["requestBody", "content", "application/json", "schema"]),
+          do: refute(Map.has_key?(input["properties"] || %{}, "target"), operation["operationId"])
     end
   end
 
@@ -411,6 +454,21 @@ defmodule Macus.Incus.SharedClientTest do
       :ok = Events.close(events)
       assert_receive {:incus_ws_closed, _}, 2_000
     end
+
+    test "an event subscription that falls behind reports overflow and closes", ctx do
+      guest!(ctx)
+      {:ok, client} = IncusHost.client(context(@all))
+      {:ok, events} = Events.subscribe(client, types: ["overflow"])
+      # The guest sends 256 events at once; the subscription holds 64.
+      Process.sleep(500)
+      {delivered, {:error, %Opsmaru.Incus.Error{kind: kind}}} = drain(events, 0)
+      assert delivered < 256
+      # The channel tells its owner why it ended; a later read finds it closed.
+      assert kind in [:overflow, :channel_closed]
+      ref = events.ref
+      assert_received {^ref, :error, %Opsmaru.Incus.Error{kind: :overflow}}
+      assert_receive {:incus_ws_closed, _}, 2_000
+    end
   end
 
   describe "6.10 exec and console" do
@@ -629,6 +687,46 @@ defmodule Macus.Incus.SharedClientTest do
 
   defp not_found(operation_id, input, scopes),
     do: match?(%{"error" => %{"kind" => "not_found"}}, run(operation_id, input, scopes))
+
+  defp drain(events, count) do
+    case Events.next(events, 1_000) do
+      {:ok, _event} -> drain(events, count + 1)
+      other -> {count, other}
+    end
+  end
+
+  # The guest requests made by `fun`, without discovery, as {method, path,
+  # query}.
+  defp requests(fun) do
+    flush_requests()
+    fun.()
+    collect_requests([])
+  end
+
+  defp collect_requests(acc) do
+    receive do
+      {:incus, "GET", "/1.0", _, _} ->
+        collect_requests(acc)
+
+      {:incus, method, path, qs, _} ->
+        collect_requests([{method, path, URI.decode_query(qs)} | acc])
+
+      {:incus_request_body, _, _, _} ->
+        collect_requests(acc)
+    after
+      100 -> Enum.reverse(acc)
+    end
+  end
+
+  defp reference!(ctx, fields) do
+    path = Path.join(ctx.root, "reference-#{System.unique_integer([:positive])}.json")
+    File.write!(path, Jason.encode!(Map.put(fields, "socket", ctx.sock)))
+    File.chmod!(path, 0o600)
+    {output, status} = System.cmd(@driver, [path], stderr_to_stdout: true)
+    File.rm!(path)
+    assert status == 0, output
+    Jason.decode!(output)
+  end
 
   defp flush_requests do
     receive do

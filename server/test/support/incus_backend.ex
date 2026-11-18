@@ -153,7 +153,10 @@ defmodule Macus.TestSupport.IncusBackend do
 
       if :cowboy_req.header("upgrade", req, "") |> String.downcase() == "websocket" do
         secret = :cowboy_req.parse_qs(req) |> List.keyfind("secret", 0)
-        state = Map.merge(state, %{path: req.path, secret: secret && elem(secret, 1)})
+
+        state =
+          Map.merge(state, %{path: req.path, events_qs: req.qs, secret: secret && elem(secret, 1)})
+
         {:cowboy_websocket, req, state, %{idle_timeout: 60_000, max_frame_size: 1_048_576}}
       else
         {:ok, route(req, state), state}
@@ -333,20 +336,29 @@ defmodule Macus.TestSupport.IncusBackend do
       :cowboy_req.reply(status, %{"content-type" => "application/json"}, body, req)
     end
 
-    # WebSockets: /1.0/events sends one native event; any other path is an
+    # WebSockets: /1.0/events sends native events; any other path is an
     # operation channel that echoes, bursts or closes on request.
+    # A subscription to the `overflow` type gets 256 events at once.
     def websocket_init(%{path: "/1.0/events"} = state) do
-      event =
-        Jason.encode!(%{
-          "type" => "lifecycle",
-          "timestamp" => "2026-11-18T00:00:00Z",
-          "metadata" => %{"action" => "instance-started", "source" => "/1.0/instances/c1"},
-          "project" => "default",
-          "location" => "none"
-        })
+      count = if state.events_qs =~ "type=overflow", do: 256, else: 1
+
+      frames =
+        for i <- 1..count do
+          {:text,
+           Jason.encode!(%{
+             "type" => "lifecycle",
+             "timestamp" => "2026-11-18T00:00:00Z",
+             "metadata" => %{
+               "action" => "instance-started",
+               "source" => "/1.0/instances/c#{i}"
+             },
+             "project" => "default",
+             "location" => "none"
+           })}
+        end
 
       send(state.observer, {:incus_ws, self(), state.path})
-      {[{:text, event}], state}
+      {frames, state}
     end
 
     # Exec channels: secrets s0 (stdin), s1 (stdout), s2 (stderr) and sc

@@ -181,6 +181,22 @@ func typedCall(client incus.InstanceServer, input Input) {
 		err = client.DeleteCertificate(input.Fingerprint)
 	case "list":
 		result["instances"], err = client.GetInstanceNames(api.InstanceTypeAny)
+	case "access":
+		// Project, profile, access, certificate and member selection reads, in
+		// the order the shared-client comparison sends them.
+		_, err = client.GetProjects()
+		if err == nil {
+			_, _, err = client.UseProject("p1").GetProfile("default")
+		}
+		if err == nil {
+			_, err = client.GetProjectAccess("p1")
+		}
+		if err == nil {
+			_, err = client.GetCertificates()
+		}
+		if err == nil {
+			_, _, err = client.UseTarget("member-2").GetInstance("c1")
+		}
 	case "events":
 		// The client derives the events WebSocket URL from its remote URL.
 		var listener *incus.EventListener
