@@ -230,20 +230,26 @@ enum LaunchAgentPlan {
   }
 
   /// The EnvironmentVariables the job's plist carries; nil for the Swift job, which has none.
-  static func environment(stateDirectory: URL, role: ServiceRole) -> [String: String]? {
+  /// The server also receives the Swift executable's source revision, which its own build must
+  /// equal before it serves.
+  static func environment(stateDirectory: URL, role: ServiceRole, revision: String? = nil)
+    -> [String: String]?
+  {
     switch role {
-    case .runtime: nil
+    case .runtime: return nil
     case .server:
-      [
+      var variables = [
         "MACUS_STATE_DIR": stateDirectory.standardizedFileURL.path, "MACUS_SERVE": "1",
         "RELEASE_DISTRIBUTION": "none",
       ]
+      if let revision { variables["MACUS_EXPECTED_REVISION"] = revision }
+      return variables
     }
   }
 
   static func write(
     stateDirectory: URL, home: URL, launchAgents: URL, executable: String,
-    role: ServiceRole = .runtime
+    role: ServiceRole = .runtime, revision: String? = nil
   ) throws -> URL {
     let label = label(stateDirectory: stateDirectory, home: home, role: role)
     guard isMacusLabel(label) else {
@@ -252,7 +258,7 @@ enum LaunchAgentPlan {
     let plist = plistURL(
       stateDirectory: stateDirectory, home: home, launchAgents: launchAgents, role: role)
     let expected = arguments(executable: executable, stateDirectory: stateDirectory, role: role)
-    let variables = environment(stateDirectory: stateDirectory, role: role)
+    let variables = environment(stateDirectory: stateDirectory, role: role, revision: revision)
     // A conflicting registration at this exact path must survive even if an earlier scan missed it.
     if try destinationExists(plist) {
       try refuseConflictingDestination(

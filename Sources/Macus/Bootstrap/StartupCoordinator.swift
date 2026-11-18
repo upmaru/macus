@@ -7,6 +7,8 @@ struct StartupDependencies: Sendable {
   var launchControl: any LaunchControl
   /// Recognizes a serving Macus server only through its authenticated, pinned gateway.
   var server: any ServerProbe = GatewayServerProbe()
+  /// This executable's package version and source revision, paired with the server release.
+  var build: BuildIdentity = .current
   var capabilities: @Sendable () async -> HostCapabilities
   var hasEntitlement: @Sendable () -> Bool
   var executablePath: @Sendable () -> String
@@ -39,6 +41,10 @@ private final class StartContext: @unchecked Sendable {
   var serviceLabel: String?
   var serverOwnership = "launchd"
   var serverLabel: String?
+  /// What the preflight found for the server job: its validated registration, or whether a
+  /// server already serves this state outside launchd.
+  var serverRegistration: LaunchJob?
+  var serverForeground = false
   var startDispatched = false
   var currentStage: StartupStage = .preflight
 
@@ -66,6 +72,8 @@ private final class StartContext: @unchecked Sendable {
       serverLabel = LaunchAgentPlan.label(
         stateDirectory: paths.directory, home: dependencies.homeDirectory, role: .server)
       try await rejectLegacy(paths)
+      // Before any download, job activation or guest request.
+      try await preflightServer(paths)
       let kind = try BootstrapStore.existingRuntime(paths.directory)
       let manifest: URL
       if kind == .absent {
@@ -187,7 +195,8 @@ private final class StartContext: @unchecked Sendable {
       throw RuntimeError(.invalidConfiguration, "Service executable path must be absolute")
     }
     let launcher = ServerRelease.launcher(forServiceExecutable: executable)
-    // Both registrations are identified from launchctl before either job is started or created.
+    // The Swift registration is identified from launchctl before either job is started; the
+    // server's was identified and paired by the preflight.
     let runtimeJob = try await dependencies.launchControl.printJob(
       label: label, timeout: try budget.remainingSeconds(at: dependencies.now()))
     if let runtimeJob {
@@ -197,19 +206,7 @@ private final class StartContext: @unchecked Sendable {
           executable: executable, stateDirectory: paths.directory),
         environment: nil)
     }
-    let serverJob = try await dependencies.launchControl.printJob(
-      label: server, timeout: try budget.remainingSeconds(at: dependencies.now()))
-    if let serverJob {
-      try validateLoadedJob(
-        serverJob, label: server,
-        arguments: LaunchAgentPlan.arguments(
-          executable: launcher, stateDirectory: paths.directory, role: .server),
-        environment: LaunchAgentPlan.environment(stateDirectory: paths.directory, role: .server))
-    } else if try await !serverServing(paths) {
-      // A server job will have to be created: its release must be installed before any job is
-      // started, so a missing payload never leaves a half-activated pair.
-      try ServerRelease.requireInstalled(launcher: launcher)
-    }
+    let serverJob = serverRegistration
     let ownership = try await ensureRuntimeJob(
       paths, label: label, executable: executable, registered: runtimeJob)
     try await ensureServerJob(paths, label: server, launcher: launcher, registered: serverJob)
@@ -268,20 +265,73 @@ private final class StartContext: @unchecked Sendable {
       serverOwnership = "launchd"
       return
     }
-    if try await serverServing(paths) {
+    if serverForeground, try await serverServing(paths) {
       // A server already serves this state's pinned endpoint outside launchd: reuse it.
       serverOwnership = "foreground"
       return
     }
-    try ServerRelease.requireInstalled(launcher: launcher)
+    try ServerRelease.requirePaired(launcher: launcher, build: dependencies.build)
     let plist = try LaunchAgentPlan.write(
       stateDirectory: paths.directory, home: dependencies.homeDirectory,
-      launchAgents: dependencies.launchAgentsDirectory, executable: launcher, role: .server)
+      launchAgents: dependencies.launchAgentsDirectory, executable: launcher, role: .server,
+      revision: dependencies.build.revision)
     try Task.checkCancellation()
     try await dependencies.launchControl.bootstrap(
       plist: plist, timeout: try budget.remainingSeconds(at: dependencies.now()))
     try await waitForServer(paths)
     serverOwnership = "launchd"
+  }
+
+  /// The server half of the startup preflight, inside the bootstrap lock and the one budget:
+  /// the selected listener/TLS configuration, the registered server job's identity, and, unless
+  /// a server already serves this state outside launchd, the installed release paired with this
+  /// executable and its bundled `opsmaru_incus`. Reads only.
+  private func preflightServer(_ paths: RuntimePaths) async throws {
+    let store = GatewayConfigurationStore(stateDirectory: paths.directory)
+    try GatewayConfigurationStore.check(try store.show().configuration)
+    let executable = dependencies.executablePath()
+    guard isAbsoluteExecutablePath(executable) else {
+      throw RuntimeError(.invalidConfiguration, "Service executable path must be absolute")
+    }
+    let launcher = ServerRelease.launcher(forServiceExecutable: executable)
+    let label = LaunchAgentPlan.label(
+      stateDirectory: paths.directory, home: dependencies.homeDirectory, role: .server)
+    let registered = try await dependencies.launchControl.printJob(
+      label: label, timeout: try budget.remainingSeconds(at: dependencies.now()))
+    if let registered {
+      try validateServerJob(registered, label: label, launcher: launcher, paths: paths)
+    } else if try await serverServing(paths) {
+      serverForeground = true
+      return
+    }
+    try ServerRelease.requirePaired(launcher: launcher, build: dependencies.build)
+    serverRegistration = registered
+  }
+
+  private func validateServerJob(
+    _ job: LaunchJob, label: String, launcher: String, paths: RuntimePaths
+  ) throws {
+    let arguments = LaunchAgentPlan.arguments(
+      executable: launcher, stateDirectory: paths.directory, role: .server)
+    let revision = dependencies.build.revision
+    let expected = LaunchAgentPlan.environment(
+      stateDirectory: paths.directory, role: .server, revision: revision)
+    let recorded = job.environment["MACUS_EXPECTED_REVISION"]
+    if recorded != revision,
+      ServiceExecutable.matches(reported: job.executable, expected: launcher),
+      job.programArguments == arguments,
+      LaunchAgentPlan.environmentMatches(
+        job.environment,
+        expected: LaunchAgentPlan.environment(
+          stateDirectory: paths.directory, role: .server, revision: recorded))
+    {
+      // Our own job, registered by another package revision: an explicit transition.
+      throw RuntimeError(
+        .conflict,
+        "Service \(label) was registered for Macus revision \(recorded ?? "none"), but this macus is \(revision ?? "unrecorded"). Unload it with launchctl bootout gui/\(dependencies.uid)/\(label), remove its plist, and rerun macus start. The runtime and its data were preserved."
+      )
+    }
+    try validateLoadedJob(job, label: label, arguments: arguments, environment: expected)
   }
 
   private func serverServing(_ paths: RuntimePaths) async throws -> Bool {
@@ -461,7 +511,7 @@ private final class StartContext: @unchecked Sendable {
     let serverExpected = LaunchAgentPlan.arguments(
       executable: launcher, stateDirectory: paths.directory, role: .server)
     let serverEnvironment = LaunchAgentPlan.environment(
-      stateDirectory: paths.directory, role: .server)
+      stateDirectory: paths.directory, role: .server, revision: dependencies.build.revision)
     try LaunchAgentPlan.refuseConflictingDestination(
       LaunchAgentPlan.plistURL(
         stateDirectory: paths.directory, home: dependencies.homeDirectory,

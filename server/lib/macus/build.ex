@@ -85,6 +85,35 @@ defmodule Macus.Build do
   end
 
   @doc """
+  The release build manifest, written to `macus-build.json` at the release
+  root (`Macus.Release.write_manifest/1`) so the Swift component can check
+  pairing before it starts this release: schema version 1, this build's
+  package `version` and source `revision`, and the bundled `opsmaru_incus`
+  version and outer checksum.
+  """
+  @spec manifest() :: map()
+  def manifest do
+    identity = identity()
+
+    %{
+      "schema_version" => 1,
+      "version" => identity.version,
+      "revision" => identity.revision,
+      "opsmaru_incus" => %{
+        "version" => identity.opsmaru_incus.version,
+        "checksum" => identity.opsmaru_incus.checksum
+      }
+    }
+  end
+
+  @doc "Whether `value` is a well-formed source revision (40 or 64 lowercase hex)."
+  @spec revision?(term()) :: boolean()
+  def revision?(value) when is_binary(value),
+    do: Regex.match?(~r/\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/, value)
+
+  def revision?(_), do: false
+
+  @doc """
   The bundled `opsmaru_incus` cassette import for `Macus.Dex.Config`:
   `%{cassette, path, sha256}` for the locked version, or `%{cassette,
   unavailable: :unpinned_bundle}` when the build recorded no valid pin, so
@@ -116,10 +145,6 @@ defmodule Macus.Build do
 
   defp revision, do: Keyword.get(Application.get_env(:macus, __MODULE__, []), :revision)
 
-  defp revision?(value) when is_binary(value),
-    do: Regex.match?(~r/\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/, value)
-
-  defp revision?(_value), do: false
 
   defp loaded_opsmaru_incus do
     case Application.spec(:opsmaru_incus, :vsn) do

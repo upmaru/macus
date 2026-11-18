@@ -116,7 +116,14 @@ existing Elixir job and preserve local runtime/data on central outage.
 The combined delivery target is `<prefix>/bin/macus` plus a complete
 bundled-ERTS release at `<prefix>/libexec/macus`. Only source builders require
 Elixir/Erlang. Each component has its own foreground launchd job; restarting
-the gateway must preserve the VM. The integrated Homebrew candidate workflow
+the gateway must preserve the VM. Both carry the same Macus identity: the
+Swift executable embeds `MacusVersion` and `MacusSourceRevision` in its
+Info.plist (link with `-Xlinker -sectcreate -Xlinker __TEXT -Xlinker
+__info_plist -Xlinker <plist>`), and the release's
+`Macus.Release.write_manifest/1` step writes `macus-build.json` (version,
+`MACUS_SOURCE_REVISION`, and the bundled `opsmaru_incus` version and
+checksum) at the release root; a release build without a valid revision
+fails. `macus start` refuses to launch a release whose record differs. The integrated Homebrew candidate workflow
 is the packaging baseline, with real measured hashes and passive installation;
 see [candidate documentation](../Packaging/homebrew/README.md). Current
 installers still package Swift alone until the delivery tasks are complete.

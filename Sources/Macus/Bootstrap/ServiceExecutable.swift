@@ -101,6 +101,94 @@ enum ServerRelease {
     }
   }
 
+  /// The release's recorded identity (`macus-build.json`, written by its release build).
+  struct Manifest: Sendable, Equatable {
+    var version: String
+    var revision: String
+    var opsmaruIncusVersion: String
+    var opsmaruIncusChecksum: String
+  }
+
+  static let manifestName = "macus-build.json"
+
+  /// Verifies the release beside `launcher` is complete and built from the same Macus package
+  /// and source revision as this executable, and that the `opsmaru_incus` it records is the one
+  /// it bundles. Reads only; a mismatch is repaired by reinstalling, never by a download.
+  @discardableResult
+  static func requirePaired(launcher: String, build: BuildIdentity) throws -> Manifest {
+    try requireInstalled(launcher: launcher)
+    let root = URL(fileURLWithPath: launcher).deletingLastPathComponent()
+      .deletingLastPathComponent()
+    guard let revision = build.revision, let version = build.version else {
+      throw RuntimeError(
+        .invalidConfiguration,
+        "This macus executable records no package version and source revision, so it cannot be paired with the Macus server release. Install a complete Macus package."
+      )
+    }
+    let manifest = try readManifest(root)
+    guard manifest.revision == revision, manifest.version == version else {
+      throw RuntimeError(
+        .invalidConfiguration,
+        "The Macus server release at \(root.path) is \(manifest.version) (\(manifest.revision)) but this macus is \(version) (\(revision)). Reinstall the complete Macus package so both components match; nothing was started or downloaded."
+      )
+    }
+    try requireBundledLibrary(root, manifest: manifest)
+    return manifest
+  }
+
+  static func readManifest(_ root: URL) throws -> Manifest {
+    let file = root.appendingPathComponent(manifestName)
+    var info = stat()
+    guard lstat(file.path, &info) == 0 else {
+      throw invalid(root, "has no \(manifestName) build record")
+    }
+    guard info.st_mode & S_IFMT == S_IFREG, info.st_mode & 0o022 == 0,
+      info.st_uid == getuid() || info.st_uid == 0, info.st_size <= 65_536
+    else { throw invalid(root, "has an unsafe \(manifestName)") }
+    let descriptor = open(file.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+    guard descriptor >= 0 else { throw invalid(root, "has an unreadable \(manifestName)") }
+    let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+    guard let data = try? handle.read(upToCount: 65_537), data.count <= 65_536,
+      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      jsonInt(object["schema_version"]) == 1,
+      let version = object["version"] as? String, BuildIdentity.isVersion(version),
+      let revision = object["revision"] as? String, BuildIdentity.isRevision(revision),
+      let library = object["opsmaru_incus"] as? [String: Any],
+      let libraryVersion = library["version"] as? String, BuildIdentity.isVersion(libraryVersion),
+      let checksum = library["checksum"] as? String, !checksum.isEmpty
+    else { throw invalid(root, "has a malformed \(manifestName)") }
+    return Manifest(
+      version: version, revision: revision, opsmaruIncusVersion: libraryVersion,
+      opsmaruIncusChecksum: checksum)
+  }
+
+  /// Exactly one `lib/opsmaru_incus-*`, at the recorded version, whose application resource
+  /// declares that version.
+  static func requireBundledLibrary(_ root: URL, manifest: Manifest) throws {
+    let lib = root.appendingPathComponent("lib")
+    let names = (try? FileManager.default.contentsOfDirectory(atPath: lib.path)) ?? []
+    let bundled = names.filter { $0.hasPrefix("opsmaru_incus-") }
+    let expected = "opsmaru_incus-\(manifest.opsmaruIncusVersion)"
+    let app = lib.appendingPathComponent(expected).appendingPathComponent("ebin/opsmaru_incus.app")
+    var info = stat()
+    guard bundled == [expected], lstat(app.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+      info.st_size <= 65_536,
+      let text = try? String(contentsOf: app, encoding: .utf8),
+      text.contains("{vsn,\"\(manifest.opsmaruIncusVersion)\"}")
+    else {
+      throw invalid(
+        root,
+        "does not bundle the opsmaru_incus \(manifest.opsmaruIncusVersion) its build recorded")
+    }
+  }
+
+  private static func invalid(_ root: URL, _ detail: String) -> RuntimeError {
+    RuntimeError(
+      .invalidConfiguration,
+      "The Macus server release at \(root.path) \(detail). Reinstall the complete Macus package; macus start does not fetch a server payload."
+    )
+  }
+
   private static func missing(_ root: URL) -> RuntimeError {
     RuntimeError(
       .invalidConfiguration,

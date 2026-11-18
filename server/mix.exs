@@ -10,7 +10,19 @@ defmodule Macus.MixProject do
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
       deps: deps(),
+      releases: releases(),
       listeners: [Phoenix.CodeReloader]
+    ]
+  end
+
+  # The release macus start launches. `macus-build.json` records the
+  # identity the Swift component checks before starting it.
+  defp releases do
+    [
+      macus: [
+        include_executables_for: [:unix],
+        steps: [:assemble, &Macus.Release.write_manifest/1]
+      ]
     ]
   end
 

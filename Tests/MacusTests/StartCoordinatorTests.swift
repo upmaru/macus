@@ -744,7 +744,7 @@ func registeredServiceWithTrailingSpaceStateIsMatched(state: String) async throw
   let sentinel = try Data(contentsOf: fixture.paths.dataDisk)
   #expect(await fixture.start(launch: launch, timeout: 5) == 0)
   var expectedCommands = [
-    ["print", "gui/501/\(fixture.label)"], ["print", "gui/501/\(fixture.serverLabel)"],
+    ["print", "gui/501/\(fixture.serverLabel)"], ["print", "gui/501/\(fixture.label)"],
   ]
   if state == "not running" { expectedCommands.append(["kickstart", "gui/501/\(fixture.label)"]) }
   #expect(runner.commands == expectedCommands)
@@ -766,7 +766,7 @@ func registeredServiceWithTrailingSpaceStateIsMatched(state: String) async throw
   #expect(status == 0)
   #expect(
     runner.commands == [
-      ["print", "gui/501/\(fixture.label)"], ["print", "gui/501/\(fixture.serverLabel)"],
+      ["print", "gui/501/\(fixture.serverLabel)"], ["print", "gui/501/\(fixture.label)"],
       ["kickstart", "gui/501/\(fixture.label)"],
     ])
   #expect(try Data(contentsOf: fixture.plist) == fixture.plistBytes)
@@ -789,7 +789,7 @@ func registeredServiceWithTrailingSpaceStateIsMatched(state: String) async throw
   }
   #expect(
     runner.commands == [
-      ["print", "gui/501/\(fixture.label)"], ["print", "gui/501/\(fixture.serverLabel)"],
+      ["print", "gui/501/\(fixture.serverLabel)"], ["print", "gui/501/\(fixture.label)"],
     ])
   fixture.openEndpoint()
   #expect(await task.value == 0)
@@ -809,7 +809,10 @@ func registeredServiceWithTrailingSpaceStateIsMatched(state: String) async throw
   let capture = StartCapture()
   let status = await fixture.start(launch: launch, timeout: 2, capture: capture)
   #expect(status == 1)
-  #expect(runner.commands == [["print", "gui/501/\(fixture.label)"]])
+  #expect(
+    runner.commands == [
+      ["print", "gui/501/\(fixture.serverLabel)"], ["print", "gui/501/\(fixture.label)"],
+    ])
   #expect(capture.error.contains("will not replace"))
   #expect(try Data(contentsOf: fixture.plist) == fixture.plistBytes)
   #expect(try Data(contentsOf: fixture.paths.dataDisk) == sentinel)
@@ -830,7 +833,10 @@ func launchctlProgramConflictRejectsMatchingArguments(state: String) async throw
   let launch = ProcessLaunchControl(runner: runner, environment: [:], uid: 501)
   #expect(await fixture.start(launch: launch, timeout: 5, capture: capture) == 1)
   #expect(capture.error.contains("will not replace"))
-  #expect(runner.commands == [["print", "gui/501/\(fixture.label)"]])
+  #expect(
+    runner.commands == [
+      ["print", "gui/501/\(fixture.serverLabel)"], ["print", "gui/501/\(fixture.label)"],
+    ])
   #expect(try Data(contentsOf: fixture.plist) == fixture.plistBytes)
   #expect(try Data(contentsOf: fixture.paths.dataDisk) == sentinel)
 }
@@ -855,7 +861,10 @@ func ambiguousLaunchctlProgramDoesNotActivate(kind: String) async throws {
   let launch = ProcessLaunchControl(runner: runner, environment: [:], uid: 501)
   #expect(await fixture.start(launch: launch, timeout: 5, capture: capture) == 1)
   #expect(capture.error.contains("unambiguous"))
-  #expect(runner.commands == [["print", "gui/501/\(fixture.label)"]])
+  #expect(
+    runner.commands == [
+      ["print", "gui/501/\(fixture.serverLabel)"], ["print", "gui/501/\(fixture.label)"],
+    ])
   #expect(try Data(contentsOf: fixture.plist) == fixture.plistBytes)
 }
 
@@ -869,7 +878,10 @@ func ambiguousLaunchctlProgramDoesNotActivate(kind: String) async throws {
   let status = await fixture.start(launch: launch, timeout: 2, capture: capture)
   #expect(status == 1)
   #expect(capture.error.contains("unambiguous"))
-  #expect(runner.commands == [["print", "gui/501/\(fixture.label)"]])
+  #expect(
+    runner.commands == [
+      ["print", "gui/501/\(fixture.serverLabel)"], ["print", "gui/501/\(fixture.label)"],
+    ])
   #expect(try Data(contentsOf: fixture.plist) == fixture.plistBytes)
 }
 

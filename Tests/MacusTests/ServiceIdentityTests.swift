@@ -150,6 +150,7 @@ import Testing
   #expect(
     server["EnvironmentVariables"] as? [String: String] == [
       "MACUS_STATE_DIR": pair.state.path, "MACUS_SERVE": "1", "RELEASE_DISTRIBUTION": "none",
+      "MACUS_EXPECTED_REVISION": String(repeating: "ab", count: 20),
     ])
   #expect(
     server["StandardErrorPath"] as? String
@@ -289,6 +290,156 @@ import Testing
   #expect(stale.launch.bootstrapped.isEmpty)
 }
 
+// Task 8.3: the startup preflight pairs the release with this executable, checks its bundled
+// opsmaru_incus and the selected TLS configuration, before any download, job or guest request.
+
+@Test func swiftBuildIdentityIsReadFromItsEmbeddedInfoPlist() {
+  let revision = String(repeating: "0f", count: 20)
+  #expect(
+    BuildIdentity.read(["MacusVersion": "0.1.0", "MacusSourceRevision": revision])
+      == BuildIdentity(version: "0.1.0", revision: revision))
+  #expect(BuildIdentity.read(nil) == BuildIdentity(version: nil, revision: nil))
+  for bad in ["HEAD", revision.uppercased(), String(revision.dropLast()), revision + "0"] {
+    #expect(BuildIdentity.read(["MacusSourceRevision": bad]).revision == nil, "\(bad)")
+  }
+  #expect(BuildIdentity.isRevision(String(repeating: "a", count: 64)))
+  #expect(BuildIdentity.read(["MacusVersion": "0.1 beta"]).version == nil)
+}
+
+@Test func unpairedReleaseOrPayloadFailsBeforeAnyFetchJobOrGuestRequest() async throws {
+  let other = String(repeating: "cd", count: 20)
+  let damages: [(String, String, (PairFixture) throws -> Void)] = [
+    ("revision", "this macus is", { try $0.writeManifest(revision: other) }),
+    ("version", "this macus is", { try $0.writeManifest(version: "0.2.0") }),
+    ("unrecorded build", "records no package version", { $0.build = BuildIdentity() }),
+    (
+      "missing manifest", "has no macus-build.json",
+      {
+        try FileManager.default.removeItem(
+          at: $0.release.appendingPathComponent(ServerRelease.manifestName))
+      }
+    ),
+    (
+      "malformed manifest", "malformed",
+      {
+        try Data("{}".utf8).write(
+          to: $0.release.appendingPathComponent(ServerRelease.manifestName))
+      }
+    ),
+    (
+      "writable manifest", "unsafe",
+      { chmod($0.release.appendingPathComponent(ServerRelease.manifestName).path, 0o666) }
+    ),
+    (
+      "missing library", "does not bundle the opsmaru_incus",
+      {
+        try FileManager.default.removeItem(
+          at: $0.release.appendingPathComponent("lib/opsmaru_incus-0.2.3"))
+      }
+    ),
+    ("recorded other library", "opsmaru_incus 0.2.4", { try $0.writeManifest(library: "0.2.4") }),
+    (
+      "second library", "does not bundle",
+      {
+        try FileManager.default.createDirectory(
+          at: $0.release.appendingPathComponent("lib/opsmaru_incus-0.2.2/ebin"),
+          withIntermediateDirectories: true)
+      }
+    ),
+    (
+      "application version", "does not bundle",
+      {
+        try Data(#"{application,opsmaru_incus,[{vsn,"0.2.2"}]}."#.utf8).write(
+          to: $0.release.appendingPathComponent("lib/opsmaru_incus-0.2.3/ebin/opsmaru_incus.app"))
+      }
+    ),
+  ]
+  for (name, message, damage) in damages {
+    // An absent runtime: a passing preflight would go on to download the appliance.
+    let pair = try PairFixture(existing: false)
+    defer { pair.remove() }
+    try damage(pair)
+    let capture = StartCapture()
+    #expect(await pair.start(capture: capture) == 1, "\(name)")
+    #expect(capture.error.contains("invalid_configuration"), "\(name): \(capture.error)")
+    #expect(capture.error.contains(message), "\(name): \(capture.error)")
+    #expect(pair.downloader.calls == 0, "\(name)")
+    #expect(pair.launch.bootstrapped.isEmpty && pair.launch.kickstarted.isEmpty, "\(name)")
+    #expect(!pair.launch.runtimeOpened, "\(name)")
+    #expect(
+      !FileManager.default.fileExists(atPath: pair.state.appendingPathComponent("runtime").path))
+  }
+
+  // A registered, stopped server job over a mismatched release is not kickstarted, and a running
+  // guest's data is untouched.
+  let pair = try PairFixture()
+  defer { pair.remove() }
+  let disk = try Data(contentsOf: pair.state.appendingPathComponent("runtime/data.raw"))
+  pair.launch.register(pair.serverJob(loaded: false))
+  try pair.writeManifest(revision: other)
+  #expect(await pair.start() == 1)
+  #expect(pair.launch.kickstarted.isEmpty && pair.launch.bootstrapped.isEmpty)
+  #expect(!pair.launch.runtimeOpened)
+  #expect(try Data(contentsOf: pair.state.appendingPathComponent("runtime/data.raw")) == disk)
+}
+
+@Test func invalidListenerOrTLSConfigurationFailsPreflight() async throws {
+  let cases: [(String, [String: Any])] = [
+    ("port", ["schema_version": 1, "port": 0]),
+    ("unspecified bind", ["schema_version": 1, "bind_address": "0.0.0.0"]),
+    (
+      "missing certificate",
+      [
+        "schema_version": 1, "certificate_file": "/tmp/macus-no-such.crt",
+        "key_file": "/tmp/macus-no-such.key",
+      ]
+    ),
+  ]
+  for (name, document) in cases {
+    let pair = try PairFixture(existing: false)
+    defer { pair.remove() }
+    let server = pair.state.appendingPathComponent("server")
+    try FileManager.default.createDirectory(
+      at: server, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    let file = server.appendingPathComponent("gateway.json")
+    let bytes = try JSONSerialization.data(withJSONObject: document)
+    try writePrivate(bytes, to: file)
+    let capture = StartCapture()
+    #expect(await pair.start(capture: capture) == 1, "\(name)")
+    #expect(capture.error.contains("invalid_configuration"), "\(name): \(capture.error)")
+    #expect(pair.downloader.calls == 0, "\(name)")
+    #expect(pair.launch.bootstrapped.isEmpty, "\(name)")
+    #expect(try Data(contentsOf: file) == bytes, "\(name)")
+  }
+}
+
+@Test func serverJobFromAnotherPackageRevisionNeedsAnExplicitTransition() async throws {
+  let pair = try PairFixture()
+  defer { pair.remove() }
+  var old = pair.serverJob(loaded: true)
+  old.environment["MACUS_EXPECTED_REVISION"] = String(repeating: "cd", count: 20)
+  pair.launch.register(old)
+  let capture = StartCapture()
+  #expect(await pair.start(capture: capture) == 1)
+  #expect(capture.error.contains("conflict"))
+  #expect(capture.error.contains("launchctl bootout"))
+  #expect(capture.error.contains(String(repeating: "cd", count: 20)))
+  #expect(pair.launch.bootstrapped.isEmpty && pair.launch.kickstarted.isEmpty)
+  #expect(!pair.launch.runtimeOpened)
+}
+
+@Test func foregroundServerNeedsNoInstalledRelease() async throws {
+  // A server already answering on the pinned endpoint is reused; no second listener is started
+  // even though no release is installed beside this executable.
+  let pair = try PairFixture()
+  defer { pair.remove() }
+  try FileManager.default.removeItem(at: pair.release)
+  _ = try pair.openRuntime()
+  pair.probe.serving = true
+  #expect(await pair.start() == 0)
+  #expect(pair.launch.bootstrapped.isEmpty && pair.launch.kickstarted.isEmpty)
+}
+
 // MARK: - Fixtures
 
 /// An existing isolated runtime, an installed fake package (`<prefix>/bin/macus` and its release
@@ -304,18 +455,26 @@ private final class PairFixture: @unchecked Sendable {
   let serverLabel: String
   let probe = FakeServerProbe(serving: false)
   let launch: PairLaunch
+  var build = BuildIdentity(version: "0.1.0", revision: String(repeating: "ab", count: 20))
+  var release: URL { prefix.appendingPathComponent("libexec/macus") }
 
-  init() throws {
+  let downloader = RecordingDownloader()
+
+  /// `existing: false` leaves the state without a runtime, so start would acquire an appliance.
+  init(existing: Bool = true) throws {
     tools = try StartTools()
     state = URL(fileURLWithPath: "/tmp/macus-pair-\(UUID().uuidString.prefix(8))")
     try FileManager.default.createDirectory(
-      at: state.appendingPathComponent("runtime"), withIntermediateDirectories: true,
-      attributes: [.posixPermissions: 0o700])
+      at: state, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     chmod(state.path, 0o700)
-    try Data("root".utf8).write(to: state.appendingPathComponent("runtime/root.raw"))
-    try Data("data".utf8).write(to: state.appendingPathComponent("runtime/data.raw"))
-    try Data(#"{"appliance_manifest_path":"/tmp/manifest.json"}"#.utf8).write(
-      to: state.appendingPathComponent("config.json"))
+    if existing {
+      try FileManager.default.createDirectory(
+        at: state.appendingPathComponent("runtime"), withIntermediateDirectories: true)
+      try Data("root".utf8).write(to: state.appendingPathComponent("runtime/root.raw"))
+      try Data("data".utf8).write(to: state.appendingPathComponent("runtime/data.raw"))
+      try Data(#"{"appliance_manifest_path":"/tmp/manifest.json"}"#.utf8).write(
+        to: state.appendingPathComponent("config.json"))
+    }
     prefix = tools.root.appendingPathComponent("prefix")
     executable = try makeExecutable(prefix.appendingPathComponent("bin/macus")).path
     let release = prefix.appendingPathComponent("libexec/macus")
@@ -327,6 +486,25 @@ private final class PairFixture: @unchecked Sendable {
     runtimeLabel = LaunchAgentPlan.label(stateDirectory: state, home: tools.root)
     serverLabel = LaunchAgentPlan.label(stateDirectory: state, home: tools.root, role: .server)
     launch = PairLaunch(state: state, probe: probe)
+    try writeManifest()
+    let app = release.appendingPathComponent("lib/opsmaru_incus-0.2.3/ebin/opsmaru_incus.app")
+    try FileManager.default.createDirectory(
+      at: app.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data(#"{application,opsmaru_incus,[{modules,[]},{vsn,"0.2.3"}]}."#.utf8).write(to: app)
+  }
+
+  /// The release's build record, as `Macus.Release.write_manifest/1` writes it.
+  func writeManifest(
+    version: String = "0.1.0", revision: String = String(repeating: "ab", count: 20),
+    library: String = "0.2.3"
+  ) throws {
+    let object: [String: Any] = [
+      "schema_version": 1, "version": version, "revision": revision,
+      "opsmaru_incus": ["version": library, "checksum": String(repeating: "c", count: 64)],
+    ]
+    let file = release.appendingPathComponent(ServerRelease.manifestName)
+    try JSONSerialization.data(withJSONObject: object).write(to: file)
+    chmod(file.path, 0o644)
   }
 
   func runtimeJob(loaded: Bool) -> LaunchJob {
@@ -336,7 +514,9 @@ private final class PairFixture: @unchecked Sendable {
   }
 
   func serverJob(loaded: Bool) -> LaunchJob {
-    var environment = LaunchAgentPlan.environment(stateDirectory: state, role: .server) ?? [:]
+    var environment =
+      LaunchAgentPlan.environment(stateDirectory: state, role: .server, revision: build.revision)
+      ?? [:]
     environment["XPC_SERVICE_NAME"] = serverLabel
     return LaunchJob(
       label: serverLabel, loaded: loaded, executable: launcher,
@@ -349,8 +529,9 @@ private final class PairFixture: @unchecked Sendable {
 
   func start(capture: StartCapture = StartCapture()) async -> Int32 {
     var overrides = tools.overrides(
-      downloader: RecordingDownloader(), launchControl: launch, agents: agents)
+      downloader: downloader, launchControl: launch, agents: agents)
     overrides.server = probe
+    overrides.build = build
     let executable = self.executable
     overrides.executablePath = { executable }
     return await MacusCLI.run(
@@ -399,6 +580,7 @@ private final class PairLaunch: LaunchControl, @unchecked Sendable {
   }
 
   func stop() { lock.withLock { runtime }?.stop() }
+  var runtimeOpened: Bool { lock.withLock { runtime != nil } }
 
   func printJob(label: String, timeout: Int) async throws -> LaunchJob? {
     lock.withLock {
