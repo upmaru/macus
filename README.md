@@ -218,6 +218,7 @@ mise run spec:validate
 
 - [Prepare an appliance and run hardware acceptance](docs/development.md)
 - [Macus CLI](docs/cli.md)
+- [Macus server: HTTPS, trust and credentials](docs/server.md)
 - [Runtime API and tama-machine contract](docs/api.md)
 - [Architecture and scope](docs/architecture.md)
 - [Per-user launchd packaging](Packaging/README.md)

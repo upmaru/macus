@@ -55,6 +55,8 @@ private final class StartContext: @unchecked Sendable {
       try paths.prepare()
       let lock = try BootstrapLock(directory: paths.directory)
       defer { lock.release() }
+      // The local CLI's own server credential, prepared once and never printed.
+      try BearerTokenStore(stateDirectory: paths.directory).prepareLocalCredential()
       serviceLabel = LaunchAgentPlan.label(
         stateDirectory: paths.directory, home: dependencies.homeDirectory)
       try await rejectLegacy(paths)

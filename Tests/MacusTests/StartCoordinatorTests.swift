@@ -200,6 +200,18 @@ import os
     try Data(contentsOf: directory.appendingPathComponent("runtime/data.raw"))
       == Data("data-sentinel".utf8))
   #expect(server.requests().contains { $0.method == "POST" } == false)
+
+  // start prepares the local CLI credential once and never prints it.
+  let store = BearerTokenStore(stateDirectory: directory)
+  let credential = try String(contentsOf: store.localCredentialFile, encoding: .utf8)
+  let secret = String(credential.trimmingCharacters(in: .newlines).split(separator: ".")[2])
+  var info = stat()
+  #expect(lstat(store.localCredentialFile.path, &info) == 0 && info.st_mode & 0o777 == 0o600)
+  #expect(try store.list().map(\.principal) == [BearerTokenStore.localPrincipal])
+  #expect(!capture.output.contains(secret) && !capture.error.contains(secret))
+  // A later start keeps it: the store and token file are left unchanged.
+  #expect(try store.prepareLocalCredential() == false)
+  #expect(try String(contentsOf: store.localCredentialFile, encoding: .utf8) == credential)
   _ = incus
 }
 

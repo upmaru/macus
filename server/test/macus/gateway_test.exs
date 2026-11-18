@@ -123,6 +123,117 @@ defmodule Macus.GatewayTest do
     end
   end
 
+  defp trust!(state, identities) do
+    now = DateTime.utc_now()
+    entries = for %{der: der} <- identities, do: Trust.entry(der, "fixture", "", now)
+    path = Trust.path(state)
+    tmp = path <> ".tmp"
+    File.write!(tmp, Jason.encode!(%{"schema_version" => 1, "certificates" => entries}))
+    File.chmod!(tmp, 0o600)
+    File.rename!(tmp, path)
+  end
+
+  # A guest incus.sock that answers GET /1.0 and streams a chunk every 50 ms
+  # on any other request until the relay closes it.
+  defp streaming_backend!(path) do
+    {:ok, listener} =
+      :gen_tcp.listen(0, [:binary, ip: {:local, String.to_charlist(path)}, active: false])
+
+    File.chmod!(path, 0o600)
+    pid = spawn(fn -> accept_streams(listener) end)
+    :ok = :gen_tcp.controlling_process(listener, pid)
+    on_exit(fn -> Process.exit(pid, :kill) end)
+    pid
+  end
+
+  defp accept_streams(listener) do
+    case :gen_tcp.accept(listener, 100) do
+      {:ok, socket} ->
+        pid = spawn(fn -> receive(do: (:go -> serve_stream(socket))) end)
+        :ok = :gen_tcp.controlling_process(socket, pid)
+        send(pid, :go)
+        accept_streams(listener)
+
+      {:error, :timeout} ->
+        receive do
+          :stop -> :gen_tcp.close(listener)
+        after
+          0 -> accept_streams(listener)
+        end
+    end
+  end
+
+  defp serve_stream(socket) do
+    {:ok, head} = recv_head(socket, "")
+    [request_line | _] = String.split(head, "\r\n")
+
+    if request_line =~ ~r/\AGET \/1\.0 / do
+      body = Jason.encode!(%{"type" => "sync", "status_code" => 200, "metadata" => %{}})
+
+      :gen_tcp.send(
+        socket,
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: #{byte_size(body)}\r\nconnection: close\r\n\r\n" <>
+          body
+      )
+
+      :gen_tcp.close(socket)
+    else
+      :ok =
+        :gen_tcp.send(
+          socket,
+          "HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\ntransfer-encoding: chunked\r\n\r\n"
+        )
+
+      tick(socket)
+    end
+  end
+
+  defp recv_head(socket, acc) do
+    if String.contains?(acc, "\r\n\r\n") do
+      {:ok, acc}
+    else
+      case :gen_tcp.recv(socket, 0, 5_000) do
+        {:ok, data} -> recv_head(socket, acc <> data)
+        error -> error
+      end
+    end
+  end
+
+  defp tick(socket) do
+    case :gen_tcp.send(socket, "4\r\ntick\r\n") do
+      :ok ->
+        Process.sleep(50)
+        tick(socket)
+
+      {:error, _} ->
+        :gen_tcp.close(socket)
+    end
+  end
+
+  defp receive_until(socket, marker, acc) do
+    if String.contains?(acc, marker) do
+      acc
+    else
+      {:ok, data} = :ssl.recv(socket, 0, 5_000)
+      receive_until(socket, marker, acc <> data)
+    end
+  end
+
+  defp drain_until_closed(socket, deadline) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if remaining <= 0 do
+      :open
+    else
+      case :ssl.recv(socket, 0, remaining) do
+        {:ok, _data} -> drain_until_closed(socket, deadline)
+        {:error, :closed} -> :closed
+        {:error, :timeout} -> :open
+        {:error, _} -> :closed
+      end
+    end
+  end
+
   describe "build identity" do
     test "serving needs a known revision equal to the launcher's and the locked library" do
       assert Build.check(@revision) == :ok
@@ -511,6 +622,65 @@ defmodule Macus.GatewayTest do
       assert response =~ ~r/\AHTTP\/1.1 200/
       assert response =~ ~s("auth":"untrusted")
       refute response =~ "Gateway identity is unavailable"
+    end
+
+    # The shared gateway kills the revoked exchange, which Ranch logs.
+    @tag capture_log: true
+    test "an active native stream ends within the recheck bound when its certificate is removed",
+         context do
+      proxy = Application.get_env(:macus, Macus.Proxy)
+      on_exit(fn -> restore(Macus.Proxy, proxy) end)
+      Application.delete_env(:macus, Macus.Proxy)
+
+      gateway = serve!(context)
+      # The production bound is five seconds; this test tightens it.
+      assert Macus.Proxy.gateway().recheck_interval == 5_000
+      bound = 400
+      Application.put_env(:macus, Macus.Proxy, recheck_interval: bound)
+
+      laptop = TLSIdentity.self_signed(context.root, "laptop")
+      desktop = TLSIdentity.self_signed(context.root, "desktop")
+      trust!(context.state, [laptop, desktop])
+      backend = streaming_backend!(Path.join(context.state.state_dir, "incus.sock"))
+
+      open = fn identity ->
+        {:ok, socket} =
+          tls(gateway.config.port, gateway.certificate.der,
+            certfile: identity.certfile,
+            keyfile: identity.keyfile
+          )
+
+        :ok =
+          :ssl.send(socket, "GET /1.0/instances/c1/console HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n")
+
+        assert receive_until(socket, "tick", "") =~ ~r/\AHTTP\/1.1 200/
+        socket
+      end
+
+      revoked = open.(laptop)
+      kept = open.(desktop)
+
+      trust!(context.state, [desktop])
+      removed_at = System.monotonic_time(:millisecond)
+      assert drain_until_closed(revoked, removed_at + 5_000) == :closed
+      elapsed = System.monotonic_time(:millisecond) - removed_at
+      assert elapsed <= bound + 300, "closed after #{elapsed} ms"
+
+      # Another certificate's stream is unaffected, and the removed one is
+      # refused on its next request.
+      Process.sleep(bound)
+      assert {:ok, data} = :ssl.recv(kept, 0, 1_000)
+      assert data =~ "tick"
+
+      {:ok, socket} =
+        tls(gateway.config.port, gateway.certificate.der,
+          certfile: laptop.certfile,
+          keyfile: laptop.keyfile
+        )
+
+      assert get(socket, "/1.0/instances") =~ ~r/\AHTTP\/1.1 403/
+      :ssl.close(kept)
+      send(backend, :stop)
     end
 
     test "an occupied port fails without another listener", context do

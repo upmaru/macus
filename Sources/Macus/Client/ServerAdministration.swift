@@ -1,7 +1,8 @@
 import Foundation
 
-/// `macus server token ...` and `macus server trust token ...`: owner-local bearer and enrollment
-/// token administration over private gateway state.
+/// `macus server config ...`, `macus server token ...` and `macus server trust token ...`:
+/// owner-local endpoint configuration and bearer and enrollment token administration over private
+/// gateway state.
 ///
 /// These commands never contact the runtime, Incus or launchd, never touch runtime disks or
 /// gateway trust and never print a token. The only secret output is the file an issue command
@@ -99,6 +100,49 @@ enum ServerAdministration {
     }
   }
 
+  static func showConfiguration(
+    directory: URL, json: Bool, streams: MacusStreams, presentation: HumanPresentation
+  ) throws {
+    let store = GatewayConfigurationStore(stateDirectory: directory)
+    let (configuration, stored) = try store.show()
+    if json {
+      var object = configuration.jsonObject
+      object["file"] = stored ? store.file.path : NSNull()
+      streams.writeOutput(try jsonText(["gateway": object]))
+    } else {
+      presentation.gatewayConfiguration(
+        configuration, file: stored ? store.file.path : nil, changed: false)
+    }
+  }
+
+  static func setConfiguration(
+    _ change: GatewayConfigurationChange, directory: URL, json: Bool, streams: MacusStreams,
+    presentation: HumanPresentation
+  ) throws {
+    let store = GatewayConfigurationStore(stateDirectory: directory)
+    let configuration = try store.update { change.apply(to: &$0) }
+    if json {
+      var object = configuration.jsonObject
+      object["file"] = store.file.path
+      streams.writeOutput(try jsonText(["gateway": object]))
+    } else {
+      presentation.gatewayConfiguration(configuration, file: store.file.path, changed: true)
+    }
+  }
+
+  static func resetConfiguration(
+    directory: URL, json: Bool, streams: MacusStreams, presentation: HumanPresentation
+  ) throws {
+    let removed = try GatewayConfigurationStore(stateDirectory: directory).reset()
+    if json {
+      var object = GatewayConfiguration().jsonObject
+      object["file"] = NSNull()
+      streams.writeOutput(try jsonText(["gateway": object, "removed": removed]))
+    } else {
+      presentation.gatewayConfiguration(GatewayConfiguration(), file: nil, changed: removed)
+    }
+  }
+
   /// Parses `--expires-in`: a positive count with an `s`, `m`, `h` or `d` suffix, from one
   /// minute to ten years.
   static func expiry(_ raw: String) -> Int? {
@@ -111,7 +155,46 @@ enum ServerAdministration {
   }
 }
 
+/// The fields `macus server config set` changes; others keep their stored values.
+struct GatewayConfigurationChange: Sendable, Equatable {
+  var bindAddress: String?
+  var port: Int?
+  var advertisedURL: String?
+  var certificateFile: String?
+  var keyFile: String?
+
+  var isEmpty: Bool { self == GatewayConfigurationChange() }
+
+  func apply(to configuration: inout GatewayConfiguration) {
+    if let bindAddress { configuration.bindAddress = bindAddress }
+    if let port { configuration.port = port }
+    if let advertisedURL { configuration.advertisedURL = advertisedURL }
+    if let certificateFile { configuration.certificateFile = certificateFile }
+    if let keyFile { configuration.keyFile = keyFile }
+  }
+}
+
 extension HumanPresentation {
+  func gatewayConfiguration(_ configuration: GatewayConfiguration, file: String?, changed: Bool) {
+    heading(changed ? "Gateway configuration updated" : "Gateway configuration")
+    field("Listen", authority(configuration.effectiveBindAddress, configuration.effectivePort))
+    field("URL", configuration.effectiveURL)
+    if configuration.usesDefaultIdentity {
+      field("Identity", "Generated loopback certificate (server/gateway.crt)")
+    } else {
+      field("Certificate", configuration.certificateFile)
+      field("Key", configuration.keyFile)
+    }
+    field("File", file ?? "None (loopback defaults)")
+    if changed {
+      text("  The Macus server reads this when it next starts; nothing was restarted.\n")
+    }
+  }
+
+  private func authority(_ host: String, _ port: Int) -> String {
+    host.contains(":") ? "[\(host)]:\(port)" : "\(host):\(port)"
+  }
+
   func issuedToken(_ token: BearerTokenSummary, output: String, directory: URL) {
     heading("Bearer token issued")
     tokenFields(token)

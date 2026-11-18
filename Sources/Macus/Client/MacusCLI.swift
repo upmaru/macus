@@ -140,6 +140,11 @@ public enum MacusCLI {
       client setup [--remote NAME] [--set-default] [--incus ABSOLUTE_PATH]
 
     Server administration (owner-local; never starts services or touches VM disks):
+      server config show              Show the gateway listener configuration.
+      server config set [--bind-address IP] [--port PORT] [--advertised-url URL]
+                        [--certificate-file ABSOLUTE_PATH --key-file ABSOLUTE_PATH]
+        Change STATE/server/gateway.json; the server reads it when it next starts.
+      server config reset             Return to loopback 127.0.0.1:8443 defaults.
       server token issue --principal NAME --scope SCOPE [--scope SCOPE ...]
                          [--expires-in DURATION] --output ABSOLUTE_PATH
         Issue a scoped bearer token into a new 0600 file. The token is never printed.
@@ -160,6 +165,9 @@ public enum MacusCLI {
       macus capabilities --json
       macus --state-dir /tmp/macus-demo start --progress plain
       macus client setup --remote macus
+      macus server config set --bind-address 192.168.1.20 \\
+        --advertised-url https://macus.example.net:8443 \\
+        --certificate-file ~/certs/macus.pem --key-file ~/certs/macus.key
       macus server token issue --principal laptop --scope incus.read --output ~/macus.token
       macus server trust token issue --name laptop --address macus.example.net:8443 \\
         --server-certificate ~/gateway.crt --output ~/laptop.trust-token
@@ -197,7 +205,11 @@ public enum MacusCLI {
     Bearer scopes: incus.read, incus.write, incus.exec, incus.delete, runtime.read,
     runtime.write and runtime.delete; native Incus scopes are never issued. DURATION is a
     count with s, m, h or d (1 minute to 3650 days); without it a token does not expire.
-    Tokens live in STATE/server/bearer-tokens.json as SHA-256 verifiers.
+    Tokens live in STATE/server/bearer-tokens.json as SHA-256 verifiers. macus start
+    prepares the local CLI's own runtime token once in STATE/server/local-cli.token;
+    revoke its macus-local-cli record to rotate it at the next start. The gateway never
+    binds 0.0.0.0 or ::, and a non-loopback --bind-address needs --advertised-url and a
+    certificate naming that host.
     --progress auto animates only on an interactive terminal; plain and JSON avoid cursor
     escapes. --progress none suppresses progress. Exit status is 0 on success, 1 on
     operational failure, 2 on invalid arguments and 130 when start is interrupted.
@@ -221,6 +233,9 @@ private enum Command {
   case doctor
   case clientSetup(remote: String, setDefault: Bool, incus: String?)
   case start(remote: String, setDefault: Bool, incus: String?, progress: ProgressSelection)
+  case serverConfigShow
+  case serverConfigSet(GatewayConfigurationChange)
+  case serverConfigReset
   case serverTokenIssue(principal: String, scopes: [String], expiresIn: Int?, output: String)
   case serverTokenList
   case serverTokenRevoke(id: String)
@@ -246,6 +261,8 @@ private func requestsJSON(_ arguments: [String]) -> Bool {
       || token == "--incus" || token == "--progress" || token == "--principal"
       || token == "--scope" || token == "--expires-in" || token == "--output"
       || token == "--name" || token == "--address" || token == "--server-certificate"
+      || token == "--bind-address" || token == "--port" || token == "--advertised-url"
+      || token == "--certificate-file" || token == "--key-file"
     {
       index += 2
       continue
@@ -263,8 +280,9 @@ private func defaultTimeout(_ command: Command) -> Int {
   switch command {
   case .runtimeStart, .runtimeStop, .runtimeRestart, .clientSetup: MacusCLI.lifecycleTimeout
   case .start: MacusCLI.startTimeout
-  case .capabilities, .runtimeStatus, .doctor, .serverTokenIssue, .serverTokenList,
-    .serverTokenRevoke, .serverTrustTokenIssue, .serverTrustTokenList, .serverTrustTokenRevoke:
+  case .capabilities, .runtimeStatus, .doctor, .serverConfigShow, .serverConfigSet,
+    .serverConfigReset, .serverTokenIssue, .serverTokenList, .serverTokenRevoke,
+    .serverTrustTokenIssue, .serverTrustTokenList, .serverTrustTokenRevoke:
     MacusCLI.readOnlyTimeout
   }
 }
@@ -286,6 +304,7 @@ private func parse(_ arguments: [String]) throws -> Invocation {
   var name: String?
   var addresses: [String] = []
   var serverCertificate: String?
+  var gateway = GatewayConfigurationChange()
   var positionals: [String] = []
   func value(for flag: String) throws -> String {
     guard index + 1 < arguments.count, !arguments[index + 1].hasPrefix("-") else {
@@ -370,6 +389,39 @@ private func parse(_ arguments: [String]) throws -> Invocation {
         throw UsageError(message: "--server-certificate requires an absolute path")
       }
       serverCertificate = raw
+    case "--bind-address":
+      guard gateway.bindAddress == nil else {
+        throw UsageError(message: "Duplicate --bind-address")
+      }
+      gateway.bindAddress = try value(for: "--bind-address")
+    case "--port":
+      guard gateway.port == nil else { throw UsageError(message: "Duplicate --port") }
+      let raw = try value(for: "--port")
+      guard raw.utf8.count <= 5, raw.utf8.allSatisfy({ (48...57).contains($0) }),
+        let parsed = Int(raw), (1...65_535).contains(parsed)
+      else { throw UsageError(message: "--port must be an integer from 1 to 65535") }
+      gateway.port = parsed
+    case "--advertised-url":
+      guard gateway.advertisedURL == nil else {
+        throw UsageError(message: "Duplicate --advertised-url")
+      }
+      gateway.advertisedURL = try value(for: "--advertised-url")
+    case "--certificate-file":
+      guard gateway.certificateFile == nil else {
+        throw UsageError(message: "Duplicate --certificate-file")
+      }
+      let raw = try value(for: "--certificate-file")
+      guard isAbsolute(raw) else {
+        throw UsageError(message: "--certificate-file requires an absolute path")
+      }
+      gateway.certificateFile = raw
+    case "--key-file":
+      guard gateway.keyFile == nil else { throw UsageError(message: "Duplicate --key-file") }
+      let raw = try value(for: "--key-file")
+      guard isAbsolute(raw) else {
+        throw UsageError(message: "--key-file requires an absolute path")
+      }
+      gateway.keyFile = raw
     default:
       if token.hasPrefix("-") { throw UsageError(message: "Unknown flag \(token)") }
       positionals.append(token)
@@ -399,6 +451,21 @@ private func parse(_ arguments: [String]) throws -> Invocation {
     command = .start(
       remote: remote ?? MacusCLI.defaultRemoteName, setDefault: setDefault, incus: incusOverride,
       progress: ProgressSelection(rawValue: progress ?? "auto") ?? .auto)
+  } else if positionals == ["server", "config", "show"] {
+    command = .serverConfigShow
+  } else if positionals == ["server", "config", "set"] {
+    guard !gateway.isEmpty else {
+      throw UsageError(
+        message:
+          "server config set requires --bind-address, --port, --advertised-url or --certificate-file with --key-file"
+      )
+    }
+    guard (gateway.certificateFile == nil) == (gateway.keyFile == nil) else {
+      throw UsageError(message: "--certificate-file and --key-file are given together")
+    }
+    command = .serverConfigSet(gateway)
+  } else if positionals == ["server", "config", "reset"] {
+    command = .serverConfigReset
   } else if positionals == ["server", "token", "issue"] {
     guard let principal else {
       throw UsageError(message: "server token issue requires --principal")
@@ -484,6 +551,15 @@ private func parse(_ arguments: [String]) throws -> Invocation {
       )
     }
   }
+  if !gateway.isEmpty {
+    if case .serverConfigSet = command {
+    } else {
+      throw UsageError(
+        message:
+          "--bind-address, --port, --advertised-url, --certificate-file and --key-file are only valid with server config set"
+      )
+    }
+  }
   if expiresIn != nil || output != nil {
     switch command {
     case .serverTokenIssue, .serverTrustTokenIssue: break
@@ -495,8 +571,9 @@ private func parse(_ arguments: [String]) throws -> Invocation {
     }
   }
   switch command {
-  case .serverTokenIssue, .serverTokenList, .serverTokenRevoke, .serverTrustTokenIssue,
-    .serverTrustTokenList, .serverTrustTokenRevoke:
+  case .serverConfigShow, .serverConfigSet, .serverConfigReset, .serverTokenIssue,
+    .serverTokenList, .serverTokenRevoke, .serverTrustTokenIssue, .serverTrustTokenList,
+    .serverTrustTokenRevoke:
     // Local administration has no request deadline to bound.
     guard timeout == nil else {
       throw UsageError(message: "server commands do not accept --timeout")
@@ -580,6 +657,15 @@ private func execute(
       directory: directory, remote: remote, setDefault: setDefault, incusOverride: incus,
       progress: progress, timeout: timeout, json: json, environment: environment,
       transport: transport, runner: runner, streams: streams, overrides: overrides)
+  case .serverConfigShow:
+    try ServerAdministration.showConfiguration(
+      directory: directory, json: json, streams: streams, presentation: presentation)
+  case .serverConfigSet(let change):
+    try ServerAdministration.setConfiguration(
+      change, directory: directory, json: json, streams: streams, presentation: presentation)
+  case .serverConfigReset:
+    try ServerAdministration.resetConfiguration(
+      directory: directory, json: json, streams: streams, presentation: presentation)
   case .serverTokenIssue(let principal, let scopes, let expiresIn, let output):
     try ServerAdministration.issue(
       principal: principal, scopes: scopes, expiresIn: expiresIn, output: output,

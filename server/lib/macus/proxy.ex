@@ -21,7 +21,8 @@ defmodule Macus.Proxy do
           certificate_file: "/.../server/gateway.crt",
           api_extensions: ["certificate_update", ...]
         ],
-        max_exchanges: 64
+        max_exchanges: 64,
+        recheck_interval: 5_000
 
   plus `config :macus, :state_dir`. When serving, the running gateway's
   (`Macus.Gateway`) state directory is used, and `owner_uid`, `owner_key`
@@ -31,6 +32,12 @@ defmodule Macus.Proxy do
   it implements) taken from this configuration. `identity_scope` defaults
   to the running gateway's: `:local` for a loopback or private-network
   listener, which may advertise local addresses and names, else `:public`.
+  `recheck_interval` (default and maximum 5000 ms, the documented bound)
+  is how soon an active native exchange (a streamed response, WebSocket or
+  raw upgrade) ends after its certificate is removed from gateway trust or
+  expires: the shared gateway rechecks the grant within it, including
+  callback and interruption time, and closes the exchange when it no longer
+  holds. New requests are refused at once.
   Without valid configuration `gateway/0` returns `:error` and every native
   request is refused with 503 before backend access.
   """
@@ -39,6 +46,8 @@ defmodule Macus.Proxy do
   alias Opsmaru.Incus.{Connection, Gateway}
 
   @admission Macus.Proxy.Admission
+  # The documented revocation bound for active native exchanges.
+  @recheck_interval 5_000
 
   @doc "Admission, trust and enrollment processes for the application supervisor."
   def child_specs do
@@ -77,6 +86,7 @@ defmodule Macus.Proxy do
           clock: Keyword.get(env, :clock)
         },
         admission: @admission,
+        recheck_interval: Keyword.get(env, :recheck_interval, @recheck_interval),
         identity_scope:
           Keyword.get_lazy(env, :identity_scope, fn ->
             Macus.Gateway.identity_scope() || :public

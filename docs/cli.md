@@ -16,7 +16,22 @@ runtime restart
 doctor
 client setup [--remote NAME] [--set-default] [--incus ABSOLUTE_PATH]
 start [--remote NAME] [--set-default] [--incus ABSOLUTE_PATH] [--progress auto|plain|none]
+server config show
+server config set [--bind-address IP] [--port PORT] [--advertised-url URL]
+                  [--certificate-file ABSOLUTE_PATH --key-file ABSOLUTE_PATH]
+server config reset
+server token issue --principal NAME --scope SCOPE [--scope SCOPE ...]
+                   [--expires-in DURATION] --output ABSOLUTE_PATH
+server token list
+server token revoke ID
+server trust token issue --name NAME --address HOST:PORT [--address HOST:PORT ...]
+                         --server-certificate ABSOLUTE_PATH [--expires-in DURATION]
+                         --output ABSOLUTE_PATH
+server trust token list
+server trust token revoke ID
 ```
+
+The `server` commands are owner-local administration of `<state-dir>/server/`: the gateway listener configuration, bearer tokens and certificate enrollment tokens. They require an existing state directory, never start or restart a service, contact the runtime or Incus, or touch VM disks, do not accept `--timeout`, and never print a token. `macus start` also prepares the local CLI's own runtime token once in `<state-dir>/server/local-cli.token`. See [the Macus server](server.md) for HTTPS configuration, gateway trust and credential rotation.
 
 `macus` and `macus --help` print this contract and exit 0. For client commands, global flags may appear around the command. `macus serve` runs the foreground daemon and accepts only its optional `--state-dir` after `serve`; `macus capabilities` reports host capabilities without contacting the daemon or booting a guest. Serve does not accept JSON/timeout flags. Capabilities accepts only `--json`, before or after the command; its default output is human-readable. Scripts that previously parsed unflagged capabilities must request `macus capabilities --json` or `macus --json capabilities` to retain the existing HostCapabilities object. `--force` is valid only on `runtime stop`. `--remote`, `--set-default` and `--incus` are valid on `start` and `client setup`. `--progress` is valid only on `start`. `list`, `show` and other workload commands fail before networking or installation. The default remote name is `macus`. `--incus` must be an absolute executable and skips PATH and Homebrew; it is the isolated-acceptance hook.
 
