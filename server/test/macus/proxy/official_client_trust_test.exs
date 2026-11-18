@@ -382,22 +382,18 @@ defmodule Macus.Proxy.OfficialClientTrustTest do
       start_supervised!(Macus.Gateway.listener(gateway))
       start_supervised!({Macus.Gateway.Publisher, gateway})
 
-      # opsmaru_incus 0.2.1 answers native routes only for a public origin,
-      # so the advertised identity here is public while the listener and
-      # its certificate are the production ones.
+      # The production gateway's own loopback identity, in the local scope.
       Application.put_env(
         :macus,
         Macus.Proxy,
-        Keyword.put(Application.get_env(:macus, Macus.Proxy), :identity,
-          origin: @origin,
-          addresses: @addresses,
-          certificate: gateway.certificate.pem,
-          api_extensions: @extensions
-        )
+        Application.get_env(:macus, Macus.Proxy)
+        |> Keyword.delete(:identity)
+        |> Keyword.put(:api_extensions, @extensions)
       )
 
       %{
         gateway: gateway,
+        addresses: ["127.0.0.1:#{port}"],
         pinned: %{
           "url" => "https://127.0.0.1:#{port}",
           "server_cert" => gateway.certificate.pem,
@@ -415,7 +411,8 @@ defmodule Macus.Proxy.OfficialClientTrustTest do
       %{"server" => server} = client(context, context.admin, "server", context.pinned)
       assert server["auth"] == "trusted"
       assert server["environment"]["certificate"] == context.gateway.certificate.pem
-      assert server["environment"]["addresses"] == @addresses
+      assert server["environment"]["addresses"] == context.addresses
+      assert Macus.Proxy.gateway().identity_scope == :local
       assert_received {:backend, "GET", "/1.0"}
 
       # The served certificate is the generated one, not the fixture's.
@@ -437,7 +434,7 @@ defmodule Macus.Proxy.OfficialClientTrustTest do
           context.store,
           "laptop",
           context.gateway.certificate.der,
-          @addresses
+          context.addresses
         )
 
       enrolled =

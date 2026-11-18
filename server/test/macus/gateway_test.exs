@@ -314,6 +314,34 @@ defmodule Macus.GatewayTest do
       assert prepare(context) == {:error, :identity_mismatch}
     end
 
+    test "loopback and private-network listeners use the local identity scope", context do
+      url = "https://macus.example.net:8443"
+
+      for {bind, scope} <- [
+            {nil, :local},
+            {"::1", :local},
+            {"10.1.2.3", :local},
+            {"172.16.0.9", :local},
+            {"192.168.1.20", :local},
+            {"100.64.0.7", :local},
+            {"169.254.1.1", :local},
+            {"fd12:3456::1", :local},
+            {"fe80::1", :local},
+            {"172.32.0.1", :public},
+            {"100.128.0.1", :public},
+            {"203.0.113.5", :public},
+            {"2001:db8::5", :public}
+          ] do
+        fields =
+          if bind,
+            do: %{"schema_version" => 1, "bind_address" => bind, "advertised_url" => url},
+            else: %{"schema_version" => 1}
+
+        assert {:ok, config} = Gateway.Config.build(context.state, fields)
+        assert Gateway.Config.identity_scope(config) == scope, inspect(bind)
+      end
+    end
+
     test "the generated certificate is a P-384 server certificate for loopback", context do
       certfile = Path.join(context.root, "c.pem")
       keyfile = Path.join(context.root, "k.pem")
@@ -451,21 +479,6 @@ defmodule Macus.GatewayTest do
       laptop = TLSIdentity.self_signed(context.root, "laptop")
       stranger = TLSIdentity.self_signed(context.root, "stranger")
 
-      # The shared gateway answers native routes only for a public origin;
-      # a loopback origin is refused by its identity check (see tasks 3.2).
-      proxy = Application.get_env(:macus, Macus.Proxy)
-
-      Application.put_env(:macus, Macus.Proxy,
-        identity: [
-          origin: "https://macus.example.net:8443",
-          addresses: ["macus.example.net:8443"],
-          certificate: gateway.certificate.pem,
-          api_extensions: []
-        ]
-      )
-
-      on_exit(fn -> restore(Macus.Proxy, proxy) end)
-
       path = Trust.path(context.state)
       entry = Trust.entry(laptop.der, "laptop", "", DateTime.utc_now())
       File.write!(path, Jason.encode!(%{"schema_version" => 1, "certificates" => [entry]}))
@@ -487,15 +500,17 @@ defmodule Macus.GatewayTest do
       assert Macus.Proxy.gateway().host_config.store.state == context.state
     end
 
-    test "native routes on a loopback origin are refused by the shared gateway", context do
-      # Recorded limitation, not desired behavior: opsmaru_incus 0.2.1 refuses
-      # loopback and private origins, so the default loopback listener cannot
-      # serve native Incus routes until the library accepts them.
+    test "native routes answer on the loopback origin with the local identity scope",
+         context do
       gateway = serve!(context)
+      assert Gateway.identity_scope() == :local
+      assert Macus.Proxy.gateway().identity_scope == :local
+
       {:ok, socket} = tls(gateway.config.port, gateway.certificate.der)
       response = get(socket, "/1.0")
-      assert response =~ ~r/\AHTTP\/1.1 503/
-      assert response =~ "Gateway identity is unavailable"
+      assert response =~ ~r/\AHTTP\/1.1 200/
+      assert response =~ ~s("auth":"untrusted")
+      refute response =~ "Gateway identity is unavailable"
     end
 
     test "an occupied port fails without another listener", context do

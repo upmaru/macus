@@ -28,7 +28,9 @@ defmodule Macus.Proxy do
   and `identity` default to the running gateway's: its
   advertised URL and address and its certificate, with `api_extensions`
   (the verified backend's, which the shared gateway further limits to what
-  it implements) taken from this configuration.
+  it implements) taken from this configuration. `identity_scope` defaults
+  to the running gateway's: `:local` for a loopback or private-network
+  listener, which may advertise local addresses and names, else `:public`.
   Without valid configuration `gateway/0` returns `:error` and every native
   request is refused with 503 before backend access.
   """
@@ -74,7 +76,11 @@ defmodule Macus.Proxy do
           connection: connection,
           clock: Keyword.get(env, :clock)
         },
-        admission: @admission
+        admission: @admission,
+        identity_scope:
+          Keyword.get_lazy(env, :identity_scope, fn ->
+            Macus.Gateway.identity_scope() || :public
+          end)
       )
     else
       _ -> :error

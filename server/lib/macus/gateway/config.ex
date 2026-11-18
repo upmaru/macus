@@ -193,6 +193,30 @@ defmodule Macus.Gateway.Config do
   def loopback?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
   def loopback?(_ip), do: false
 
+  @doc """
+  The shared gateway identity scope for this listener: `:local` when it
+  binds a loopback, private (RFC 1918, carrier-grade NAT, unique local) or
+  link-local address, so its identity may advertise local addresses and
+  names as native Incus does; `:public` otherwise.
+  """
+  @spec identity_scope(t()) :: :local | :public
+  def identity_scope(%__MODULE__{bind_ip: ip}), do: if(local?(ip), do: :local, else: :public)
+
+  defp local?(ip) when tuple_size(ip) == 4 do
+    case ip do
+      {127, _, _, _} -> true
+      {10, _, _, _} -> true
+      {172, b, _, _} -> b in 16..31
+      {192, 168, _, _} -> true
+      {100, b, _, _} -> b in 64..127
+      {169, 254, _, _} -> true
+      _ -> false
+    end
+  end
+
+  defp local?({a, _, _, _, _, _, _, _} = ip),
+    do: loopback?(ip) or a in 0xFC00..0xFDFF or a in 0xFE80..0xFEBF
+
   defp identity_files(state, fields) do
     case {Map.get(fields, "certificate_file"), Map.get(fields, "key_file")} do
       {nil, nil} ->

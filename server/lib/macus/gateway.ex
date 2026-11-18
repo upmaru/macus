@@ -63,7 +63,7 @@ defmodule Macus.Gateway do
         "build": {
           "version": "0.1.0",
           "revision": "<source revision>",
-          "opsmaru_incus": {"version": "0.2.1", "checksum": "<hex>"}
+          "opsmaru_incus": {"version": "0.2.2", "checksum": "<hex>"}
         }
       }
 
@@ -332,6 +332,18 @@ defmodule Macus.Gateway do
 
       nil ->
         nil
+    end
+  end
+
+  @doc """
+  The shared gateway identity scope of the running gateway
+  (`Macus.Gateway.Config.identity_scope/1`), or nil when not serving.
+  """
+  @spec identity_scope() :: :local | :public | nil
+  def identity_scope do
+    case current() do
+      %__MODULE__{config: config} -> Config.identity_scope(config)
+      nil -> nil
     end
   end
 
