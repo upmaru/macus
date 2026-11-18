@@ -69,7 +69,7 @@ defmodule Macus.Gateway do
         "build": {
           "version": "0.1.0",
           "revision": "<source revision>",
-          "opsmaru_incus": {"version": "0.2.2", "checksum": "<hex>"}
+          "opsmaru_incus": {"version": "0.2.3", "checksum": "<hex>"}
         }
       }
 

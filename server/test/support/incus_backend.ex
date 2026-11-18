@@ -37,9 +37,8 @@ defmodule Macus.TestSupport.IncusBackend do
         %{env: %{dispatch: dispatch}, idle_timeout: 60_000}
       )
 
-    # Mint, which the shared transport uses, names a Unix backend
-    # `unix.socket:0`. Incus's Go server accepts that; Cowboy refuses port 0,
-    # so a splice in front rewrites only that Host value.
+    # A byte-for-byte splice in front of Cowboy counts open backend
+    # connections for `open_connections/1`.
     {:ok, listener} =
       :gen_tcp.listen(0, [:binary, active: false, ip: {:local, String.to_charlist(path)}])
 
@@ -90,9 +89,6 @@ defmodule Macus.TestSupport.IncusBackend do
     {:ok, server} =
       :gen_tcp.connect({:local, String.to_charlist(inner)}, 0, [:binary, active: false])
 
-    {head, rest} = head(client, "")
-    head = String.replace(head, ~r/\r\nhost: unix\.socket:0\r\n/i, "\r\nhost: unix.socket\r\n")
-    :ok = :gen_tcp.send(server, [head, rest])
     up = spawn_link(fn -> pipe(client, server) end)
     :ok = :gen_tcp.controlling_process(client, up)
     pipe(server, client)
@@ -102,19 +98,6 @@ defmodule Macus.TestSupport.IncusBackend do
       {:DOWN, ^ref, _, _, _} -> :ok
     after
       5_000 -> Process.exit(up, :kill)
-    end
-  end
-
-  defp head(socket, acc) do
-    case :binary.split(acc, "\r\n\r\n") do
-      [head, rest] ->
-        {head <> "\r\n\r\n", rest}
-
-      [_] ->
-        case :gen_tcp.recv(socket, 0, 5_000) do
-          {:ok, data} -> head(socket, acc <> data)
-          {:error, _} -> exit(:normal)
-        end
     end
   end
 
