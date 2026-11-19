@@ -185,6 +185,19 @@ Macus lists all of these copy extensions in its default `api_extensions`,
 and `opsmaru_incus` 0.2.4 implements every one, so clients see them all when
 the guest reports them.
 
+The `/mcp` operations never copy between servers. The library leaves out
+every client method that names another server and carries its certificate
+or secrets (`MigrateInstance`, `MigrateInstanceSnapshot`,
+`MigrateStoragePoolVolume`, `ExportImage` and the volume creation from a
+migration), and it has not added composite copy, move or rename to its
+catalogue. No operation input can name a server, URL, operation or secret,
+so an operation can't make the guest dial an address it supplies. The
+guest pulls an image for `incus_instance_create` only from a remote the
+owner approves by name in `Macus.MCP.IncusHost` `:image_remotes` (HTTPS,
+`simplestreams`, `incus` or `oci`); the server comes from that setting,
+never from input. With no approved remotes, which is the default, the
+operation refuses before the guest is asked.
+
 Native streams have fixed limits:
 
 | Limit | Value | When it is reached |

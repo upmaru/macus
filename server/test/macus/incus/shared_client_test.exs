@@ -305,6 +305,55 @@ defmodule Macus.Incus.SharedClientTest do
       assert imported.http_status == 202
       assert {_, "tarball-bytes"} = assert_request("POST", "/1.0/images")
     end
+
+    test "the guest pulls images only from a host-approved remote, never one named in input",
+         ctx do
+      guest!(ctx, %{{"POST", "/1.0/instances"} => {:async, operation(@op_create, "Running", 103)}})
+
+      create = %{"name" => "c1", "image" => %{"alias" => "debian/12", "remote" => "images"}}
+
+      # Unapproved: the library refuses it before the guest is asked.
+      assert %{"operation_error" => %{"error" => %{"kind" => "image_remote_unavailable"}}} =
+               run("incus_instance_create", create, ["incus.write"])
+
+      refute_received {:incus, _, _, _, _}
+
+      put_host(
+        image_remotes: %{
+          "images" => %{
+            "server" => "https://images.example.invalid",
+            "protocol" => "simplestreams"
+          }
+        }
+      )
+
+      ok!("incus_instance_create", create, ["incus.write"])
+      assert {_, body} = assert_request("POST", "/1.0/instances")
+
+      assert Jason.decode!(body)["source"] == %{
+               "type" => "image",
+               "alias" => "debian/12",
+               "mode" => "pull",
+               "server" => "https://images.example.invalid",
+               "protocol" => "simplestreams"
+             }
+
+      # Another remote name, or a server in the input, reaches nothing.
+      flush_requests()
+
+      for image <- [
+            %{"alias" => "debian/12", "remote" => "other"},
+            %{"alias" => "debian/12", "server" => "https://elsewhere.invalid"},
+            %{"alias" => "debian/12", "remote" => "images", "protocol" => "incus"}
+          ] do
+        response =
+          run("incus_instance_create", %{"name" => "c2", "image" => image}, ["incus.write"])
+
+        assert Map.has_key?(response, "error") or Map.has_key?(response, "operation_error")
+      end
+
+      refute_received {:incus, _, _, _, _}
+    end
   end
 
   describe "6.6 networks and cluster" do
@@ -560,6 +609,58 @@ defmodule Macus.Incus.SharedClientTest do
       composite = Enum.map(Composite.unavailable(), & &1["name"])
       assert "incus_instance_copy" in composite and "incus_instance_move" in composite
     end
+
+    # Copies between servers go through the gateway (option B,
+    # native_relay_test): the guest dials no address an operation supplies.
+    test "no operation input can name another server or carry migration secrets" do
+      forbidden = MapSet.new(~w(server secret secrets websockets operation url base_url))
+
+      for document <- [Composite.openapi(), Native.openapi()] do
+        components = get_in(document, ["components", "schemas"]) || %{}
+
+        for {_, %{"post" => operation}} <- document["paths"] do
+          schema = operation["requestBody"]["content"]["application/json"]["schema"]
+          named = MapSet.intersection(schema_keys(schema, components, []), forbidden)
+          assert MapSet.size(named) == 0, "#{operation["operationId"]} accepts #{inspect(named)}"
+        end
+      end
+    end
+
+    test "a migration or remote image source is refused before the guest is asked", ctx do
+      guest!(ctx)
+      flush_requests()
+
+      inputs = [
+        {"incus_native_create_instance",
+         %{
+           "body" => %{
+             "name" => "c2",
+             "source" => %{
+               "type" => "migration",
+               "mode" => "pull",
+               "operation" => "https://10.0.2.15:8443/1.0/operations/x",
+               "secrets" => %{"control" => "s", "fs" => "t"}
+             }
+           }
+         }},
+        {"incus_native_create_instance",
+         %{
+           "body" => %{
+             "name" => "c3",
+             "source" => %{"type" => "image", "alias" => "a", "server" => "https://10.0.2.15"}
+           }
+         }},
+        {"incus_native_create_image",
+         %{"body" => %{"source" => %{"type" => "url", "url" => "https://10.0.2.15/image"}}}}
+      ]
+
+      for {operation, input} <- inputs do
+        assert %{"error" => %{"kind" => "invalid_input", "dispatched" => false}} =
+                 run(operation, input, ["incus.native.write"])
+      end
+
+      refute_received {:incus, _, _, _, _}
+    end
   end
 
   # -- helpers ---------------------------------------------------------------
@@ -727,6 +828,28 @@ defmodule Macus.Incus.SharedClientTest do
     assert status == 0, output
     Jason.decode!(output)
   end
+
+  # Every property name an input schema accepts, following component refs.
+  defp schema_keys(%{"$ref" => "#/components/schemas/" <> name}, components, seen) do
+    if name in seen,
+      do: MapSet.new(),
+      else: schema_keys(Map.fetch!(components, name), components, [name | seen])
+  end
+
+  defp schema_keys(%{} = schema, components, seen) do
+    properties = Map.get(schema, "properties", %{})
+
+    children =
+      Map.values(properties) ++
+        for(key <- ["items", "additionalProperties"], is_map(schema[key]), do: schema[key]) ++
+        for key <- ["allOf", "anyOf", "oneOf"], item <- Map.get(schema, key, []), do: item
+
+    children
+    |> Enum.map(&schema_keys(&1, components, seen))
+    |> Enum.reduce(MapSet.new(Map.keys(properties)), &MapSet.union/2)
+  end
+
+  defp schema_keys(_schema, _components, _seen), do: MapSet.new()
 
   defp flush_requests do
     receive do
