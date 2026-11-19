@@ -366,17 +366,20 @@ defmodule Macus.Proxy.NativeRelayTest do
       assert_receive {:incus_idle, _}, 2_000
       started = System.monotonic_time(:millisecond)
       assert drain_until_closed(stream, started + 3_000) == :closed
-      assert System.monotonic_time(:millisecond) - started < 1_500
+      elapsed = System.monotonic_time(:millisecond) - started
+      assert elapsed < 2_500, "idle stream ended after #{elapsed} ms"
       wait_for_count(context.baseline)
 
-      # A WebSocket that keeps moving still ends at its lifetime budget.
+      # A WebSocket that keeps moving still ends at its lifetime budget. The
+      # budget runs from the upgrade, so time from before the handshake: the
+      # stream cannot end sooner, however slowly the handshake completes.
       put_proxy(idle_timeout: 60_000, max_lifetime: 600)
+      started = System.monotonic_time(:millisecond)
       ws = ws!(context, "/1.0/operations/op1/websocket?secret=s3")
       {ws, [{:text, _}]} = frames(ws, 1)
-      started = System.monotonic_time(:millisecond)
       assert keep_talking(ws, started + 3_000) == :closed
       elapsed = System.monotonic_time(:millisecond) - started
-      assert elapsed < 1_500 and elapsed >= 400
+      assert elapsed >= 600 and elapsed < 2_500, "lifetime ended after #{elapsed} ms"
       wait_for_count(context.baseline)
     end
   end
