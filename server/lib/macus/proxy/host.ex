@@ -37,6 +37,25 @@ defmodule Macus.Proxy.Host do
   responses and substitutes it into an authenticated `/1.0` response, so
   guest certificates and guest-network addresses never reach a client.
 
+  ## Image-copy peers
+
+  Another Incus server copying an image through the gateway has no gateway
+  certificate. When `incus image copy` (or another client holding both
+  servers) pulls an image from Macus or pushes one into it, that server reaches
+  exactly one of the shared gateway's image secret routes: image info or
+  export (pull), or the upload and its operation wait (push).
+  `admit_image_secret/2` admits it only when its secret matches an operation
+  pending in the guest Incus, read over the same `incus.sock` at admission
+  time: for info, export and upload, an image token (`token` class) whose
+  `images` resource names the fingerprint, which an authorized caller created
+  through the gateway (`POST /1.0/images/{fp}/secret`, or a push-mode
+  `POST /1.0/images`); for a wait, the named operation. The guest Incus
+  treats the gateway's socket as trusted and does not check image secrets
+  itself, so this comparison (in constant time) is the check. The forwarded
+  secret still consumes the single-use token, as natively. A cluster target is
+  refused. The grant lasts at most the native exchange lifetime. Instance and
+  volume migration peers are not admitted.
+
   ## Certificate trust
 
   `certificates/5` implements `/1.0/certificates` against the gateway trust
@@ -52,6 +71,7 @@ defmodule Macus.Proxy.Host do
   @behaviour Opsmaru.Incus.Gateway.Host
 
   alias Macus.Proxy.{Enrollment, Trust}
+  alias Opsmaru.Incus.{Connection, Context}
   alias Opsmaru.Incus.Gateway.Request
 
   @impl true
@@ -78,7 +98,92 @@ defmodule Macus.Proxy.Host do
     match?({:ok, %{"fingerprint" => ^fingerprint}}, Trust.lookup(config.store, der, now(config)))
   end
 
+  def valid?(%Request{}, %{image: _route, expires: expires}, config),
+    do: DateTime.compare(now(config), expires) == :lt
+
   def valid?(_request, _grant, _config), do: false
+
+  # Image-copy peers
+
+  @image_routes [:info, :export, :upload, :wait]
+  @default_image_ttl 3_600_000
+
+  # An optional Opsmaru.Incus.Gateway.Host callback in the opsmaru_incus
+  # release that adds it; earlier releases never call it, so it has no @impl.
+  @doc false
+  def admit_image_secret(%{image: %{route: route, secret: secret} = image} = request, config)
+      when route in @image_routes and is_binary(secret) and secret != "" do
+    with nil <- request.target,
+         {:ok, operations} <- pending_operations(config, request, route),
+         true <- Enum.any?(operations, &pending?(&1, route, image, request.operation, secret)) do
+      ttl = Map.get(config, :image_grant_ttl, @default_image_ttl)
+      {:ok, %{image: route, expires: DateTime.add(now(config), ttl, :millisecond)}}
+    else
+      _ -> {:error, :forbidden}
+    end
+  end
+
+  def admit_image_secret(_request, _config), do: {:error, :forbidden}
+
+  defp pending_operations(config, request, :wait) do
+    if is_binary(request.operation) and request.operation =~ ~r/\A[0-9a-f-]{1,64}\z/ do
+      with {:ok, operation} <-
+             backend_get(config, request, "/1.0/operations/#{request.operation}"),
+           do: {:ok, [operation]}
+    else
+      :error
+    end
+  end
+
+  defp pending_operations(config, request, _route) do
+    with {:ok, groups} when is_map(groups) <-
+           backend_get(config, request, "/1.0/operations?recursion=1") do
+      {:ok, groups |> Map.values() |> Enum.filter(&is_list/1) |> Enum.concat()}
+    end
+  end
+
+  # One bounded read of the guest Incus over the gateway's own connection,
+  # in the request's project. It runs inside the gateway's callback deadline.
+  defp backend_get(%{connection: %Connection{} = connection}, request, path) do
+    connection = Connection.project(connection, request.project || "default")
+
+    context =
+      Context.new!(owner: connection.owner, identity: :image_peer, ready?: fn -> true end)
+
+    case Opsmaru.Incus.raw_query(connection, context, "GET", path, []) do
+      {:ok, %{metadata: metadata}} -> {:ok, metadata}
+      _ -> :error
+    end
+  end
+
+  defp backend_get(_config, _request, _path), do: :error
+
+  # As incusd's imageValidSecret: a token whose images resource starts with
+  # the requested fingerprint and whose secret matches, whether or not its
+  # first use already cancelled it.
+  defp pending?(%{"class" => "token"} = operation, route, image, _id, secret)
+       when route in [:info, :export, :upload] do
+    images = get_in(operation, ["resources", "images"]) || []
+
+    is_binary(image.fingerprint) and is_list(images) and
+      Enum.any?(
+        images,
+        &(is_binary(&1) and String.starts_with?(&1, "/1.0/images/" <> image.fingerprint))
+      ) and
+      secret?(operation, secret)
+  end
+
+  defp pending?(%{"id" => id} = operation, :wait, _image, id, secret),
+    do: secret?(operation, secret)
+
+  defp pending?(_operation, _route, _image, _id, _secret), do: false
+
+  defp secret?(operation, secret) do
+    case get_in(operation, ["metadata", "secret"]) do
+      expected when is_binary(expected) -> Plug.Crypto.secure_compare(expected, secret)
+      _ -> false
+    end
+  end
 
   # Public identity
 

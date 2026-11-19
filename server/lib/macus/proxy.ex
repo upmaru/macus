@@ -121,7 +121,8 @@ defmodule Macus.Proxy do
           store: %{state: state, uid: uid},
           identity: identity,
           connection: connection,
-          clock: Keyword.get(env, :clock)
+          clock: Keyword.get(env, :clock),
+          image_grant_ttl: limits.max_lifetime
         },
         admission: @admission,
         recheck_interval: limits.recheck_interval,
