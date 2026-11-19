@@ -55,7 +55,8 @@ struct FixtureCertificate: Sendable {
 /// other certificate, redemptions recorded) and trust is that state's
 /// `server/trusted-certificates.json`; otherwise trust is the `trusted` list. `remote add NAME URL`
 /// answers the certificate prompt from standard input as incus does.
-/// `MACUS_FIXTURE_QUERY_CERT` makes `/1.0` report another certificate.
+/// `MACUS_FIXTURE_QUERY_CERT` makes `/1.0` report another certificate, and
+/// `MACUS_FIXTURE_LIST_FAIL=1` makes `incus list` fail.
 func writeFakeIncus(to path: String) throws {
   let script = #"""
     #!/usr/bin/python3
@@ -204,6 +205,8 @@ func writeFakeIncus(to path: String) throws {
         print(json.dumps({"api_version": "1.0", "auth": auth, "environment": {"certificate": certificate}}))
     elif len(args) == 2 and args[0] == "list" and args[1].endswith(":"):
         name = args[1][:-1]
+        if os.environ.get("MACUS_FIXTURE_LIST_FAIL") == "1":
+            fail("Error: connection reset by peer")
         if reachable(name).startswith("https://") and not trusted(fingerprint(client_pem())):
             fail("not authorized")
     else:

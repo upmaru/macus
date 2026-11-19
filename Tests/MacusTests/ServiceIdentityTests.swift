@@ -527,7 +527,12 @@ final class PairFixture: @unchecked Sendable {
     try launch.openRuntime()
   }
 
-  func start(capture: StartCapture = StartCapture()) async -> Int32 {
+  /// Extra environment for the fake incus client.
+  var environment: [String: String] = [:]
+
+  func start(
+    capture: StartCapture = StartCapture(), json: Bool = true, progress: String = "none"
+  ) async -> Int32 {
     var overrides = tools.overrides(
       downloader: downloader, launchControl: launch, agents: agents)
     overrides.server = probe
@@ -536,11 +541,11 @@ final class PairFixture: @unchecked Sendable {
     let executable = self.executable
     overrides.executablePath = { executable }
     return await MacusCLI.run(
-      arguments: [
-        "--state-dir", state.path, "--json", "--progress", "none", "--timeout", "5", "--incus",
-        tools.incus, "start",
+      arguments: ["--state-dir", state.path] + (json ? ["--json"] : []) + [
+        "--progress", progress, "--timeout", "5", "--incus", tools.incus, "start",
       ],
-      environment: tools.environment, streams: capture.streams, overrides: overrides)
+      environment: tools.environment.merging(environment) { $1 }, streams: capture.streams,
+      overrides: overrides)
   }
 
   func remove() {

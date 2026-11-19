@@ -53,6 +53,8 @@ Timeout is an integer from 1 to 3600 seconds and one monotonic deadline for each
 
 `--progress auto` animates on an interactive stderr terminal whose `TERM` is not `dumb`. Redirected stderr, `TERM=dumb`, `--progress plain` and `--json` use plain stage lines without cursor escapes. `--progress none` suppresses progress. `--json` writes one result object to stdout. Progress, when enabled, stays on stderr. Byte percentages appear only when a trustworthy total length is known. Exit 130 means start was interrupted; the command does not force-stop a daemon-owned guest.
 
+The `start --json` result keeps its fields: `ready`, `connected`, `remote`, `incus`, `installed`, `next_commands`, `state_directory`, `capabilities`, optional `path_guidance`, and `service_ownership` (`launchd` or `foreground`) with `service_label` under launchd, both describing the Swift runtime service. It adds the Elixir server's `server_ownership`, its `server_label` under launchd, and `server_endpoint` (`url` and `certificate_fingerprint`, the public endpoint the CLI pins). The human report adds a matching Server section. A start is successful only when the runtime is ready and the client is connected. Anything less exits 1 (or 130 when interrupted) with no result on stdout and the usual error object. Once both services were serving, the error message also says what start left in place: the runtime service and the server, each as its launchd label or a foreground process, and the server URL. Start never stops, unloads or replaces either job, and it activates nothing besides that pair. The failed progress row keeps the stage's own message.
+
 Exit status is 0 on success, 1 on operational failure and 2 on invalid arguments. `--json` writes the result to stdout. Operational and usage errors go to stderr as `{"error":{"code":"...","message":"..."}}` when `--json` is set. Setup installation progress also goes to stderr so the JSON result stays valid. Stable codes include `conflict`, `timeout`, `unavailable`, `invalid_configuration`, `invalid_request` and `io`.
 
 ## Outer runtime and the standard Incus CLI
@@ -103,6 +105,11 @@ Client
 Service
   Ownership: Foreground
   Closing the owning terminal stops the daemon.
+
+Server
+  Ownership: Launchd
+  Label: com.upmaru.macus.server
+  Endpoint: https://127.0.0.1:8443
 
 Next steps
   incus list macus:

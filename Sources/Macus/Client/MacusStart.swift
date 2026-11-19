@@ -104,6 +104,11 @@ private func resultObject(_ result: StartupResult) -> [String: Any] {
     "state_directory": result.stateDirectory,
   ]
   if let label = result.serviceLabel { object["service_label"] = label }
+  if let ownership = result.serverOwnership { object["server_ownership"] = ownership }
+  if let label = result.serverLabel { object["server_label"] = label }
+  if let url = result.serverEndpoint, let fingerprint = result.serverFingerprint {
+    object["server_endpoint"] = ["url": url, "certificate_fingerprint": fingerprint]
+  }
   if let guidance = result.pathGuidance { object["path_guidance"] = guidance }
   if let capabilities = result.capabilities,
     let data = try? JSON.encoder().encode(capabilities),

@@ -230,6 +230,12 @@ struct HumanPresentation {
     if result.serviceOwnership == "foreground" {
       text("  Closing the owning terminal stops the daemon.\n")
     }
+    if let ownership = result.serverOwnership {
+      heading("\nServer")
+      field("Ownership", ownership.capitalized)
+      if let label = result.serverLabel { field("Label", label) }
+      if let url = result.serverEndpoint { field("Endpoint", url) }
+    }
     if let capabilities = result.capabilities,
       let data = try? JSON.encoder().encode(capabilities), let object = try? jsonObject(data)
     {

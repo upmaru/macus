@@ -47,6 +47,9 @@ private final class StartContext: @unchecked Sendable {
   /// server already serves this state outside launchd.
   var serverRegistration: LaunchJob?
   var serverForeground = false
+  /// Both jobs were serving and the public endpoint was read; failures after this leave them.
+  var servicesEstablished = false
+  var endpoint: GatewayEndpoint?
   var startDispatched = false
   var currentStage: StartupStage = .preflight
 
@@ -100,6 +103,9 @@ private final class StartContext: @unchecked Sendable {
         ready: true, connected: true, stateDirectory: paths.directory.path, remote: request.remote,
         incus: client.executable, installed: client.installed,
         serviceOwnership: ownership.ownership, serviceLabel: ownership.label,
+        serverOwnership: serverOwnership,
+        serverLabel: serverOwnership == "launchd" ? serverLabel : nil,
+        serverEndpoint: endpoint?.url.absoluteString, serverFingerprint: endpoint?.fingerprint,
         capabilities: capabilities, nextCommands: client.commands, pathGuidance: client.guidance,
         observedState: "ready")
     } catch is CancellationError {
@@ -107,8 +113,12 @@ private final class StartContext: @unchecked Sendable {
     } catch let error as StartupInterrupted {
       throw error
     } catch {
-      let failed = error as? RuntimeError ?? RuntimeError(.io, error.localizedDescription)
+      var failed = error as? RuntimeError ?? RuntimeError(.io, error.localizedDescription)
       emit(currentStage, .failed, detail: failed.message, code: failed.code.rawValue)
+      // A partial start is a failure, but says truthfully what it established.
+      if let established = establishedServices() {
+        failed = RuntimeError(failed.code, "\(failed.message) \(established)")
+      }
       throw failed
     }
   }
@@ -215,6 +225,8 @@ private final class StartContext: @unchecked Sendable {
     let ownership = try await ensureRuntimeJob(
       paths, label: label, executable: executable, registered: runtimeJob)
     try await ensureServerJob(paths, label: server, launcher: launcher, registered: serverJob)
+    endpoint = try GatewayEndpoint.discover(stateDirectory: paths.directory)
+    servicesEstablished = true
     emit(.serviceActivation, .complete, detail: activationDetail)
     return ownership
   }
@@ -725,13 +737,27 @@ private final class StartContext: @unchecked Sendable {
     {
       observed = jsonString(object["state"])
     }
+    let established = establishedServices().map { " \($0)" } ?? ""
     if startDispatched {
       let state = observed ?? "unknown"
       return
-        "Start interrupted. Observed runtime state is \(state). The guest was not force-stopped; run macus runtime stop if you need to stop it. Disks and logs were preserved."
+        "Start interrupted. Observed runtime state is \(state). The guest was not force-stopped; run macus runtime stop if you need to stop it. Disks and logs were preserved.\(established)"
     }
     return
-      "Start interrupted before a daemon-owned boot was dispatched. No guest was force-stopped. Disks and logs were preserved."
+      "Start interrupted before a daemon-owned boot was dispatched. No guest was force-stopped. Disks and logs were preserved.\(established)"
+  }
+
+  /// What a failed or interrupted start leaves in place once both services were serving: the
+  /// established pair, which start never stops, and the public endpoint. Nil before then.
+  private func establishedServices() -> String? {
+    guard servicesEstablished else { return nil }
+    func service(_ ownership: String, _ label: String?) -> String {
+      if ownership == "launchd", let label { return "launchd job \(label)" }
+      return "foreground process"
+    }
+    let url = endpoint.map { " at \($0.url.absoluteString)" } ?? ""
+    return
+      "Start left both services in place: the runtime service (\(service(serviceOwnership, serviceLabel))) and the server (\(service(serverOwnership, serverLabel))\(url))."
   }
 
   private func emit(

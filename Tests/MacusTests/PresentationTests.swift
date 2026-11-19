@@ -217,7 +217,8 @@ import Testing
     StartupResult(
       ready: true, connected: true, stateDirectory: directory.path, remote: "macus",
       incus: "/opt/homebrew/bin/incus", installed: false, serviceOwnership: "foreground",
-      nextCommands: ["incus list macus:"]))
+      serverOwnership: "launchd", serverLabel: "com.upmaru.macus.server",
+      serverEndpoint: "https://127.0.0.1:8443", nextCommands: ["incus list macus:"]))
   #expect(docs.contains(startup.output.trimmingCharacters(in: .newlines)))
   let client = StartCapture()
   HumanPresentation(streams: client.streams, environment: [:]).client(
