@@ -8,8 +8,13 @@ defmodule Macus.Incus.ReferenceWireTest do
   @reference_dir Path.expand("../../reference", __DIR__)
 
   setup_all do
+    # `go list -m` reports a module's Dir only once it is in the module
+    # cache; `go mod download` fetches it first, so a fresh cache works
+    # whichever test builds the driver first.
     {module, 0} =
-      System.cmd("mise", ["exec", "--", "go", "list", "-m", "-json", "github.com/lxc/incus/v7"],
+      System.cmd(
+        "mise",
+        ["exec", "--", "go", "mod", "download", "-json", "github.com/lxc/incus/v7"],
         cd: @reference_dir,
         env: [{"GOTOOLCHAIN", "local"}]
       )
