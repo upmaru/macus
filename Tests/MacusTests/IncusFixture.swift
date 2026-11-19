@@ -44,6 +44,12 @@ struct FixtureCertificate: Sendable {
   }
 }
 
+/// The `--timeout` for start and client setup tests that expect to succeed. Each run spawns the
+/// fake incus client several times, which CI runners do several times slower than a local Mac;
+/// a 5-second budget has expired there. Deadline behaviour has its own tests with short,
+/// explicit budgets.
+let successDeadline = "30"
+
 /// Writes a fake standard `incus` client to `path`. It keeps remotes in the JSON file named by
 /// `MACUS_FIXTURE_STATE` (`{"default", "remotes": {name: [address]}, "trusted": [fingerprint]}`)
 /// and its client certificate and server certificates under `INCUS_CONF`, and logs each argument

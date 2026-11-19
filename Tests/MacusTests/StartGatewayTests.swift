@@ -27,7 +27,8 @@ import Testing
   #expect(starts.map(\.path) == ["/runtime/start"])
   let budget = try JSONSerialization.jsonObject(with: Data(starts[0].body.utf8)) as? [String: Int]
   #expect(budget?.keys.sorted() == ["remaining_seconds"])
-  #expect((1...5).contains(budget?["remaining_seconds"] ?? 0))
+  // What is left of the start deadline, never a fresh one.
+  #expect((1...Int(successDeadline)!).contains(budget?["remaining_seconds"] ?? 0))
   // Live readiness is the guest's health and capabilities, read through the gateway.
   let reads = requests.filter { $0.method == "GET" }.map(\.path)
   #expect(reads.contains("/runtime/health") && reads.contains("/runtime/capabilities"))

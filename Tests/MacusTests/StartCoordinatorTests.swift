@@ -569,7 +569,8 @@ private final class BudgetRunner: LocalCommandRunner, @unchecked Sendable {
   let task = Task {
     await MacusCLI.run(
       arguments: [
-        "--state-dir", directory.path, "--json", "--progress", "none", "--timeout", "5",
+        "--state-dir", directory.path, "--json", "--progress", "none", "--timeout",
+        successDeadline,
         "--incus", tools.incus, "start",
       ],
       environment: tools.environment, streams: capture.streams,
@@ -677,7 +678,8 @@ private final class BudgetRunner: LocalCommandRunner, @unchecked Sendable {
   let launch = SocketOnBootstrap(directory: directory)
   let status = await MacusCLI.run(
     arguments: [
-      "--state-dir", directory.path, "--json", "--progress", "none", "--timeout", "5",
+      "--state-dir", directory.path, "--json", "--progress", "none", "--timeout",
+      successDeadline,
       "--incus", tools.incus, "start",
     ],
     environment: tools.environment, streams: StartCapture().streams,

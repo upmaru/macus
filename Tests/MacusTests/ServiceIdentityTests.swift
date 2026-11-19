@@ -542,7 +542,7 @@ final class PairFixture: @unchecked Sendable {
     overrides.executablePath = { executable }
     return await MacusCLI.run(
       arguments: ["--state-dir", state.path] + (json ? ["--json"] : []) + [
-        "--progress", progress, "--timeout", "5", "--incus", tools.incus, "start",
+        "--progress", progress, "--timeout", successDeadline, "--incus", tools.incus, "start",
       ],
       environment: tools.environment.merging(environment) { $1 }, streams: capture.streams,
       overrides: overrides)

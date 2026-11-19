@@ -17,7 +17,7 @@ import Testing
     ])
   let environment = tools.environment(runtime: runtime)
   let first = try await runMacus(
-    ["--state-dir", runtime.directory, "--json", "--timeout", "5", "client", "setup"],
+    ["--state-dir", runtime.directory, "--json", "--timeout", successDeadline, "client", "setup"],
     environment: environment)
   #expect(first.status == 0, "\(first.stderr)")
   #expect(first.stderr.contains("installing official Homebrew formula incus"))
@@ -67,7 +67,7 @@ import Testing
   // the default.
   let again = try await runMacus(
     [
-      "--state-dir", runtime.directory, "--json", "--timeout", "5", "client", "setup",
+      "--state-dir", runtime.directory, "--json", "--timeout", successDeadline, "client", "setup",
       "--set-default",
     ],
     environment: environment)
@@ -93,14 +93,14 @@ import Testing
   try tools.publishOnPath()
   let environment = tools.environment(runtime: runtime)
   let first = try await runMacus(
-    ["--state-dir", runtime.directory, "--json", "--timeout", "5", "client", "setup"],
+    ["--state-dir", runtime.directory, "--json", "--timeout", successDeadline, "client", "setup"],
     environment: environment)
   #expect(first.status == 0, "\(first.stderr)")
   // The same incus client under another name: its certificate is already trusted, so no token
   // is issued and incus answers its certificate prompt with the gateway's pinned fingerprint.
   let second = try await runMacus(
     [
-      "--state-dir", runtime.directory, "--json", "--timeout", "5", "client", "setup",
+      "--state-dir", runtime.directory, "--json", "--timeout", successDeadline, "client", "setup",
       "--remote", "desk",
     ],
     environment: environment)
@@ -129,7 +129,7 @@ import Testing
     ])
   try tools.publishOnPath()
   let legacy = try await runMacus(
-    ["--state-dir", runtime.directory, "--json", "--timeout", "5", "client", "setup"],
+    ["--state-dir", runtime.directory, "--json", "--timeout", successDeadline, "client", "setup"],
     environment: tools.environment(runtime: runtime))
   #expect(legacy.status == 1)
   #expect(legacy.stdout.isEmpty)
@@ -142,7 +142,7 @@ import Testing
 
   let foreign = try await runMacus(
     [
-      "--state-dir", runtime.directory, "--json", "--timeout", "5", "client", "setup",
+      "--state-dir", runtime.directory, "--json", "--timeout", successDeadline, "client", "setup",
       "--remote", "desk", "--set-default",
     ],
     environment: tools.environment(runtime: runtime))
@@ -167,7 +167,7 @@ import Testing
   let stopped = try ScriptedGateway { _, _, _ in mustJSON(200, publicStatus(state: "stopped")) }
   defer { stopped.stop() }
   let blocked = try await runMacus(
-    ["--state-dir", stopped.directory.path, "--timeout", "5", "client", "setup"],
+    ["--state-dir", stopped.directory.path, "--timeout", successDeadline, "client", "setup"],
     environment: tools.environment())
   #expect(blocked.status == 1)
   #expect(blocked.stderr.contains("not ready"))
@@ -189,7 +189,7 @@ import Testing
   var environment = tools.environment(runtime: runtime)
   environment["MACUS_FIXTURE_SERVER_CERT"] = tools.environment()["MACUS_FIXTURE_SERVER_CERT"]
   let result = try await runMacus(
-    ["--state-dir", runtime.directory, "--json", "--timeout", "5", "client", "setup"],
+    ["--state-dir", runtime.directory, "--json", "--timeout", successDeadline, "client", "setup"],
     environment: environment)
   #expect(result.status == 1)
   #expect(result.stderr.contains("incus remote add failed"))
@@ -211,7 +211,7 @@ import Testing
   try tools.publishOnPath()
   let environment = tools.environment(runtime: runtime)
   let first = try await runMacus(
-    ["--state-dir", runtime.directory, "--json", "--timeout", "5", "client", "setup"],
+    ["--state-dir", runtime.directory, "--json", "--timeout", successDeadline, "client", "setup"],
     environment: environment)
   #expect(first.status == 0, "\(first.stderr)")
 
@@ -220,7 +220,7 @@ import Testing
   impostor["MACUS_FIXTURE_QUERY_CERT"] =
     tools.environment(runtime: runtime, query: .other)["MACUS_FIXTURE_QUERY_CERT"]
   let mismatch = try await runMacus(
-    ["--state-dir", runtime.directory, "--json", "--timeout", "5", "client", "setup"],
+    ["--state-dir", runtime.directory, "--json", "--timeout", successDeadline, "client", "setup"],
     environment: impostor)
   #expect(mismatch.status == 1)
   #expect(mismatch.stderr.contains("\"conflict\""))
@@ -230,7 +230,7 @@ import Testing
   // The owner removed the client's gateway trust.
   try runtime.distrustAll()
   let untrusted = try await runMacus(
-    ["--state-dir", runtime.directory, "--json", "--timeout", "5", "client", "setup"],
+    ["--state-dir", runtime.directory, "--json", "--timeout", successDeadline, "client", "setup"],
     environment: environment)
   #expect(untrusted.status == 1)
   #expect(untrusted.stderr.contains("does not trust the client certificate"))
@@ -245,7 +245,7 @@ import Testing
   let missing = try ToolFixture()
   defer { missing.remove() }
   let absent = try await runMacus(
-    ["--state-dir", runtime.directory, "--timeout", "5", "client", "setup"],
+    ["--state-dir", runtime.directory, "--timeout", successDeadline, "client", "setup"],
     environment: missing.environment(includeBrew: false, runtime: runtime))
   #expect(absent.status == 1)
   #expect(absent.stderr.contains("https://brew.sh"))
@@ -256,7 +256,7 @@ import Testing
   try failing.writeBrew(mode: .fail)
   try failing.writeIncus(defaultRemote: "local", remotes: ["local": ["unix://"]])
   let failed = try await runMacus(
-    ["--state-dir", runtime.directory, "--timeout", "5", "client", "setup"],
+    ["--state-dir", runtime.directory, "--timeout", successDeadline, "client", "setup"],
     environment: failing.environment(runtime: runtime))
   #expect(failed.status == 1)
   #expect(failed.stderr.contains("Homebrew install of incus failed"))
@@ -297,7 +297,8 @@ import Testing
   environment["PATH"] = "\(decoy.bin.path):/usr/bin:/bin"
   let result = try await runMacus(
     [
-      "--state-dir", runtime.directory, "--json", "--timeout", "5", "client", "setup", "--incus",
+      "--state-dir", runtime.directory, "--json", "--timeout", successDeadline, "client", "setup",
+      "--incus",
       selected.incusPath, "--remote", "desk",
     ], environment: environment)
   #expect(result.status == 0, "\(result.stderr)")
@@ -318,7 +319,7 @@ import Testing
   environment["PATH"] = "\(tools.bin.path):/usr/bin:/bin"
   environment["MACUS_FIXTURE_DEFAULT_FAIL"] = "1"
   let result = try await runMacus(
-    ["--state-dir", runtime.directory, "--json", "--timeout", "5", "client", "setup"],
+    ["--state-dir", runtime.directory, "--json", "--timeout", successDeadline, "client", "setup"],
     environment: environment)
   #expect(result.status == 1)
   #expect(result.stderr.contains("Cannot read the existing Incus default"))
