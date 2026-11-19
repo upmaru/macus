@@ -556,9 +556,11 @@ defmodule Macus.Proxy.NativeRelayTest do
       started = System.monotonic_time(:millisecond)
       ws = ws!(context, "/1.0/operations/op1/websocket?secret=s3")
       {ws, [{:text, _}]} = frames(ws, 1)
-      assert keep_talking(ws, started + 3_000) == :closed
+      assert {:closed, how} = keep_talking(ws, started + 3_000)
       elapsed = System.monotonic_time(:millisecond) - started
-      assert elapsed >= 600 and elapsed < 2_500, "lifetime ended after #{elapsed} ms"
+
+      assert elapsed >= 600 and elapsed < 2_500,
+             "lifetime ended after #{elapsed} ms: #{inspect(how)}"
 
       wait_for_count(context.baseline)
     end
@@ -1045,7 +1047,8 @@ defmodule Macus.Proxy.NativeRelayTest do
     end
   end
 
-  # Sends a frame every 50 ms until the connection closes or the deadline.
+  # Sends a frame every 50 ms until the connection closes or the deadline;
+  # a close says how it ended.
   defp keep_talking(ws, deadline) do
     if System.monotonic_time(:millisecond) > deadline do
       :open
@@ -1057,18 +1060,19 @@ defmodule Macus.Proxy.NativeRelayTest do
           data = for {:data, _, data} <- responses, into: "", do: data
           ws = decode(%{ws | conn: conn}, data)
 
-          if Enum.any?(ws.frames, &match?({:close, _, _}, &1)),
-            do: :closed,
-            else: keep_talking(%{ws | frames: []}, deadline)
+          case Enum.find(ws.frames, &match?({:close, _, _}, &1)) do
+            nil -> keep_talking(%{ws | frames: []}, deadline)
+            close -> {:closed, close}
+          end
 
         {:error, conn, %Mint.TransportError{reason: :timeout}, _} ->
           keep_talking(%{ws | conn: conn}, deadline)
 
-        {:error, _conn, _error, _} ->
-          :closed
+        {:error, _conn, error, _} ->
+          {:closed, error}
       end
     end
   rescue
-    MatchError -> :closed
+    error in MatchError -> {:closed, error}
   end
 end
