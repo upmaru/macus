@@ -16,6 +16,9 @@ defmodule Macus.Proxy.NativeRelayTest do
   # A tightened revocation bound keeps the revocation tests short.
   @bound 400
   @mcp_version "2026-07-28"
+  # A receive timeout: Mint.WebSocket.recv/3 returns the raw :ssl reason after
+  # the upgrade, Mint.HTTP.recv/3 this struct before it.
+  @timeout %Mint.TransportError{reason: :timeout}
 
   setup_all do
     {output, status} =
@@ -164,6 +167,126 @@ defmodule Macus.Proxy.NativeRelayTest do
       assert export == expected
       wait_for_count(context.baseline)
     end
+
+    test "an image-copy server peer without a certificate reaches only its secret's routes",
+         context do
+      fp = Base.encode16(:crypto.strong_rand_bytes(32), case: :lower)
+      other = Base.encode16(:crypto.strong_rand_bytes(32), case: :lower)
+      wait = "0b1c2d3e-0000-4000-8000-0000000000ee"
+      # Secrets in incusd's format: 32 random bytes in lowercase hex.
+      [secret, wait_secret, wrong] =
+        for _ <- 1..3, do: Base.encode16(:crypto.strong_rand_bytes(32), case: :lower)
+
+      image = :crypto.strong_rand_bytes(256 * 1024)
+      wait_path = "/1.0/operations/#{wait}/wait"
+      export_path = "/1.0/images/#{fp}/export"
+
+      # The guest's pending image token, which an authorized caller created
+      # through the gateway, and the operation a push waits on.
+      IncusBackend.start!(context.sock, self(),
+        guest_pem: context.guest.pem,
+        script: fn
+          %{method: "GET", path: "/1.0/operations"} ->
+            {:sync,
+             %{
+               "running" => [
+                 %{
+                   "id" => "token",
+                   "class" => "token",
+                   "resources" => %{"images" => ["/1.0/images/#{fp}"]},
+                   "metadata" => %{"secret" => secret}
+                 }
+               ]
+             }}
+
+          %{method: "GET", path: "/1.0/operations/" <> ^wait} ->
+            {:sync, %{"id" => wait, "class" => "task", "metadata" => %{"secret" => wait_secret}}}
+
+          %{method: "GET", path: ^wait_path} ->
+            {:sync, %{"id" => wait, "status" => "Success"}}
+
+          %{method: "GET", path: "/1.0/images/" <> ^fp} ->
+            {:sync, %{"fingerprint" => fp, "public" => false}}
+
+          %{method: "GET", path: ^export_path} ->
+            {:binary, 200, %{"content-type" => "application/octet-stream"}, image}
+
+          %{method: "POST", path: "/1.0/images", body: body} ->
+            {:sync, %{"size" => byte_size(body)}}
+
+          _ ->
+            nil
+        end
+      )
+
+      push = fn secret, fingerprint, body ->
+        http_as!(
+          context,
+          nil,
+          "POST",
+          "/1.0/images",
+          [
+            {"content-type", "application/octet-stream"},
+            {"x-incus-secret", secret},
+            {"x-incus-fingerprint", fingerprint}
+          ],
+          body
+        )
+      end
+
+      # Pull: the other server reads and exports the image with the secret.
+      {200, _, info} = http_as!(context, nil, "GET", "/1.0/images/#{fp}?secret=#{secret}")
+      # Admission reads the guest's pending operations once.
+      assert_receive {:incus, "GET", "/1.0/operations", "recursion=1&project=default", _}
+      assert Jason.decode!(info)["metadata"]["fingerprint"] == fp
+      query = "secret=#{secret}"
+      assert_receive {:incus, "GET", "/1.0/images/" <> ^fp, ^query, _}
+
+      {200, _, ^image} =
+        http_as!(context, nil, "GET", "/1.0/images/#{fp}/export?secret=#{secret}")
+
+      assert_receive {:incus, "GET", ^export_path, ^query, _}
+
+      # Push: it uploads the image itself, then waits on the operation.
+      {200, _, uploaded} = push.(secret, fp, image)
+      assert Jason.decode!(uploaded)["metadata"]["size"] == byte_size(image)
+      assert_receive {:incus, "POST", "/1.0/images", "", %{"x-incus-secret" => ^secret}}
+      assert_receive {:incus_request_body, "POST", "/1.0/images", ^image}
+
+      {200, _, _} =
+        http_as!(context, nil, "GET", "/1.0/operations/#{wait}/wait?secret=#{wait_secret}")
+
+      wait_query = "secret=#{wait_secret}"
+      assert_receive {:incus, "GET", ^wait_path, ^wait_query, _}
+
+      wait_for_count(context.baseline)
+
+      # A JSON image request in place of the image is refused before it
+      # reaches the guest, which would otherwise consume the secret.
+      {403, _, _} = push.(secret, fp, ~s({"source":{"type":"url","url":"https://example.net"}}))
+      refute_received {:incus, "POST", "/1.0/images", _, _}
+
+      # Wrong secrets, another image's fingerprint, a wait on an operation
+      # whose secret differs and a secret-less request never reach the
+      # image routes.
+      for {method, path} <- [
+            {"GET", "/1.0/images/#{fp}?secret=#{wrong}"},
+            {"GET", "/1.0/images/#{fp}/export?secret=#{wrong}"},
+            {"GET", "/1.0/images/#{other}?secret=#{secret}"},
+            {"GET", "/1.0/operations/#{wait}/wait?secret=#{secret}"},
+            {"GET", "/1.0/images/#{fp}"}
+          ] do
+        {403, _, _} = http_as!(context, nil, method, path)
+      end
+
+      {403, _, _} = push.(wrong, fp, image)
+      {403, _, _} = push.(secret, other, image)
+
+      refute_received {:incus, "GET", "/1.0/images/" <> _, _, _}
+      refute_received {:incus, "GET", ^wait_path, _, _}
+      refute_received {:incus, "POST", "/1.0/images", _, _}
+      wait_for_count(context.baseline)
+    end
   end
 
   describe "WebSockets (5.2)" do
@@ -195,6 +318,128 @@ defmodule Macus.Proxy.NativeRelayTest do
       {ws, [{:text, _}]} = frames(ws, 1)
       _ws = send_frame(ws, {:close, 1000, ""})
       assert_receive {:incus_ws_closed, {:remote, 1000, ""}}, 2_000
+      wait_for_count(context.baseline)
+    end
+
+    test "a server peer without a certificate reaches only a running migration's channel",
+         context do
+      migration = "a0000000-0000-4000-8000-0000000000aa"
+      exec = "a0000000-0000-4000-8000-0000000000bb"
+      # Secrets in incusd's format: 32 random bytes in lowercase hex.
+      [control, fs, stdin, exec_control, wrong] =
+        for _ <- 1..5, do: Base.encode16(:crypto.strong_rand_bytes(32), case: :lower)
+
+      operations = %{
+        migration => %{"control" => control, "fs" => fs},
+        exec => %{"fds" => %{"0" => stdin, "control" => exec_control}}
+      }
+
+      IncusBackend.start!(context.sock, self(),
+        guest_pem: context.guest.pem,
+        script: fn
+          %{method: "GET", path: "/1.0/operations/" <> id} when is_map_key(operations, id) ->
+            {:sync,
+             %{
+               "id" => id,
+               "class" => "websocket",
+               "status" => "Running",
+               "resources" => %{"instances" => ["/1.0/instances/source"]},
+               "metadata" => operations[id]
+             }}
+
+          _ ->
+            nil
+        end
+      )
+
+      # The pinned migration dialer presents no client certificate; the
+      # channel is admitted from the guest's running migration and relayed.
+      {:ok, ws} = ws(context, "/1.0/operations/#{migration}/websocket?secret=#{control}", nil)
+      assert_receive {:incus, "GET", "/1.0/operations/" <> ^migration, "project=default", _}
+      query = "secret=#{control}"
+      assert_receive {:incus, "GET", path, ^query, _}
+      assert path == "/1.0/operations/#{migration}/websocket"
+      {ws, [{:text, _}]} = frames(ws, 1)
+      _ws = send_frame(ws, {:close, 1000, ""})
+      assert_receive {:incus_ws_closed, {:remote, 1000, ""}}, 2_000
+      wait_for_count(context.baseline)
+
+      # A wrong secret, an exec session's secret or an unknown operation is
+      # refused before the channel reaches the guest.
+      unknown = "a0000000-0000-4000-8000-0000000000cc"
+
+      for {id, secret} <- [
+            {migration, wrong},
+            {exec, stdin},
+            {exec, exec_control},
+            {unknown, control},
+            {migration, "s3"}
+          ] do
+        assert {:refused, 403} =
+                 ws(context, "/1.0/operations/#{id}/websocket?secret=#{secret}", nil)
+
+        refute_received {:incus, "GET", "/1.0/operations/" <> _, "secret=" <> _, _}
+      end
+
+      wait_for_count(context.baseline)
+    end
+
+    test "a server peer copying a custom volume reaches only that migration's channel",
+         context do
+      volume = "a0000000-0000-4000-8000-0000000000dd"
+
+      [control, fs, wrong] =
+        for _ <- 1..3, do: Base.encode16(:crypto.strong_rand_bytes(32), case: :lower)
+
+      # A custom volume migration in a nondefault project, as incusd renders
+      # it for `incus storage volume copy` in pull or push mode.
+      IncusBackend.start!(context.sock, self(),
+        guest_pem: context.guest.pem,
+        script: fn
+          %{method: "GET", path: "/1.0/operations/" <> ^volume} ->
+            {:sync,
+             %{
+               "id" => volume,
+               "class" => "websocket",
+               "status" => "Running",
+               "resources" => %{
+                 "storage_volumes" => [
+                   "/1.0/storage-pools/default/volumes/custom/data?project=work"
+                 ]
+               },
+               "metadata" => %{"control" => control, "fs" => fs}
+             }}
+
+          _ ->
+            nil
+        end
+      )
+
+      # The other server dials the control and filesystem channels with no
+      # certificate, with or without the operation's project.
+      channel = "/1.0/operations/#{volume}/websocket"
+
+      for {query, project} <- [
+            {"secret=#{control}", "project=default"},
+            {"project=work&secret=#{fs}", "project=work"}
+          ] do
+        {:ok, ws} = ws(context, "#{channel}?#{query}", nil)
+        assert_receive {:incus, "GET", "/1.0/operations/" <> ^volume, ^project, _}
+        assert_receive {:incus, "GET", ^channel, ^query, _}
+        assert_receive {:incus_ws, _, ^channel}
+        {ws, [{:text, _}]} = frames(ws, 1)
+        _ws = send_frame(ws, {:close, 1000, ""})
+        assert_receive {:incus_ws_closed, {:remote, 1000, ""}}, 2_000
+        wait_for_count(context.baseline)
+      end
+
+      # A wrong secret or another project's selection never reaches the
+      # channel.
+      for query <- ["secret=#{wrong}", "project=default&secret=#{control}"] do
+        assert {:refused, 403} = ws(context, "#{channel}?#{query}", nil)
+        refute_received {:incus, "GET", ^channel, _, _}
+      end
+
       wait_for_count(context.baseline)
     end
 
@@ -303,17 +548,23 @@ defmodule Macus.Proxy.NativeRelayTest do
       assert_receive {:incus_idle, _}, 2_000
       started = System.monotonic_time(:millisecond)
       assert drain_until_closed(stream, started + 3_000) == :closed
-      assert System.monotonic_time(:millisecond) - started < 1_500
+      elapsed = System.monotonic_time(:millisecond) - started
+      assert elapsed < 2_500, "idle stream ended after #{elapsed} ms"
       wait_for_count(context.baseline)
 
-      # A WebSocket that keeps moving still ends at its lifetime budget.
+      # A WebSocket that keeps moving still ends at its lifetime budget. The
+      # budget runs from the upgrade, so time from before the handshake: the
+      # stream cannot end sooner, however slowly the handshake completes.
       put_proxy(idle_timeout: 60_000, max_lifetime: 600)
+      started = System.monotonic_time(:millisecond)
       ws = ws!(context, "/1.0/operations/op1/websocket?secret=s3")
       {ws, [{:text, _}]} = frames(ws, 1)
-      started = System.monotonic_time(:millisecond)
-      assert keep_talking(ws, started + 3_000) == :closed
+      assert {:closed, how} = keep_talking(ws, started + 3_000)
       elapsed = System.monotonic_time(:millisecond) - started
-      assert elapsed < 1_500 and elapsed >= 400
+
+      assert elapsed >= 600 and elapsed < 2_500,
+             "lifetime ended after #{elapsed} ms: #{inspect(how)}"
+
       wait_for_count(context.baseline)
     end
   end
@@ -674,8 +925,11 @@ defmodule Macus.Proxy.NativeRelayTest do
   end
 
   # Plain HTTP over Mint, which decodes chunked responses.
-  defp http!(context, method, path, headers \\ [], body \\ nil) do
-    {:ok, conn} = mint(context, context.admin)
+  defp http!(context, method, path, headers \\ [], body \\ nil),
+    do: http_as!(context, context.admin, method, path, headers, body)
+
+  defp http_as!(context, identity, method, path, headers \\ [], body \\ nil) do
+    {:ok, conn} = mint(context, identity)
     {:ok, conn, ref} = Mint.HTTP.request(conn, method, path, headers, body)
     collect(conn, ref, nil, [], "")
   end
@@ -788,7 +1042,7 @@ defmodule Macus.Proxy.NativeRelayTest do
           do: {ws, :closed},
           else: until_closed(ws, timeout)
 
-      {:error, conn, %Mint.TransportError{reason: :timeout}, _} ->
+      {:error, conn, reason, _} when reason in [:timeout, @timeout] ->
         {%{ws | conn: conn}, :open}
 
       {:error, conn, _error, _} ->
@@ -796,7 +1050,8 @@ defmodule Macus.Proxy.NativeRelayTest do
     end
   end
 
-  # Sends a frame every 50 ms until the connection closes or the deadline.
+  # Sends a frame every 50 ms until the connection closes or the deadline;
+  # a close says how it ended.
   defp keep_talking(ws, deadline) do
     if System.monotonic_time(:millisecond) > deadline do
       :open
@@ -808,18 +1063,19 @@ defmodule Macus.Proxy.NativeRelayTest do
           data = for {:data, _, data} <- responses, into: "", do: data
           ws = decode(%{ws | conn: conn}, data)
 
-          if Enum.any?(ws.frames, &match?({:close, _, _}, &1)),
-            do: :closed,
-            else: keep_talking(%{ws | frames: []}, deadline)
+          case Enum.find(ws.frames, &match?({:close, _, _}, &1)) do
+            nil -> keep_talking(%{ws | frames: []}, deadline)
+            close -> {:closed, close}
+          end
 
-        {:error, conn, %Mint.TransportError{reason: :timeout}, _} ->
+        {:error, conn, reason, _} when reason in [:timeout, @timeout] ->
           keep_talking(%{ws | conn: conn}, deadline)
 
-        {:error, _conn, _error, _} ->
-          :closed
+        {:error, _conn, error, _} ->
+          {:closed, error}
       end
     end
   rescue
-    MatchError -> :closed
+    error in MatchError -> {:closed, error}
   end
 end

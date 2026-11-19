@@ -151,12 +151,39 @@ The gateway's identity differs from the guest's in four places:
   never reach the guest.
 - An authenticated `GET /1.0` reports the gateway's certificate and
   advertised addresses instead of the guest's. Its `api_extensions` are
-  limited to those both the guest and the gateway support.
+  limited to those the guest reports, the gateway implements and Macus lists
+  in its `Macus.Proxy` `api_extensions` configuration (`server/config/config.exs`).
 - `/1.0/certificates` manages gateway trust and redeems enrollment tokens. It
   never touches the guest's own trust store.
 - If `incus.sock` can't be reached, native requests fail with
   `502 Backend is unavailable`, while `/runtime/status` stays readable (see
   [the API](api.md)).
+
+Copies between Macus and another Incus server are run by a client that can
+reach both, such as `incus image copy` or `incus copy`; the two Incus servers
+move the data, and Macus advertises only the gateway's address. The other
+server has no gateway certificate, so Macus admits it narrowly:
+
+- **Instances, snapshots and volumes:** the other server may open a
+  migration operation's WebSocket only when that operation is a running
+  migration in the guest and the secret it presents is one of that
+  migration's channel secrets. Exec and console sessions are never reachable
+  this way. Instance copies use the `container_push` and
+  `container_push_target` extensions, and volume copies use
+  `storage_api_local_volume_handling` and
+  `storage_api_remote_volume_handling`.
+- **Images:** the other server may reach only the image's info and export (a
+  pull) or the upload and its wait (a push), and only when the secret it
+  presents matches an image token or upload operation pending in the guest,
+  which the client created through the gateway. A server pushing an image
+  may upload only the image itself: a JSON image request in its place (one
+  that would make the guest fetch from elsewhere, publish an instance or
+  mint a token) is refused with 403 before it reaches the guest. Pushing an
+  image from Macus uses the `images_push_relay` extension.
+
+Macus lists all of these copy extensions in its default `api_extensions`,
+and `opsmaru_incus` 0.2.4 implements every one, so clients see them all when
+the guest reports them.
 
 Native streams have fixed limits:
 

@@ -107,7 +107,7 @@ defmodule Macus.DexTest do
       v1 = incus_cassette!(ctx, "1", ["incus_fixture_get"])
       dex = start_dex!(config!(ctx, imports: [pinned(v1)]))
       assert_receive {:dex_event, "opsmaru_incus", :ready}, 5_000
-      stop_supervised!(dex.name)
+      stop_dex!(dex)
 
       v2 = incus_cassette!(ctx, "2", ["incus_fixture_get", "incus_fixture_new"])
       dex = start_dex!(config!(ctx, imports: [%{pinned(v2) | sha256: v1.sha256}]))
@@ -129,7 +129,7 @@ defmodule Macus.DexTest do
       dex = start_dex!(config!(ctx, imports: [pinned(v1)], documents: [macus_document()]))
       assert_receive {:dex_event, "opsmaru_incus", :ready}, 5_000
       assert_receive {:dex_event, "macus", :ready}, 5_000
-      stop_supervised!(dex.name)
+      stop_dex!(dex)
 
       v2 = incus_cassette!(ctx, "2", ["incus_fixture_get"])
       dex = start_dex!(config!(ctx, imports: [pinned(v2)]))
@@ -148,7 +148,7 @@ defmodule Macus.DexTest do
       cassette = incus_cassette!(ctx, "1", ["incus_fixture_get"])
       dex = start_dex!(config!(ctx, imports: [pinned(cassette)]))
       assert_receive {:dex_event, "opsmaru_incus", :ready}, 5_000
-      stop_supervised!(dex.name)
+      stop_dex!(dex)
 
       intruder = %{cassette: "opsmaru_incus", document: DexFixtures.document("macus", ["x_op"])}
       dex = start_dex!(config!(ctx, documents: [intruder]))
@@ -182,7 +182,7 @@ defmodule Macus.DexTest do
 
       dex = start_dex!(config)
       assert_receive {:dex_event, "opsmaru_incus", :ready}, 5_000
-      stop_supervised!(dex.name)
+      stop_dex!(dex)
 
       for suffix <- ["", "-wal", "-shm"], do: File.rm(ctx.index_path <> suffix)
       refute File.exists?(ctx.index_path)
@@ -201,7 +201,7 @@ defmodule Macus.DexTest do
 
       dex = start_dex!(config)
       assert_receive {:dex_event, "opsmaru_incus", :ready}, 5_000
-      stop_supervised!(dex.name)
+      stop_dex!(dex)
 
       {:ok, conn} = Exqlite.Sqlite3.open(ctx.index_path)
 
@@ -490,6 +490,26 @@ defmodule Macus.DexTest do
     )
 
     names
+  end
+
+  # The index's SQLite workers close their connections only after the index
+  # process has exited, so wait for them too before touching the files: a
+  # connection still holding a deleted `-shm` breaks the next one with a disk
+  # I/O error.
+  defp stop_dex!(dex) do
+    workers =
+      dex.index
+      |> Process.whereis()
+      |> Process.info(:links)
+      |> elem(1)
+      |> Enum.filter(&is_pid/1)
+      |> Enum.reject(&(&1 == Process.whereis(dex.name)))
+      |> Enum.map(&Process.monitor/1)
+
+    # The writer and the reader.
+    assert length(workers) >= 2
+    stop_supervised!(dex.name)
+    for ref <- workers, do: assert_receive({:DOWN, ^ref, :process, _, _}, 5_000)
   end
 
   defp config!(ctx, opts) do

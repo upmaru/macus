@@ -21,6 +21,30 @@ config :macus, MacusWeb.Endpoint,
   pubsub_server: Macus.PubSub,
   server: false
 
+# Native Incus extensions the gateway advertises for the guest. Each is a
+# protocol Macus mounts (REST, WebSocket and raw upgrades), and the shared
+# gateway serves only those it implements: authenticated `/1.0` further
+# keeps only those the guest reports. The copy extensions let a client
+# holding this gateway and another server copy instances (container_push*),
+# custom volumes (storage_api_*_volume_handling) and images
+# (images_push_relay) between them; the servers dial the gateway with
+# operation or image secrets, which `Macus.Proxy.Host` admits.
+config :macus, Macus.Proxy,
+  api_extensions: [
+    "certificate_update",
+    "instances",
+    "file_delete",
+    "console",
+    "instance_nbd",
+    "custom_volume_sftp",
+    "storage_volume_nbd",
+    "container_push",
+    "container_push_target",
+    "storage_api_local_volume_handling",
+    "storage_api_remote_volume_handling",
+    "images_push_relay"
+  ]
+
 # Configure Elixir's Logger
 config :logger, :default_formatter,
   format: "$time $metadata[$level] $message\n",

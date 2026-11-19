@@ -58,7 +58,7 @@ mise exec -- mix test
 
 `server/mix.lock` records released dependencies, including Phoenix 1.8.15,
 Plug.Cowboy 2.9.0, Cowboy 2.21.0, Mint 1.11.0, TamaMCP 0.2.1,
-`opsmaru_incus` 0.2.3 and `tama_dex` 0.1.0 (which brings the exqlite SQLite
+`opsmaru_incus` 0.2.4 and `tama_dex` 0.1.0 (which brings the exqlite SQLite
 NIF). All dependencies are released Hex packages; Hex is the
 only distribution route for `opsmaru_incus`, so builds never use a Git revision
 or sibling path for it. Macus's own scaffold has no Ecto, HTML,
@@ -72,8 +72,10 @@ The initial scaffold is passive: it resolves `MACUS_STATE_DIR`, then legacy
 authorization, routes and coordinated startup are tracked in the active
 [change tasks](../openspec/changes/add-elixir-server/tasks.md). Until they are
 implemented, current installed Swift commands retain their Unix behavior.
-The canonical script currently checks Swift and packaging; the change also
-tracks adding the Mix/protocol/release checks to that script and CI.
+The canonical script currently checks Swift and packaging. CI also runs the
+Mix format, compile and test checks above on macOS, with the tools pinned in
+`mise.toml`; the change still tracks adding the Mix, protocol and release
+checks to the canonical script and the release smoke to CI (task 10.1).
 
 The [Cowboy transport trial](cowboy-transport-trial.md) exercises native
 SFTP/NBD HTTP upgrades with TLS/Unix fixtures and the pinned official client.

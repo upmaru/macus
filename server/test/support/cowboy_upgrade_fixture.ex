@@ -139,13 +139,21 @@ defmodule Macus.TestSupport.CowboyUpgradeHandler do
 end
 
 defmodule Macus.TestSupport.CowboyTunnel do
-  @moduledoc "Fixture-only socket takeover with one active read per direction."
+  @moduledoc """
+  Fixture-only socket takeover with one active read per direction. Writes to
+  the backend go through a linked writer, one chunk at a time, so the tunnel
+  keeps relaying the backend's replies while a write is blocked: a backend
+  that echoes from one process would otherwise deadlock with a tunnel that
+  also relays from one process.
+  """
 
   # Cowboy calls this in its connection process after sending HTTP 101. Both
   # descriptors belong to that process, not the now-terminated request worker.
   def takeover(_parent, _ref, client, transport, _opts, buffer, state) do
     backend = state.backend
     send(state.observer, {:tunnel_started, self()})
+    tunnel = self()
+    writer = spawn_link(fn -> write_loop(tunnel, backend) end)
 
     try do
       :ok =
@@ -155,8 +163,10 @@ defmodule Macus.TestSupport.CowboyTunnel do
       :ok = transport.send(client, state.backend_buffer)
       :ok = :inet.setopts(backend, active: :once)
       :ok = transport.setopts(client, active: :once)
-      relay(client, transport, backend, false, false)
+      relay(client, transport, backend, writer, false, false)
     after
+      Process.unlink(writer)
+      Process.exit(writer, :kill)
       :gen_tcp.close(backend)
       transport.close(client)
       send(state.observer, {:tunnel_closed, self()})
@@ -167,31 +177,50 @@ defmodule Macus.TestSupport.CowboyTunnel do
     exit(:normal)
   end
 
-  defp relay(_client, _transport, _backend, true, true), do: :ok
+  # Requests run in order, so a half-close follows every pending write.
+  defp write_loop(tunnel, backend) do
+    receive do
+      {:write, bytes} ->
+        send(tunnel, {:written, :gen_tcp.send(backend, bytes)})
+        write_loop(tunnel, backend)
 
-  defp relay(client, transport, backend, client_closed, backend_closed) do
+      :shutdown_write ->
+        :gen_tcp.shutdown(backend, :write)
+        write_loop(tunnel, backend)
+    end
+  end
+
+  defp relay(_client, _transport, _backend, _writer, true, true), do: :ok
+
+  defp relay(client, transport, backend, writer, client_closed, backend_closed) do
     timeout = if client_closed or backend_closed, do: 1_000, else: 5_000
 
     receive do
+      # The client is read again only once its last chunk reached the backend.
       {:ssl, ^client, bytes} ->
-        if :gen_tcp.send(backend, bytes) == :ok do
-          :ok = transport.setopts(client, active: :once)
-          relay(client, transport, backend, client_closed, backend_closed)
-        end
+        send(writer, {:write, bytes})
+        relay(client, transport, backend, writer, client_closed, backend_closed)
+
+      {:written, :ok} ->
+        :ok = transport.setopts(client, active: :once)
+        relay(client, transport, backend, writer, client_closed, backend_closed)
+
+      {:written, {:error, _}} ->
+        :ok
 
       {:tcp, ^backend, bytes} ->
         if transport.send(client, bytes) == :ok do
           :ok = :inet.setopts(backend, active: :once)
-          relay(client, transport, backend, client_closed, backend_closed)
+          relay(client, transport, backend, writer, client_closed, backend_closed)
         end
 
       {:ssl_closed, ^client} ->
-        :gen_tcp.shutdown(backend, :write)
-        relay(client, transport, backend, true, backend_closed)
+        send(writer, :shutdown_write)
+        relay(client, transport, backend, writer, true, backend_closed)
 
       {:tcp_closed, ^backend} ->
         transport.shutdown(client, :write)
-        relay(client, transport, backend, client_closed, true)
+        relay(client, transport, backend, writer, client_closed, true)
 
       {:ssl_error, ^client, _} ->
         :ok
