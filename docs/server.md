@@ -160,14 +160,23 @@ The gateway's identity differs from the guest's in four places:
 
 Copies between Macus and another Incus server are run by a client that can
 reach both, such as `incus image copy` or `incus copy`; the two Incus servers
-move the data, and Macus advertises only the gateway's address. When another
-server pulls an image from Macus or pushes one into it, that server has no
-gateway certificate. Macus admits it only to the image's info and export (a
-pull) or the upload and its wait (a push), and only when the secret it
-presents matches an image token or upload operation pending in the guest,
-which the client created through the gateway. This needs an `opsmaru_incus`
-release with image-secret admission, and the guest's `images_push_relay`
-extension listed in `api_extensions` to push an image from Macus.
+move the data, and Macus advertises only the gateway's address. The other
+server has no gateway certificate, so Macus admits it narrowly:
+
+- **Instances, snapshots and volumes:** the other server may open a
+  migration operation's WebSocket only when that operation is a running
+  migration in the guest and the secret it presents is one of that
+  migration's channel secrets. Exec and console sessions are never reachable
+  this way. Volume copies need the guest's `storage_api_local_volume_handling`
+  and `storage_api_remote_volume_handling` extensions listed in
+  `api_extensions`, and an `opsmaru_incus` release that allows them.
+- **Images:** the other server may reach only the image's info and export (a
+  pull) or the upload and its wait (a push), and only when the secret it
+  presents matches an image token or upload operation pending in the guest,
+  which the client created through the gateway. This needs an
+  `opsmaru_incus` release with image-secret admission, and the guest's
+  `images_push_relay` extension listed in `api_extensions` to push an image
+  from Macus.
 
 Native streams have fixed limits:
 

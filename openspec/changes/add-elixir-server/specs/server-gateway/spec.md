@@ -36,7 +36,7 @@ The server SHALL support HTTPS on loopback and explicitly configured LAN/remote 
 
 ### Requirement: Authentication before private transport access
 
-Except for bounded discovery, explicit certificate enrollment and image-copy server peers, native Incus requests SHALL require an enrolled TLS client certificate. An image-copy server peer (another Incus server pulling an image from the gateway or pushing one into it, on the shared gateway's exact image secret routes) SHALL be admitted only when its secret matches, in constant time, an image token or operation pending in the guest Incus for that fingerprint, project or operation, because the guest treats the gateway's socket as trusted and does not check the secret itself. Runtime and MCP requests SHALL require valid scoped per-user bearer credentials. Authorization SHALL occur before privileged backend access and upgrades. Anonymous discovery SHALL reveal only gateway identity and protocol information, never runtime configuration or guest data.
+Except for bounded discovery, explicit certificate enrollment, migration server peers and image-copy server peers, native Incus requests SHALL require an enrolled TLS client certificate. A migration server peer (another Incus server dialing a migration operation's WebSocket with a channel secret) SHALL be admitted only when the named operation is a running migration in the guest Incus whose channel secrets include the presented secret, never an exec or console session, and an explicit project selection SHALL match the operation's. An image-copy server peer (another Incus server pulling an image from the gateway or pushing one into it, on the shared gateway's exact image secret routes) SHALL be admitted only when its secret matches, in constant time, an image token or operation pending in the guest Incus for that fingerprint, project or operation, because the guest treats the gateway's socket as trusted and does not check the secret itself. Runtime and MCP requests SHALL require valid scoped per-user bearer credentials. Authorization SHALL occur before privileged backend access and upgrades. Anonymous discovery SHALL reveal only gateway identity and protocol information, never runtime configuration or guest data.
 
 #### Scenario: Untrusted local client
 
@@ -47,6 +47,11 @@ Except for bounded discovery, explicit certificate enrollment and image-copy ser
 
 - **WHEN** an unauthenticated caller requests an Incus WebSocket upgrade
 - **THEN** the server denies the handshake before opening an upstream connection
+
+#### Scenario: Migration server peer
+
+- **WHEN** another Incus server without a gateway certificate opens an operation WebSocket with a secret
+- **THEN** it is admitted only if the operation is a running migration in the guest with that channel secret, and otherwise, including for exec and console sessions, denied before the channel reaches the guest
 
 #### Scenario: Image-copy server peer
 

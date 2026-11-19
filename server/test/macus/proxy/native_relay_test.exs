@@ -198,6 +198,69 @@ defmodule Macus.Proxy.NativeRelayTest do
       wait_for_count(context.baseline)
     end
 
+    test "a server peer without a certificate reaches only a running migration's channel",
+         context do
+      migration = "a0000000-0000-4000-8000-0000000000aa"
+      exec = "a0000000-0000-4000-8000-0000000000bb"
+      # Secrets in incusd's format: 32 random bytes in lowercase hex.
+      [control, fs, stdin, exec_control, wrong] =
+        for _ <- 1..5, do: Base.encode16(:crypto.strong_rand_bytes(32), case: :lower)
+
+      operations = %{
+        migration => %{"control" => control, "fs" => fs},
+        exec => %{"fds" => %{"0" => stdin, "control" => exec_control}}
+      }
+
+      IncusBackend.start!(context.sock, self(),
+        guest_pem: context.guest.pem,
+        script: fn
+          %{method: "GET", path: "/1.0/operations/" <> id} when is_map_key(operations, id) ->
+            {:sync,
+             %{
+               "id" => id,
+               "class" => "websocket",
+               "status" => "Running",
+               "resources" => %{"instances" => ["/1.0/instances/source"]},
+               "metadata" => operations[id]
+             }}
+
+          _ ->
+            nil
+        end
+      )
+
+      # The pinned migration dialer presents no client certificate; the
+      # channel is admitted from the guest's running migration and relayed.
+      {:ok, ws} = ws(context, "/1.0/operations/#{migration}/websocket?secret=#{control}", nil)
+      assert_receive {:incus, "GET", "/1.0/operations/" <> ^migration, "project=default", _}
+      query = "secret=#{control}"
+      assert_receive {:incus, "GET", path, ^query, _}
+      assert path == "/1.0/operations/#{migration}/websocket"
+      {ws, [{:text, _}]} = frames(ws, 1)
+      _ws = send_frame(ws, {:close, 1000, ""})
+      assert_receive {:incus_ws_closed, {:remote, 1000, ""}}, 2_000
+      wait_for_count(context.baseline)
+
+      # A wrong secret, an exec session's secret or an unknown operation is
+      # refused before the channel reaches the guest.
+      unknown = "a0000000-0000-4000-8000-0000000000cc"
+
+      for {id, secret} <- [
+            {migration, wrong},
+            {exec, stdin},
+            {exec, exec_control},
+            {unknown, control},
+            {migration, "s3"}
+          ] do
+        assert {:refused, 403} =
+                 ws(context, "/1.0/operations/#{id}/websocket?secret=#{secret}", nil)
+
+        refute_received {:incus, "GET", "/1.0/operations/" <> _, "secret=" <> _, _}
+      end
+
+      wait_for_count(context.baseline)
+    end
+
     test "a paused reader holds the backend back instead of buffering the burst", context do
       IncusBackend.start!(context.sock, self(), context.guest.pem)
       ws = ws!(context, "/1.0/operations/op1/websocket?secret=s3")
