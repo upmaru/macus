@@ -57,9 +57,13 @@ struct FixtureCertificate: Sendable {
 /// answers the certificate prompt from standard input as incus does.
 /// `MACUS_FIXTURE_QUERY_CERT` makes `/1.0` report another certificate, and
 /// `MACUS_FIXTURE_LIST_FAIL=1` makes `incus list` fail.
+///
+/// The interpreter runs with `-B`: Apple's `/usr/bin/python3` otherwise caches bytecode under
+/// `$HOME/Library/Caches/com.apple.python`, which would write into a test's isolated `HOME` on any
+/// machine that does not already set `PYTHONDONTWRITEBYTECODE`.
 func writeFakeIncus(to path: String) throws {
   let script = #"""
-    #!/usr/bin/python3
+    #!/usr/bin/python3 -B
     import base64, hashlib, json, os, sys
     args = sys.argv[1:]
     if os.environ.get("MACUS_FIXTURE_LOG"):
