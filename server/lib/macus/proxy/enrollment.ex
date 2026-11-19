@@ -17,8 +17,9 @@ defmodule Macus.Proxy.Enrollment do
     * `trust-tokens.json`, written only by the owner's `macus` command:
       `{"schema_version": 1, "tokens": [record, ...]}` with records
       `%{"id", "verifier", "name", "created_at", "expires_at",
-      "revoked_at"}`. The verifier is the lowercase hex SHA-256 of the
-      token's secret; the secret is never stored. Every token expires.
+      "revoked_at"}`, optionally with `"client_fingerprint"`. The verifier
+      is the lowercase hex SHA-256 of the token's secret; the secret is
+      never stored. Every token expires.
     * `trust-token-redemptions.json`, written only by this process:
       `{"schema_version": 1, "redemptions": [%{"id", "redeemed_at",
       "fingerprint"}, ...]}`, recording which tokens are consumed and the
@@ -31,7 +32,15 @@ defmodule Macus.Proxy.Enrollment do
   certificate, whose private key the TLS handshake proved, added to gateway
   trust (`Macus.Proxy.Trust`) as an unrestricted client named by the token.
   Nothing from the request other than the token and the peer certificate is
-  used, and nothing reaches the guest. A store that is unsafe, oversized or
+  used, and nothing reaches the guest.
+
+  A token whose record carries `client_fingerprint` (issued by `macus
+  client setup`, which must pass it on the `incus remote add` command line)
+  is bound to that certificate: any other peer certificate is refused with
+  403 before the token is consumed, so a token seen by someone else neither
+  enrolls them nor spends the owner's token. Redeeming a bound token for a
+  certificate that is already trusted succeeds without adding a duplicate,
+  because the owner explicitly issued it for that certificate. A store that is unsafe, oversized or
   malformed enrolls nothing and is never rewritten.
   """
 
@@ -111,6 +120,7 @@ defmodule Macus.Proxy.Enrollment do
          {:ok, redemptions} <- redemptions(store),
          {:ok, record} <- match(tokens, secret),
          :ok <- unconsumed(redemptions, record),
+         :ok <- bound(record, der),
          :ok <- consume(store, tokens, redemptions, record, der, now),
          :ok <- current(record, now) do
       enroll(store, record, der, now)
@@ -171,6 +181,15 @@ defmodule Macus.Proxy.Enrollment do
     if Enum.any?(redemptions, &(&1["id"] == id)), do: {:error, 403}, else: :ok
   end
 
+  # A bound token is refused, unconsumed, for any other certificate.
+  defp bound(%{"client_fingerprint" => fingerprint}, der) when is_binary(fingerprint) do
+    if Plug.Crypto.secure_compare(Trust.fingerprint(der), fingerprint),
+      do: :ok,
+      else: {:error, 403}
+  end
+
+  defp bound(_record, _der), do: :ok
+
   defp current(%{"expires_at" => expires}, now) do
     with {:ok, at, 0} <- DateTime.from_iso8601(expires),
          :gt <- DateTime.compare(at, now) do
@@ -210,11 +229,19 @@ defmodule Macus.Proxy.Enrollment do
 
   defp enroll(store, record, der, now) do
     entry = Trust.entry(der, record["name"], "", now)
+    bound? = Map.has_key?(record, "client_fingerprint")
 
     Trust.update(store, fn entries ->
-      if Enum.any?(entries, &(&1["fingerprint"] == entry["fingerprint"])),
-        do: {:error, 409},
-        else: {:ok, entries ++ [entry], entry["fingerprint"]}
+      cond do
+        not Enum.any?(entries, &(&1["fingerprint"] == entry["fingerprint"])) ->
+          {:ok, entries ++ [entry], entry["fingerprint"]}
+
+        bound? ->
+          {:noop, entry["fingerprint"]}
+
+        true ->
+          {:error, 409}
+      end
     end)
     |> case do
       {:ok, fingerprint} -> {:ok, fingerprint}
@@ -239,7 +266,8 @@ defmodule Macus.Proxy.Enrollment do
       Regex.match?(@hex64, verifier) and Token.principal?(name) and timestamp?(created_at) and
       timestamp?(expires_at) and (is_nil(revoked_at) or timestamp?(revoked_at)) and
       Map.get(record, "type", "client") == "client" and
-      Map.get(record, "restricted", false) == false and Map.get(record, "projects", []) == []
+      Map.get(record, "restricted", false) == false and Map.get(record, "projects", []) == [] and
+      fingerprint?(Map.get(record, "client_fingerprint", :unbound))
   end
 
   defp token?(_record), do: false
@@ -250,6 +278,9 @@ defmodule Macus.Proxy.Enrollment do
   end
 
   defp redemption?(_record), do: false
+
+  defp fingerprint?(:unbound), do: true
+  defp fingerprint?(value), do: is_binary(value) and Regex.match?(@hex64, value)
 
   defp timestamp?(value) when is_binary(value),
     do: match?({:ok, _, 0}, DateTime.from_iso8601(value))

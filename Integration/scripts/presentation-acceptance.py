@@ -400,7 +400,20 @@ def main():
             (state / 'runtime' / name).write_text('disk-sentinel')
         (state / 'config.json').write_text(json.dumps({'appliance_manifest_path': str(root / 'manifest.json')}))
         client = root / 'incus fixture'
-        client.write_text('#!/bin/sh\ncase "$*" in\n"remote list --format json") echo "{}";;\n"remote get-default") echo local;;\n*) exit 0;;\nesac\n')
+        client_cert = root / 'client.crt'
+        subprocess.run(['/usr/bin/openssl', 'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1',
+                        '-nodes', '-keyout', str(root / 'client.key'), '-out', str(client_cert), '-days', '2',
+                        '-subj', '/CN=incus-fixture'], check=True, capture_output=True)
+        # The standard client's side of setup: its certificate, token enrollment, and a trusted /1.0
+        # presenting the fixture gateway's certificate.
+        server_info = ('import json, sys; print(json.dumps({"auth": "trusted", '
+                       '"environment": {"certificate": open(sys.argv[1]).read()}}))')
+        client.write_text('#!/bin/sh\ncase "$*" in\n'
+                          '"remote list --format json") echo "{}";;\n'
+                          '"remote get-default") echo local;;\n'
+                          f'"remote get-client-certificate") cat "{client_cert}";;\n'
+                          f'"query "*":/1.0") /usr/bin/python3 -c \'{server_info}\' "$MACUS_STATE_DIR/server/fixture.crt";;\n'
+                          '*) exit 0;;\nesac\n')
         client.chmod(0o700)
         config_before = (state / 'config.json').read_bytes()
         env = dict(os.environ, TERM='xterm-256color', NO_COLOR='', MACUS_STATE_DIR=str(state), MACUS_BREW_FALLBACK='0')

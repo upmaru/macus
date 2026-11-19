@@ -80,21 +80,58 @@ public struct TrustTokenStore: Sendable {
     name: String, addresses: [String], serverCertificate: URL, expiresAt: Date, output: URL,
     now: Date = Date()
   ) throws -> TrustTokenSummary {
-    guard GatewayDocument.isName(name) else {
-      throw RuntimeError(
-        .invalidRequest,
-        "--name must be 1-128 characters: letters, digits, '.', '_', '@' or '-', starting with a letter or digit"
-      )
-    }
+    try Self.validateName(name)
     try Self.validateAddresses(addresses)
-    let lifetime = expiresAt.timeIntervalSince(now)
-    guard lifetime >= TimeInterval(Self.lifetimes.lowerBound),
-      lifetime <= TimeInterval(Self.lifetimes.upperBound)
-    else {
-      throw RuntimeError(.invalidRequest, "A trust token expires in 1 minute to 30 days")
-    }
+    try Self.validateLifetime(expiresAt: expiresAt, now: now)
     let fingerprint = try Self.certificateFingerprint(serverCertificate)
     try GatewayDocument.validateOutput(output)
+    return try record(
+      name: name, addresses: addresses, serverFingerprint: fingerprint, clientFingerprint: nil,
+      expiresAt: expiresAt, now: now
+    ) { token, commit in
+      try GatewayDocument.writeExclusive(Data((token + "\n").utf8), to: output)
+      do {
+        try commit()
+      } catch {
+        unlink(output.path)
+        throw error
+      }
+    }
+  }
+
+  /// Issues a token that only the certificate with SHA-256 `clientFingerprint` can redeem, for
+  /// `macus client setup` to pass to `incus remote add`. The server refuses that token from any
+  /// other certificate without consuming it, so seeing it (on a command line) cannot enroll
+  /// another client. Returns the token without writing it anywhere; its record holds only the
+  /// verifier and the bound fingerprint.
+  func issueBound(
+    name: String, addresses: [String], serverFingerprint: String, clientFingerprint: String,
+    expiresAt: Date, now: Date = Date()
+  ) throws -> (summary: TrustTokenSummary, token: String) {
+    try Self.validateName(name)
+    try Self.validateAddresses(addresses)
+    try Self.validateLifetime(expiresAt: expiresAt, now: now)
+    guard GatewayDocument.isHex64(serverFingerprint), GatewayDocument.isHex64(clientFingerprint)
+    else {
+      throw RuntimeError(.invalidRequest, "Certificate fingerprints are lowercase SHA-256 hex")
+    }
+    var issued = ""
+    let summary = try record(
+      name: name, addresses: addresses, serverFingerprint: serverFingerprint,
+      clientFingerprint: clientFingerprint, expiresAt: expiresAt, now: now
+    ) { token, commit in
+      try commit()
+      issued = token
+    }
+    return (summary, issued)
+  }
+
+  /// Adds one token record under the store lock. `deliver` receives the token and a `commit`
+  /// that writes the store; it decides what happens to the token around that write.
+  private func record(
+    name: String, addresses: [String], serverFingerprint: String, clientFingerprint: String?,
+    expiresAt: Date, now: Date, deliver: (String, () throws -> Void) throws -> Void
+  ) throws -> TrustTokenSummary {
     try tokens.requireStateDirectory()
     try tokens.prepareGatewayDirectory()
     return try tokens.withLock {
@@ -110,7 +147,7 @@ public struct TrustTokenStore: Sendable {
       while ids.contains(id) { id = GatewayDocument.randomHex(bytes: 8) }
       let secret = GatewayDocument.randomHex(bytes: 32)
       let expires = GatewayDocument.timestamp(expiresAt)
-      let record: [String: Any] = [
+      var record: [String: Any] = [
         "id": id,
         "verifier": GatewayDocument.sha256Hex(secret),
         "name": name,
@@ -118,20 +155,33 @@ public struct TrustTokenStore: Sendable {
         "expires_at": expires,
         "revoked_at": NSNull(),
       ]
+      if let clientFingerprint { record["client_fingerprint"] = clientFingerprint }
       records.append(record)
       stored["tokens"] = records
       let data = try tokens.encode(stored)
       let token = try Self.nativeToken(
-        name: name, fingerprint: fingerprint, addresses: addresses, secret: secret,
+        name: name, fingerprint: serverFingerprint, addresses: addresses, secret: secret,
         expiresAt: expires)
-      try GatewayDocument.writeExclusive(Data((token + "\n").utf8), to: output)
-      do {
-        try tokens.replace(with: data)
-      } catch {
-        unlink(output.path)
-        throw error
-      }
+      try deliver(token) { try tokens.replace(with: data) }
       return Self.summary(record, redemption: nil)
+    }
+  }
+
+  static func validateName(_ name: String) throws {
+    guard GatewayDocument.isName(name) else {
+      throw RuntimeError(
+        .invalidRequest,
+        "--name must be 1-128 characters: letters, digits, '.', '_', '@' or '-', starting with a letter or digit"
+      )
+    }
+  }
+
+  static func validateLifetime(expiresAt: Date, now: Date) throws {
+    let lifetime = expiresAt.timeIntervalSince(now)
+    guard lifetime >= TimeInterval(Self.lifetimes.lowerBound),
+      lifetime <= TimeInterval(Self.lifetimes.upperBound)
+    else {
+      throw RuntimeError(.invalidRequest, "A trust token expires in 1 minute to 30 days")
     }
   }
 
@@ -199,14 +249,8 @@ public struct TrustTokenStore: Sendable {
       info.st_mode & 0o022 == 0, info.st_size <= 65_536,
       let pem = try? String(contentsOf: url, encoding: .utf8)
     else { throw refused }
-    let blocks = pem.components(separatedBy: "-----BEGIN CERTIFICATE-----").dropFirst()
-    guard blocks.count == 1, let block = blocks.first,
-      let end = block.range(of: "-----END CERTIFICATE-----"),
-      let der = Data(
-        base64Encoded: String(block[..<end.lowerBound]), options: .ignoreUnknownCharacters),
-      SecCertificateCreateWithData(nil, der as CFData) != nil
-    else { throw refused }
-    return GatewayDocument.sha256Hex(data: der)
+    guard let fingerprint = pemCertificateFingerprint(pem) else { throw refused }
+    return fingerprint
   }
 
   static func validateAddresses(_ addresses: [String]) throws {
@@ -256,6 +300,8 @@ public struct TrustTokenStore: Sendable {
       && (record["restricted"] == nil || record["restricted"] as? Bool == false)
       && (record["projects"] == nil || (record["projects"] as? [Any])?.isEmpty == true)
       && (record["type"] == nil || record["type"] as? String == "client")
+      && (record["client_fingerprint"] == nil
+        || GatewayDocument.isHex64(record["client_fingerprint"]))
   }
 
   @Sendable static func isRedemption(_ record: [String: Any]) -> Bool {

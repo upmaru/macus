@@ -407,3 +407,53 @@ private func hex256(_ text: String) -> String {
   #expect(object["expires_at"] as? String == "2026-11-17T12:00:00Z")
   #expect(!token.contains("\n") && !token.contains("-") && !token.contains("_"))
 }
+
+@Test func boundTokensCarryTheClientFingerprintAndAreNeverWritten() throws {
+  let fixture = try TrustFixture()
+  defer { fixture.remove() }
+  let client = String(repeating: "c", count: 64)
+  let now = Date(timeIntervalSince1970: 1_800_000_000)
+  let issued = try fixture.store.issueBound(
+    name: "incus-remote-macus", addresses: ["127.0.0.1:8443"],
+    serverFingerprint: gatewayFingerprint, clientFingerprint: client,
+    expiresAt: now.addingTimeInterval(300), now: now)
+
+  let data = try #require(Data(base64Encoded: issued.token))
+  let token = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+  #expect(Set(token.keys) == ["client_name", "fingerprint", "addresses", "secret", "expires_at"])
+  #expect(token["fingerprint"] as? String == gatewayFingerprint)
+  #expect(token["addresses"] as? [String] == ["127.0.0.1:8443"])
+  let secret = try #require(token["secret"] as? String)
+
+  let records = try fixture.records()
+  #expect(records.count == 1)
+  #expect(records[0]["id"] as? String == issued.summary.id)
+  #expect(records[0]["client_fingerprint"] as? String == client)
+  #expect(records[0]["verifier"] as? String == hex256(secret))
+  #expect(!(try String(contentsOf: fixture.store.file, encoding: .utf8)).contains(secret))
+  #expect(
+    try FileManager.default.contentsOfDirectory(atPath: fixture.outputs.path) == ["gateway.crt"])
+  // Listing and revocation treat it like any other token.
+  #expect(try fixture.store.list().map(\.id) == [issued.summary.id])
+  #expect(try fixture.store.revoke(id: issued.summary.id).alreadyRevoked == false)
+
+  #expect(throws: RuntimeError.self) {
+    try fixture.store.issueBound(
+      name: "incus-remote-macus", addresses: ["127.0.0.1:8443"],
+      serverFingerprint: gatewayFingerprint, clientFingerprint: "LAPTOP",
+      expiresAt: now.addingTimeInterval(300), now: now)
+  }
+  #expect(try fixture.records().count == 1)
+}
+
+@Test func aMalformedBoundFingerprintMakesTheStoreUnusable() throws {
+  let fixture = try TrustFixture()
+  defer { fixture.remove() }
+  let summary = try fixture.issue()
+  var records = try fixture.records()
+  records[0]["client_fingerprint"] = "LAPTOP"
+  try JSONSerialization.data(withJSONObject: ["schema_version": 1, "tokens": records])
+    .write(to: fixture.store.file)
+  #expect(throws: RuntimeError.self) { try fixture.store.list() }
+  #expect(throws: RuntimeError.self) { try fixture.store.revoke(id: summary.id) }
+}

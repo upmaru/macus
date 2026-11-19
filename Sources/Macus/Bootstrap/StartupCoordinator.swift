@@ -140,15 +140,18 @@ private final class StartContext: @unchecked Sendable {
         "Incus CLI was not found on PATH and Homebrew is not installed. Install Homebrew from https://brew.sh, then rerun macus start. macus does not install Homebrew or use sudo."
       )
     case .executable(let path):
-      let socket = request.stateDirectory.appendingPathComponent("incus.sock").path
-      if try await client.conflictingRemote(
-        executable: path, remote: request.remote, socketPath: socket, timeout: request.timeout,
+      // The server publishes its endpoint only once it runs; until then its configured URL is
+      // the address the remote will name.
+      let url =
+        (try? GatewayEndpoint.discover(stateDirectory: request.stateDirectory).url.absoluteString)
+        ?? (try? GatewayConfigurationStore(stateDirectory: request.stateDirectory).show())?
+        .configuration.effectiveURL ?? GatewayConfiguration().effectiveURL
+      if let conflict = try await client.existingRemoteConflict(
+        executable: path, remote: request.remote, url: url, timeout: request.timeout,
         deadline: budget.deadline)
       {
         throw RuntimeError(
-          .conflict,
-          "Remote \(request.remote) already points at a different address. Choose another --remote. Existing remotes and runtime data were preserved."
-        )
+          .conflict, "\(conflict.message) Existing remotes and runtime data were preserved.")
       }
     case .homebrew:
       break
@@ -418,9 +421,6 @@ private final class StartContext: @unchecked Sendable {
   ) {
     emit(.clientSetup, .active)
     let status = try await statusObject(paths)
-    // The public status never names the private Incus socket. Until client setup registers the
-    // HTTPS server, the remote still uses this state's own socket.
-    let socket = paths.incusSocket.path
     guard jsonString(status["state"]) == "ready" else {
       throw RuntimeError(
         .unavailable,
@@ -436,10 +436,11 @@ private final class StartContext: @unchecked Sendable {
         }),
       environment: request.environment)
     do {
+      let endpoint = try GatewayEndpoint.discover(stateDirectory: paths.directory)
       let result = try await service.register(
         remote: request.remote, setDefault: request.setDefault,
-        incusOverride: request.incusOverride,
-        socketPath: socket, timeout: request.timeout, deadline: budget.deadline)
+        incusOverride: request.incusOverride, endpoint: endpoint,
+        stateDirectory: paths.directory, timeout: request.timeout, deadline: budget.deadline)
       let directory = URL(fileURLWithPath: result.executable).deletingLastPathComponent().path
       let guidance =
         result.onPath

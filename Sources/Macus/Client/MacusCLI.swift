@@ -189,8 +189,9 @@ public enum MacusCLI {
     The outer runtime is the Apple VZ appliance. runtime commands and doctor use
     the existing control API and never install software or boot implicitly.
     Workload operations belong to the standard incus client. client setup registers
-    that client against the ready runtime socket. The default remote name is
-    \(defaultRemoteName). --set-default is required to change the selected default.
+    that client with the server's HTTPS endpoint and enrolls its certificate. The default
+    remote name is \(defaultRemoteName). Existing remotes are never changed, and
+    --set-default is required to change the selected default.
     If incus is not on PATH, setup installs the official Homebrew formula incus
     when Homebrew is already installed. It does not install Homebrew.
 

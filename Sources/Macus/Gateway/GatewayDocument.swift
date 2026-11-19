@@ -23,6 +23,8 @@ struct GatewayDocument: Sendable {
   let collection: String
   let maxRecords: Int
   let isRecord: @Sendable ([String: Any]) -> Bool
+  /// The field that identifies a record, unique within the store.
+  var idKey = "id"
 
   var gatewayDirectory: URL {
     stateDirectory.appendingPathComponent("server", isDirectory: true)
@@ -81,7 +83,7 @@ struct GatewayDocument: Sendable {
     var records: [[String: Any]] = []
     for entry in raw {
       guard let record = entry as? [String: Any], isRecord(record),
-        let id = record["id"] as? String, ids.insert(id).inserted
+        let id = record[idKey] as? String, ids.insert(id).inserted
       else { throw preserved("The \(label) has a malformed or duplicate record") }
       records.append(record)
     }

@@ -11,6 +11,24 @@ protocol LocalCommandRunner: Sendable {
   func run(
     executable: String, arguments: [String], environment: [String: String], timeout: Int
   ) async throws -> LocalCommandResult
+
+  /// Runs with `input` as the child's entire standard input (closed after it), or with the
+  /// inherited standard input when `input` is nil.
+  func run(
+    executable: String, arguments: [String], environment: [String: String], timeout: Int,
+    input: Data?
+  ) async throws -> LocalCommandResult
+}
+
+extension LocalCommandRunner {
+  /// Scripted runners that do not model standard input ignore it.
+  func run(
+    executable: String, arguments: [String], environment: [String: String], timeout: Int,
+    input: Data?
+  ) async throws -> LocalCommandResult {
+    try await run(
+      executable: executable, arguments: arguments, environment: environment, timeout: timeout)
+  }
 }
 
 /// Runs one child with fixed arguments and bounded, nonblocking pipe reads.
@@ -20,6 +38,16 @@ struct ProcessCommandRunner: LocalCommandRunner {
   func run(
     executable: String, arguments: [String], environment: [String: String], timeout: Int
   ) async throws -> LocalCommandResult {
+    try await run(
+      executable: executable, arguments: arguments, environment: environment, timeout: timeout,
+      input: nil)
+  }
+
+  func run(
+    executable: String, arguments: [String], environment: [String: String], timeout: Int,
+    input: Data?
+  ) async throws -> LocalCommandResult {
+    precondition((input?.count ?? 0) <= 16_384, "standard input must fit the pipe buffer")
     try Task.checkCancellation()
     let deadline = ContinuousClock.now.advanced(by: .seconds(timeout))
     let process = Process()
@@ -30,6 +58,8 @@ struct ProcessCommandRunner: LocalCommandRunner {
     let error = Pipe()
     process.standardOutput = output
     process.standardError = error
+    let feed = input.map { _ in Pipe() }
+    if let feed { process.standardInput = feed }
     defer {
       // Foundation's waitUntilExit can block forever after the termination
       // notification is lost. Reap only this recorded PID, and never kill a
@@ -39,6 +69,8 @@ struct ProcessCommandRunner: LocalCommandRunner {
       try? error.fileHandleForReading.close()
       try? output.fileHandleForWriting.close()
       try? error.fileHandleForWriting.close()
+      try? feed?.fileHandleForWriting.close()
+      try? feed?.fileHandleForReading.close()
     }
     try makeNonblocking(output.fileHandleForReading.fileDescriptor)
     try makeNonblocking(error.fileHandleForReading.fileDescriptor)
@@ -47,6 +79,14 @@ struct ProcessCommandRunner: LocalCommandRunner {
     }
     try? output.fileHandleForWriting.close()
     try? error.fileHandleForWriting.close()
+    if let feed, let input {
+      // A small input fits the pipe buffer, so this write cannot block on the child, and a child
+      // that already exited is a write error rather than SIGPIPE.
+      _ = fcntl(feed.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
+      try? feed.fileHandleForReading.close()
+      try? feed.fileHandleForWriting.write(contentsOf: input)
+      try? feed.fileHandleForWriting.close()
+    }
     var stdout = Data()
     var stderr = Data()
     while true {

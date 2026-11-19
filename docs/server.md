@@ -118,6 +118,14 @@ unredeemed tokens. Enrolled certificates are managed with the standard
 `--server-certificate` is the gateway certificate clients pin: the operator
 certificate, or `<state-dir>/server/gateway.crt` for the generated identity.
 
+`macus client setup` enrolls the local incus client the same way without an
+output file. It issues a five-minute token bound to the SHA-256 fingerprint of
+the certificate `incus remote get-client-certificate` reports, and passes the
+token to `incus remote add`. The server refuses a bound token from any other
+certificate, and does not consume it, so seeing that command line enrolls no
+one. A bound token whose certificate is already trusted succeeds without adding
+a duplicate entry.
+
 ## Native Incus
 
 Native Incus clients use the same HTTPS listener as the runtime API and `/mcp`,

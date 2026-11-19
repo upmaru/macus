@@ -279,10 +279,12 @@ import os
     runner: runner,
     streams: MacusStreams(writeOutput: { _ in }, writeError: { _ in }),
     environment: ["PATH": "/usr/bin:/bin", "MACUS_BREW_FALLBACK": "0"])
+  let state = try registrationState()
+  defer { try? FileManager.default.removeItem(at: state) }
   do {
     _ = try await service.register(
       remote: "macus", setDefault: false, incusOverride: "/usr/bin/true",
-      socketPath: "/private/tmp/probe.sock", timeout: 5,
+      endpoint: fixtureEndpoint, stateDirectory: state, timeout: 5,
       deadline: started.advanced(by: .seconds(2)))
     Issue.record("client registration reset the start deadline")
   } catch let error as RuntimeError {
@@ -296,7 +298,7 @@ import os
   let preserved = BudgetRunner(delayMilliseconds: 40, mode: .incus)
   let setup = try await serviceWith(preserved).register(
     remote: "macus", setDefault: false, incusOverride: "/usr/bin/true",
-    socketPath: "/private/tmp/probe.sock", timeout: 5, deadline: nil)
+    endpoint: fixtureEndpoint, stateDirectory: state, timeout: 5, deadline: nil)
   #expect(setup.connected)
   #expect(preserved.timeouts.count >= 3)
   #expect(preserved.timeouts.allSatisfy { $0 == 5 })
@@ -396,6 +398,18 @@ import os
   #expect(try Data(contentsOf: plist) == matching)
 }
 
+private let fixtureEndpoint = GatewayEndpoint(
+  url: URL(string: "https://127.0.0.1:8443")!, fingerprint: FixtureCertificate.server.fingerprint,
+  token: ScriptedGateway.token)
+
+/// An empty owner-private state directory for a registration to issue its token into.
+private func registrationState() throws -> URL {
+  let state = URL(fileURLWithPath: "/tmp/macus-reg-\(UUID().uuidString.prefix(8))")
+  try FileManager.default.createDirectory(
+    at: state, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+  return state
+}
+
 private func serviceWith(_ runner: BudgetRunner) -> IncusClientService {
   IncusClientService(
     runner: runner,
@@ -445,34 +459,11 @@ struct StartTools {
     let state = root.appendingPathComponent("incus.json")
     let initial: [String: Any] = ["default": "local", "remotes": remotes]
     try JSONSerialization.data(withJSONObject: initial).write(to: state)
-    let script = """
-      #!/usr/bin/python3
-      import json, os, sys
-      path = os.environ["MACUS_FIXTURE_STATE"]
-      state = json.load(open(path))
-      args = sys.argv[1:]
-      if args[:4] == ["remote", "list", "--format", "json"]:
-          print(json.dumps({name: {"Addrs": addrs} for name, addrs in state["remotes"].items()}))
-      elif args == ["remote", "get-default"]:
-          print(state["default"])
-      elif len(args) == 4 and args[:2] == ["remote", "add"]:
-          state["remotes"][args[2]] = [args[3]]
-      elif len(args) == 3 and args[:2] == ["remote", "switch"]:
-          state["default"] = args[2]
-      elif len(args) == 2 and args[0] == "list":
-          name = args[1][:-1]
-          if name not in state["remotes"]:
-              sys.exit(1)
-      else:
-          sys.exit(2)
-      json.dump(state, open(path, "w"))
-      """
-    try script.write(to: URL(fileURLWithPath: incus), atomically: true, encoding: .utf8)
-    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: incus)
+    try writeFakeIncus(to: incus)
     environment = [
       "PATH": "/usr/bin:/bin", "MACUS_BREW_FALLBACK": "0", "MACUS_FIXTURE_STATE": state.path,
       "INCUS_CONF": root.appendingPathComponent("conf").path,
-    ]
+    ].merging(try fakeIncusCertificates(in: root)) { $1 }
   }
   func overrides(
     downloader: any ApplianceDownloader, launchControl: (any LaunchControl)? = nil,
@@ -536,6 +527,13 @@ private final class BudgetRunner: LocalCommandRunner, @unchecked Sendable {
       text = "local\n"
     } else if arguments == ["remote", "list", "--format", "json"] {
       text = "{}\n"
+    } else if arguments == ["remote", "get-client-certificate"] {
+      text = FixtureCertificate.client.pem
+    } else if arguments.first == "query" {
+      let object: [String: Any] = [
+        "auth": "trusted", "environment": ["certificate": FixtureCertificate.server.pem],
+      ]
+      text = String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
     } else {
       text = ""
     }

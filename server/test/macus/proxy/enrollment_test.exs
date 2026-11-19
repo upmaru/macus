@@ -295,6 +295,53 @@ defmodule Macus.Proxy.EnrollmentTest do
     assert {403, _, _} = enroll(context.laptop, issued.token)
   end
 
+  test "a token bound to a certificate is refused, unconsumed, for any other", context do
+    laptop = Trust.fingerprint(context.laptop.der)
+    issued = issue!(context, "incus-remote-macus", fields: %{"client_fingerprint" => laptop})
+
+    # Someone who saw the token on a command line presents their own certificate.
+    assert {403, _, _} = enroll(context.phone, issued.token)
+    assert redeemed(context.store) == []
+    assert fingerprints(context.store) == [Trust.fingerprint(context.admin.der)]
+
+    # The owner's client still redeems it, once.
+    assert {200, _, _} = enroll(context.laptop, issued.token)
+    assert redeemed(context.store) == [{issued.id, laptop}]
+    assert {403, _, _} = enroll(context.phone, issued.token)
+    refute_received {:backend, _, _}
+  end
+
+  test "a bound token for an already trusted certificate succeeds without a duplicate",
+       context do
+    admin = Trust.fingerprint(context.admin.der)
+    issued = issue!(context, "incus-remote-desk", fields: %{"client_fingerprint" => admin})
+
+    assert {:ok, ^admin} =
+             Enrollment.redeem(
+               context.store,
+               issued.secret,
+               context.admin.der,
+               DateTime.utc_now()
+             )
+
+    assert fingerprints(context.store) == [admin]
+    assert redeemed(context.store) == [{issued.id, admin}]
+  end
+
+  test "a malformed bound fingerprint makes the store unusable", context do
+    issued = issue!(context, "laptop", fields: %{"client_fingerprint" => "LAPTOP"})
+
+    assert {:error, 503} =
+             Enrollment.redeem(
+               context.store,
+               issued.secret,
+               context.laptop.der,
+               DateTime.utc_now()
+             )
+
+    assert redeemed(context.store) == []
+  end
+
   test "restricted, project and token-issuing requests are refused before redemption",
        context do
     issued = issue!(context, "laptop")

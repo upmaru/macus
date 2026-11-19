@@ -5,32 +5,24 @@ import Testing
 
 @testable import Macus
 
-@Test func socketAliasIsNotARemoteConflict() throws {
-  let root = URL(fileURLWithPath: "/tmp/macus-alias-\(UUID().uuidString.prefix(8))")
-  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-  defer { try? FileManager.default.removeItem(at: root) }
-  let endpoint = root.appendingPathComponent("incus.sock")
-  let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
-  #expect(descriptor >= 0)
-  defer { _ = Darwin.close(descriptor) }
-  var address = sockaddr_un()
-  address.sun_family = sa_family_t(AF_UNIX)
-  address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
-  let bytes = Array(endpoint.path.utf8) + [0]
-  withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: bytes) }
-  let bound = withUnsafePointer(to: &address) {
-    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-      Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
-    }
+@Test func remoteServerAddressesCompareByHostAndPort() throws {
+  let loopback = try #require(RemoteServer("https://127.0.0.1:8443"))
+  #expect(RemoteServer("https://127.0.0.1:8443/") == loopback)
+  #expect(RemoteServer("https://127.0.0.1") == loopback)
+  #expect(RemoteServer("https://127.0.0.1:9443") != loopback)
+  #expect(loopback.address == "https://127.0.0.1:8443")
+  #expect(loopback.authority == "127.0.0.1:8443")
+  #expect(
+    RemoteServer("https://Macus.Example.NET:8443") == RemoteServer("https://macus.example.net"))
+  let v6 = try #require(RemoteServer("https://[::1]:8443"))
+  #expect(v6.authority == "[::1]:8443")
+  #expect(v6.address == "https://[::1]:8443")
+  for refused in [
+    "unix:/tmp/incus.sock", "unix://", "http://127.0.0.1:8443", "https://u@127.0.0.1:8443",
+    "https://127.0.0.1:8443/path", "https://127.0.0.1:8443?q=1",
+  ] {
+    #expect(RemoteServer(refused) == nil, "\(refused)")
   }
-  #expect(bound == 0)
-  let alias = endpoint.path.replacingOccurrences(of: "/private/tmp/", with: "/tmp/")
-  #expect(addressesMatch(["unix:\(endpoint.path)"], alias))
-  #expect(!addressesMatch(["unix:/tmp/elsewhere.sock"], endpoint.path))
-  let absent = root.appendingPathComponent("missing.sock")
-  let absentAlias = absent.path.replacingOccurrences(of: "/private/tmp/", with: "/tmp/")
-  #expect(addressesMatch(["unix:\(absent.path)"], absentAlias))
-  #expect(!FileManager.default.fileExists(atPath: absent.path))
 }
 
 @Test func startupBudgetIsSharedAndCancellationDoesNotResetIt() throws {

@@ -318,7 +318,7 @@ final class FakeServerProbe: ServerProbe, GatewayTransport, @unchecked Sendable 
       return url
     }
     try writeEndpointMetadata(
-      directory: directory, url: url, fingerprint: String(repeating: "0", count: 64))
+      directory: directory, url: url, fingerprint: FixtureCertificate.server.fingerprint)
   }
 
   func request(

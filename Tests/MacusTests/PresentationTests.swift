@@ -222,7 +222,7 @@ import Testing
   let client = StartCapture()
   HumanPresentation(streams: client.streams, environment: [:]).client(
     IncusSetupResult(
-      address: "unix:/tmp/macus-demo/incus.sock", connected: true, isDefault: false,
+      address: "https://127.0.0.1:8443", connected: true, isDefault: false,
       executable: "/opt/homebrew/bin/incus", installed: false, remote: "macus", onPath: true))
   #expect(docs.contains(client.output.trimmingCharacters(in: .newlines)))
   let temporary = "/tmp/macus-grammar-" + String(UUID().uuidString.prefix(8))
