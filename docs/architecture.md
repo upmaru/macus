@@ -49,7 +49,9 @@ repository. See [the shared Incus client](incus-client.md).
 The Macus-owned `Macus.Runtime.Client` now provides passive private Unix HTTP
 requests to Swift, with native errors/budget payloads and bounded framing,
 deadlines and socket ownership checks. It is independent of the shared Incus
-client. The authenticated public routes are still pending implementation.
+client. The authenticated public `/runtime` routes use it as their only path
+to Swift's control socket; native Incus traffic uses the separate relay to
+`incus.sock`.
 
 `/mcp` is mounted: the TamaMCP Streamable HTTP transport serves
 `Macus.MCP.Server` (`search` and `execute`, synchronous, no task capability)
@@ -69,19 +71,30 @@ configured Swift/Incus backend. Local startup will remain usable without
 enrollment or central availability. Disconnect will disable central dispatch
 without stopping the VM or deleting workloads/credentials/task receipts.
 
-One passive package will install Swift at `bin/macus` and a matching
-bundled-ERTS Mix release at `libexec/macus`. `macus start` will activate both
-per-user jobs inside the existing startup deadline. See the
-[approved design](../openspec/changes/add-elixir-server/design.md).
-Implementation progress is recorded in its tasks: the scaffold currently
-starts without a listener, and the installed CLI/packaging still use the
-Swift-only baseline below until their integration tasks are complete.
+The `macus` CLI is a client of the public endpoint. `runtime`, `doctor`,
+client-setup readiness and every lifecycle, progress and health request of
+`macus start` use the pinned HTTPS `/runtime` API with the local CLI
+credential, never `runtime.sock`. `macus client setup` registers the standard
+Incus client with the HTTPS endpoint and enrolls its certificate. `macus start`
+reads `runtime.sock` only to recognize a Swift daemon that is already serving
+while it activates the jobs. It activates two per-user launchd jobs inside one
+startup deadline: `com.upmaru.macus` (Swift) and `com.upmaru.macus.server`
+(the release). It first checks that the release is paired with the executable
+by version, source revision and `opsmaru_incus` version. `:opsmaru_incus` is
+part of that release, so it needs no install, job or activation of its own.
 
-## Integrated Swift baseline
+Packaging has not caught up yet. One passive package will install Swift at
+`bin/macus` and a matching bundled-ERTS Mix release at `libexec/macus`; until
+then source installation stages only Swift, and `macus start` refuses with
+`invalid_configuration` before downloading or activating anything. See the
+[approved design](../openspec/changes/add-elixir-server/design.md) and its
+tasks.
+
+## Swift runtime service
 
 ```text
 macOS
-  ├─ macus (this package) → runtime.sock lifecycle and standard incus CLI setup
+  ├─ Macus server (Elixir, above) → authenticated runtime.sock requests and incus.sock relay
   ├─ Unix HTTP runtime.sock → runtime actor → main-actor VZ controller
   └─ Unix stream incus.sock → flow-controlled relay → VZ virtio socket
                                               ↓ host CID 2 only
@@ -92,10 +105,10 @@ macOS
                                          └─ Incus workloads and portable artifacts
 ```
 
-SwiftPM has one `Macus` library and one minimal `macus` executable dispatching daemon and client commands. Client code lives in `Sources/Macus/Client`; VM construction remains in the Virtualization area and is reached only through explicit serve mode. Instance operations stay in the standard Incus CLI. `Application` owns state and orchestration for the outer VM; `Virtualization` is the only area importing Apple's VZ framework. A protocol at that boundary permits deterministic tests. Configuration/status are Sendable value types. The runtime actor holds a mutation gate across awaits, so reentrancy cannot delete or reconfigure a starting machine. VZ objects remain on the main actor and its default main dispatch queue; blocking socket I/O runs on a concurrent GCD queue with immutable descriptor ownership. Stream relays use bounded buffers and preserve half-close and protocol upgrades. Because one blocked vsock descriptor stalls the whole Virtualization.framework socket device, the host always drains guest streams. Per-connection credit bounds that buffering; appliances whose guest bridge predates the flow relay must be recreated (see [development](development.md)).
+The sockets are the server's private backend; clients reach them only through the public endpoint. SwiftPM has one `Macus` library and one minimal `macus` executable dispatching daemon and client commands. Client code lives in `Sources/Macus/Client`; VM construction remains in the Virtualization area and is reached only through explicit serve mode. Instance operations stay in the standard Incus CLI. `Application` owns state and orchestration for the outer VM; `Virtualization` is the only area importing Apple's VZ framework. A protocol at that boundary permits deterministic tests. Configuration/status are Sendable value types. The runtime actor holds a mutation gate across awaits, so reentrancy cannot delete or reconfigure a starting machine. VZ objects remain on the main actor and its default main dispatch queue; blocking socket I/O runs on a concurrent GCD queue with immutable descriptor ownership. Stream relays use bounded buffers and preserve half-close and protocol upgrades. Because one blocked vsock descriptor stalls the whole Virtualization.framework socket device, the host always drains guest streams. Per-connection credit bounds that buffering; appliances whose guest bridge predates the flow relay must be recreated (see [development](development.md)).
 
 EFI boots an ARM64 raw root disk. The default catalog pins a published LTS disk built with signed Alpine stable-branch APK packages. OpenRC and cloud-init verify the seeded image identity, installed package manifest and booted kernel before provisioning storage. Storage mounts before Incus, and the host-CID-only helper starts after successful initialization. D-Bus, nftables, cgroup v2 and ARM64 QEMU/firmware are explicit guest dependencies. Virtio devices provide block storage, NAT, socket, entropy and explicit optional filesystem shares. Root is copied and expanded to at least 12 GiB. Fresh blank data disks become one ZFS pool, `tama-data`, with metadata at `/var/lib/incus` and workloads owned by Incus. Recognized ext4 disks keep directory storage. Unknown nonblank data is refused and readiness stays withheld.
 
 VZ host capability detection controls nested virtualization. Live guest evidence controls Incus readiness, OCI (`instance_oci` extension) and VM (`/dev/kvm` plus enabled host nesting) availability. Incus itself owns inner QEMU/KVM, LXC, images, instances, storage, network bridges, profiles and migrations. The macOS process invokes no VM CLI. The guest helper has no shell-command endpoint.
 
-The detailed decisions, rejected alternatives, normative requirements and recorded acceptance tasks are in [the OpenSpec change](../openspec/changes/archive/2026-10-04-native-incus-runtime/design.md). `macus start` acquires the pinned catalog image and may activate a per-user service. Automatic root-image upgrades, signed/notarized distribution, service forwarding, custom DNS, memory ballooning and sleep/resume policy remain future work. These features do not replace Incus workload operations.
+The detailed decisions, rejected alternatives, normative requirements and recorded acceptance tasks are in [the OpenSpec change](../openspec/changes/archive/2026-10-04-native-incus-runtime/design.md). `macus start` acquires the pinned catalog image and may activate the per-user runtime and server jobs. Automatic root-image upgrades, signed/notarized distribution, service forwarding, custom DNS, memory ballooning and sleep/resume policy remain future work. These features do not replace Incus workload operations.

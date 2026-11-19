@@ -1,6 +1,6 @@
 # Local API contract
 
-The bundled `macus` client calls the [public runtime API](#public-runtime-api) over the Macus server's pinned HTTPS endpoint for `runtime`, `doctor`, setup readiness and every lifecycle, progress and health request of `macus start`, reads the control socket only to identify an already-serving daemon while `macus start` activates the service, and can register `incus.sock` with the standard Incus CLI. See [the CLI reference](cli.md). It does not add daemon routes or implement workload operations. The daemon serves two owner-only Unix sockets in its state directory, default `~/.tama/incus-mac`. `runtime.sock` controls the outer VM. `incus.sock` carries unmodified Incus HTTP, WebSockets, exec, events and streaming operations. Possession of either socket grants privileged control of the Linux appliance; run clients as the same macOS user. No TCP listener or SSH is used.
+The bundled `macus` client calls the [public runtime API](#public-runtime-api) over the Macus server's pinned HTTPS endpoint for `runtime`, `doctor`, setup readiness and every lifecycle, progress and health request of `macus start`, reads the control socket only to identify an already-serving daemon while `macus start` activates the services, and registers the standard Incus CLI with the server's HTTPS endpoint. See [the CLI reference](cli.md). It does not add daemon routes or implement workload operations. Behind the server, the Swift daemon serves two owner-only Unix sockets in its state directory, default `~/.tama/incus-mac`. `runtime.sock` controls the outer VM ([private runtime API](#private-runtime-api-v1)). `incus.sock` carries unmodified Incus HTTP, WebSockets, exec, events and streaming operations. They are the server's backend, not a client interface. Possession of either socket grants privileged control of the Linux appliance, so keep them owner-only. The daemon opens no TCP listener and no SSH is used; the server's HTTPS gateway, on loopback by default, is the only listener.
 
 ## Public runtime API
 
@@ -120,23 +120,29 @@ Error envelope: `{"error":{"code":"conflict","message":"A runtime mutation is al
 
 ## tama-machine integration
 
-On Linux, connect directly to native Incus. On macOS, start the service if necessary, read capabilities/status, create with the appliance configuration if absent, start, then connect to the returned `incus_socket` with a Unix HTTP transport. Existing Incus SDKs can use the socket unchanged. Do not create a second workload API.
+On Linux, connect directly to native Incus. On macOS, run `macus start` (or rely on its launchd jobs), then use the server's public endpoint from `server/endpoint.json` and pin its `certificate_fingerprint`. Read capabilities and status, create with the appliance configuration if absent and start, all through the [public runtime API](#public-runtime-api) with a bearer token of the right scopes. Then talk to `incus_endpoint` as an ordinary HTTPS Incus server with a client certificate the gateway trusts. Existing Incus SDKs work unchanged. Do not create a second workload API, and do not connect to the private sockets.
 
 ```sh
 STATE="$HOME/.tama/incus-mac"
-curl --unix-socket "$STATE/runtime.sock" http://localhost/v1/runtime/status
-curl --unix-socket "$STATE/runtime.sock" -H 'Content-Type: application/json' \
-  --data-binary @/absolute/appliance/config.json http://localhost/v1/runtime/create
-curl --unix-socket "$STATE/runtime.sock" -X POST http://localhost/v1/runtime/start
-curl --unix-socket "$STATE/incus.sock" http://localhost/1.0
+macus server token issue --principal tama --scope runtime.read --scope runtime.write \
+  --expires-in 30d --output /Users/me/tama.token
+TOKEN="$(cat /Users/me/tama.token)"
+curl --cacert "$STATE/server/gateway.crt" -H "Authorization: Bearer $TOKEN" \
+  https://127.0.0.1:8443/runtime/status
+curl --cacert "$STATE/server/gateway.crt" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data-binary @/absolute/appliance/config.json https://127.0.0.1:8443/runtime/create
+curl --cacert "$STATE/server/gateway.crt" -H "Authorization: Bearer $TOKEN" \
+  -X POST -d '{"remaining_seconds":600}' https://127.0.0.1:8443/runtime/start
 ```
 
-Configure a standard Unix remote for the macOS Incus CLI, which has no implicit local server. Use a dedicated `INCUS_CONF` directory for test clients:
+`--cacert` works for the generated default identity; with an operator certificate, verify the fingerprint from `server/endpoint.json` instead. Register the macOS Incus CLI, which has no implicit local server, with `macus client setup`. It adds an HTTPS remote for the endpoint, enrolls the client certificate with a bound single-use token and changes the default remote only with `--set-default`. Use a dedicated `INCUS_CONF` directory for test clients:
 
 ```sh
-incus remote add macus "unix:$STATE/incus.sock"
-incus remote switch macus
+macus client setup --remote macus --set-default
 incus list
 ```
+
+Another machine enrolls with a token from `macus server trust token issue` and plain `incus remote add` (see [the Macus server](server.md)). A remote that still points at `unix:$STATE/incus.sock` from before the server is reported as a conflict, not changed; remove it with `incus remote remove NAME` or choose another `--remote`.
 
 The runtime performs no instance/image/profile/project/network/storage/remote/transfer translations. Standard Incus artifacts remain portable to remote Incus hosts.

@@ -181,13 +181,13 @@ public enum MacusCLI {
       --timeout SECONDS           Set a bounded deadline.
 
     start is the high-level first-use command. It prepares the pinned appliance,
-    activates a per-user background service when needed, creates an absent runtime,
-    waits for live Incus readiness, and registers the standard incus client. It does
-    not install Homebrew or require sudo. serve, runtime, doctor and client setup remain
+    activates the per-user runtime and server jobs when needed, creates an absent
+    runtime, waits for live Incus readiness, and registers the standard incus client.
+    It does not install Homebrew or require sudo. serve, runtime, doctor and client setup remain
     explicit lower-level commands and do not download an appliance or activate a service.
 
     The outer runtime is the Apple VZ appliance. runtime commands and doctor use
-    the existing control API and never install software or boot implicitly.
+    the Macus server's pinned HTTPS endpoint and never install software or boot implicitly.
     Workload operations belong to the standard incus client. client setup registers
     that client with the server's HTTPS endpoint and enrolls its certificate. The default
     remote name is \(defaultRemoteName). Existing remotes are never changed, and
