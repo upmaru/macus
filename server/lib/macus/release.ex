@@ -37,6 +37,39 @@ defmodule Macus.Release do
   @doc "The line `env.sh` must carry to keep distribution off."
   def distribution_line, do: @distribution
 
+  @doc """
+  Release step, after `:assemble` and before `write_manifest/1`: bundles
+  the cassette at `MACUS_CASSETTE_PATH`, when that is set, as the only file
+  in `macus`'s `priv/cassettes/`, replacing whatever the assembly copied
+  from `server/priv/cassettes`. The file must be a regular file named for
+  the locked version (`Macus.Build.cassette_file/0`), so a cassette for
+  another `opsmaru_incus` version fails the build. Unset, the assembled
+  cassette stays and `write_manifest/1` checks it. `:source` overrides the
+  environment (for tests).
+  """
+  @spec bundle_cassette(Mix.Release.t() | map(), keyword()) :: Mix.Release.t() | map()
+  def bundle_cassette(%{path: path} = release, opts \\ []) do
+    case Keyword.get_lazy(opts, :source, fn -> System.get_env("MACUS_CASSETTE_PATH") end) do
+      source when source in [nil, ""] ->
+        release
+
+      source ->
+        file = Macus.Build.cassette_file()
+
+        unless Path.basename(source) == file and
+                 match?({:ok, %File.Stat{type: :regular}}, File.lstat(source)),
+               do:
+                 Mix.raise("MACUS_CASSETTE_PATH must name a regular file #{file}, not #{source}")
+
+        {:ok, [app]} = matching(Path.join(path, "lib"), "macus-")
+        dir = Path.join([path, "lib", app, "priv", "cassettes"])
+        File.rm_rf!(dir)
+        File.mkdir_p!(dir)
+        File.cp!(source, Path.join(dir, file))
+        release
+    end
+  end
+
   @doc "Release step: verifies the release, then writes the build manifest (0444)."
   @spec write_manifest(Mix.Release.t() | map(), keyword()) :: Mix.Release.t() | map()
   def write_manifest(%{path: path} = release, opts \\ []) do

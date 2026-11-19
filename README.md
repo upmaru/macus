@@ -6,7 +6,7 @@ Requires Apple Silicon, macOS 15+ and Swift 6.4. SwiftPM builds one library (`Ma
 
 **Development status:** Installation is currently from source. Local prebuilt Homebrew candidates are documented in [Homebrew packaging](Packaging/homebrew/README.md). There is no published Macus Homebrew formula. `macus start` downloads and verifies the pinned Alpine appliance; it does not upgrade an existing root image or install Homebrew. Hardware results and distribution limitations are recorded in [the acceptance record](docs/acceptance.md).
 
-**Transition:** `macus start` now runs the Swift runtime service and the Elixir Macus server together, but no installer delivers the server release yet. `Packaging/install-local.sh` still installs only the Swift executable. Until it also stages the paired release at `<prefix>/libexec/macus` (the packaging tasks of the [add-elixir-server change](openspec/changes/add-elixir-server/tasks.md)), `macus start` stops with `invalid_configuration` and reinstall guidance before it downloads, activates or boots anything. The walkthroughs below assume a complete installation.
+**Transition:** `macus start` runs the Swift runtime service and the Elixir Macus server together. `Packaging/install-local.sh` installs both from source: the Swift executable at `<prefix>/bin/macus` and the paired server release at `<prefix>/libexec/macus`. A source build needs Swift and the mise-pinned Elixir/Erlang, plus the opsmaru_incus tama-dex cassette for the locked library version, downloaded and attestation-checked from its GitHub Release (the walkthroughs below show how). Homebrew delivery of the server release is still pending (the packaging tasks of the [add-elixir-server change](openspec/changes/add-elixir-server/tasks.md)). An installation without a paired release makes `macus start` stop with `invalid_configuration` and reinstall guidance before it downloads, activates or boots anything.
 
 Macus runs two per-user services. The Swift runtime service owns the VM and serves two private Unix sockets in the selected state directory (default `~/.tama/incus-mac`): `runtime.sock` for outer VM lifecycle and `incus.sock` for transparent Incus traffic over vsock. The Macus server publishes the one client endpoint, a pinned TLS 1.3 HTTPS gateway on `127.0.0.1:8443` by default. It carries the runtime API at `/runtime`, native Incus at `/1.0` and MCP at `/mcp`, and it reaches the private sockets only after authenticating the caller. The `macus` CLI and the standard Incus client both use that endpoint. Normal use needs no GUI or SSH. Instance/image/profile/project/network/storage/migration operations belong to Incus. See [the Macus server](docs/server.md).
 
@@ -34,6 +34,11 @@ Use a clean supported Mac or a new macOS account to exercise first-use prerequis
 export MACUS_TEST_ROOT="$(mktemp -d /private/tmp/macus-fresh.XXXXXX)"
 git clone --branch develop https://github.com/upmaru/macus.git "$MACUS_TEST_ROOT/src"
 cd "$MACUS_TEST_ROOT/src"
+mise trust && mise install
+locked="$(sed -n 's/.*"opsmaru_incus": {:hex, :opsmaru_incus, "\([^"]*\)".*/\1/p' server/mix.lock)"
+gh release download "v$locked" --repo upmaru/opsmaru-incus --dir server/priv/cassettes \
+  --pattern "opsmaru_incus-$locked.tama-cassette*"
+gh attestation verify "server/priv/cassettes/opsmaru_incus-$locked.tama-cassette" --repo upmaru/opsmaru-incus
 Packaging/install-local.sh --prefix "$MACUS_TEST_ROOT/install"
 export PATH="$MACUS_TEST_ROOT/install/bin:$PATH"
 export MACUS_STATE_DIR="$MACUS_TEST_ROOT/state"
@@ -54,7 +59,7 @@ The blocks below are the debug path. They are not required for `macus start`. Us
 Install Xcode with Swift 6.4, select that toolchain, and install [Homebrew](https://brew.sh). Image preparation needs Python 3.11+ and GnuPG. Reserve 4 GiB RAM for the guest and disk space for the downloaded image, a writable root of at least 12 GiB, and a 32 GiB sparse data disk. Internet access is required for downloads, guest package installation and workload images.
 
 ```sh
-brew install python gnupg
+brew install python gnupg mise gh
 swift --version
 python3 -c 'import sys; assert sys.version_info >= (3, 11), "Python 3.11+ required"'
 gpg --version
@@ -74,6 +79,11 @@ GitHub access to the repository is required. The short test path avoids Darwin's
 ### 2. Install and inspect the actual installed command
 
 ```sh
+mise trust && mise install
+locked="$(sed -n 's/.*"opsmaru_incus": {:hex, :opsmaru_incus, "\([^"]*\)".*/\1/p' server/mix.lock)"
+gh release download "v$locked" --repo upmaru/opsmaru-incus --dir server/priv/cassettes \
+  --pattern "opsmaru_incus-$locked.tama-cassette*"
+gh attestation verify "server/priv/cassettes/opsmaru_incus-$locked.tama-cassette" --repo upmaru/opsmaru-incus
 Packaging/install-local.sh --prefix "$MACUS_TEST_ROOT/install"
 command -v macus
 codesign --verify --strict "$MACUS_TEST_ROOT/install/bin/macus"

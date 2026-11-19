@@ -243,9 +243,53 @@ defmodule Macus.ReleaseTest do
     assert template |> String.split("\n") |> Enum.member?(Macus.Release.distribution_line())
   end
 
-  test "mix.exs bundles ERTS and runs the step after assembly" do
+  test "the selected cassette replaces the assembled one", ctx do
+    dir = Path.dirname(cassette_path(ctx.dir))
+    File.write!(Path.join(dir, "opsmaru_incus-0.0.1.tama-cassette"), "stale")
+    source = Path.join([ctx.dir, "input", Macus.Build.cassette_file()])
+    write(source, "selected cassette")
+    release = %{path: ctx.dir}
+
+    assert Macus.Release.bundle_cassette(release, source: source) == release
+    assert File.ls!(dir) == [Macus.Build.cassette_file()]
+    assert File.read!(cassette_path(ctx.dir)) == "selected cassette"
+    # The pin still decides: this cassette is not the pinned one.
+    assert {:error, message} = verify(ctx.dir)
+    assert message =~ "matching MACUS_CASSETTE_SHA256"
+
+    # Unset, the assembled cassette stays.
+    for unset <- [nil, ""] do
+      assert Macus.Release.bundle_cassette(release, source: unset) == release
+      assert File.read!(cassette_path(ctx.dir)) == "selected cassette"
+    end
+  end
+
+  test "a cassette for another version or a non-file is refused before bundling", ctx do
+    other = Path.join([ctx.dir, "input", "opsmaru_incus-0.0.1.tama-cassette"])
+    write(other, @cassette)
+    link = Path.join([ctx.dir, "link", Macus.Build.cassette_file()])
+    File.mkdir_p!(Path.dirname(link))
+    File.ln_s!(other, link)
+    directory = Path.join([ctx.dir, "directory", Macus.Build.cassette_file()])
+    File.mkdir_p!(directory)
+
+    for source <- [other, link, directory, Path.join(ctx.dir, Macus.Build.cassette_file())] do
+      assert_raise Mix.Error, ~r/MACUS_CASSETTE_PATH must name a regular file/, fn ->
+        Macus.Release.bundle_cassette(%{path: ctx.dir}, source: source)
+      end
+
+      assert File.read!(cassette_path(ctx.dir)) == @cassette
+    end
+  end
+
+  test "mix.exs bundles ERTS and runs the steps after assembly" do
     config = Mix.Project.config()[:releases][:macus]
     assert config[:include_erts] == true
-    assert config[:steps] == [:assemble, &Macus.Release.write_manifest/1]
+
+    assert config[:steps] == [
+             :assemble,
+             &Macus.Release.bundle_cassette/1,
+             &Macus.Release.write_manifest/1
+           ]
   end
 end

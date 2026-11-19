@@ -187,7 +187,32 @@ Revision 2026-11-12: `/mcp` advertises exactly two tools, `search` and `execute`
       - `tama-dex.sqlite3` holds `opsmaru_incus` (imported, 0.2.3, the pinned SHA-256) and `macus` (local);
       - SIGTERM exits 0 within the deadline, while a stand-in Swift process holding `runtime.sock` keeps running, and the runtime files, `gateway.crt`/`.key` and `gateway.json` are unchanged.
     - With the env.sh line removed, the smoke fails on `-sname macus`. This is release evidence, not hardware acceptance; adding the smoke to canonical checks and CI is 10.1.
-- [ ] 9.2 Extend source installation to stage/verify the Swift and complete Macus release artifacts; verify unsafe destinations, mismatched Macus identity and missing pinned dependency are rejected without activation.
+- [x] 9.2 Extend source installation to stage/verify the Swift and complete Macus release artifacts; verify unsafe destinations, mismatched Macus identity and missing pinned dependency are rejected without activation.
+  - Done 2026-11-20: Installer.
+    - `Packaging/install-local.sh` installs `<prefix>/bin/macus` and the bundled-ERTS release at `<prefix>/libexec/macus`. Options: `--prefix`, plus `--cassette` or `--release` (an assembled release), all absolute paths.
+    - Before building, it refuses:
+      - symlinked or wrong-type destinations (`bin`, `bin/macus`, `libexec`, `libexec/macus`), and an existing `libexec/macus` without `macus-build.json`, so only an earlier Macus release is ever replaced;
+      - a checkout without a git revision;
+      - a cassette that is missing, lacks its `.sha256` sidecar from the GitHub Release, does not match it, or is named for another opsmaru_incus version than `server/mix.lock` locks.
+    - One identity for both components: the `server/mix.exs` version and `HEAD`, with a warning for a dirty checkout. The Swift build links it into the executable's Info.plist (`-sectcreate __TEXT __info_plist`, `MacusVersion`/`MacusSourceRevision`, as `BuildIdentity` reads it). The release is built with `MIX_ENV=prod` and `MACUS_SOURCE_REVISION`, `MACUS_CASSETTE_SHA256` (from the sidecar) and `MACUS_CASSETTE_PATH`.
+    - New release step `Macus.Release.bundle_cassette/1`, between `:assemble` and `write_manifest/1`: it bundles `MACUS_CASSETTE_PATH` as the only cassette, refusing a non-regular file or another version's name. A stale cassette in `server/priv/cassettes` no longer reaches the release. 9.7 will set that path from the download.
+    - The staged executable (entitlement, embedded identity via `segedit`) and staged release are verified before the prefix changes, mirroring `ServerRelease.requirePaired`:
+      - a read-only schema 1 `macus-build.json` with the same version and revision;
+      - exactly the locked `opsmaru_incus` with its `.app`;
+      - the only cassette, at the recorded SHA-256 (and the sidecar pin when built here);
+      - one ERTS with `bin/erl`, the `bin/macus` launcher, and distribution off.
+    - The release replaces an earlier one by rename and the executable by `mv`; both are verified again in place, and `bin/macus version` runs. It never calls launchctl or creates state.
+    - `Integration/scripts/test-install.sh` (in `check.sh`) uses a fixture cassette and isolated prefixes. It covers:
+      - relative `--prefix`/`--cassette`/`--release`;
+      - eight unsafe destinations, including a foreign `libexec/macus` whose data is kept;
+      - four missing-cassette cases, each leaving the prefix empty;
+      - a complete install, checking the embedded identity, the manifest, the entitlement and presentation acceptance;
+      - prebuilt releases from another revision or missing the library or cassette, refused with nothing installed, and a refused reinstall leaving the installed files byte-identical;
+      - a reinstall that drops a stale file;
+      - an unchanged state sentinel, `~/.tama/incus-mac` and LaunchAgents listing.
+    - The "Swift and OpenSpec" CI job installs the mise-pinned Erlang/Elixir and Hex for it.
+    - Real-cassette check: the v0.2.4 asset matched its `.sha256` (`f7e69a35…35a5`), and its attestation verified against upmaru/opsmaru-incus `refs/tags/v0.2.4`. Installed from `cb4b277` with it, `release-smoke.py` passed on `<prefix>/libexec/macus`: 23 system-linked Mach-O files, one gateway listener, `opsmaru_incus` 0.2.4 imported, and SIGTERM exit 0.
+    - `macus start` against the installed pair was not run, because it activates launchd jobs (11.x hardware opt-in).
 - [ ] 9.3 Extend formula/candidate generation to include the shared dependency and full release; verify real contents/checksums, entitlement preservation and matched Macus revision plus distinct opsmaru-incus revision with existing candidate tests.
 - [ ] 9.4 Extend installed verification for full ERTS/library payload, stable opt paths and passive installation; verify no third service or host toolchain requirement and retain source-fallback versus poured-bottle evidence.
 - [ ] 9.5 Document stop/unload of the same two owned jobs and upgrade/rollback/removal; verify package fixtures retain disks and credentials.

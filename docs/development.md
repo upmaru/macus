@@ -174,8 +174,9 @@ Elixir/Erlang). It checks:
 
 It boots no VM. The integrated Homebrew candidate workflow
 is the packaging baseline, with real measured hashes and passive installation;
-see [candidate documentation](../Packaging/homebrew/README.md). Current
-installers still package Swift alone; staging the release is task 9.2.
+see [candidate documentation](../Packaging/homebrew/README.md). The source
+installer stages the release (below); the Homebrew candidate still packages
+Swift alone until task 9.3.
 
 ## Build and sign
 
@@ -196,13 +197,34 @@ VZ requires `com.apple.security.virtualization` on the daemon executable. Develo
 
 `macus` is the single command built by this SwiftPM package. `serve` runs the foreground daemon; runtime commands control the outer VM and client setup configures the standard Incus CLI. Workload commands belong to `incus`. Invocation and transport limits are in [the CLI reference](cli.md).
 
-Local source installation requires Swift. It builds the release executable, ad-hoc signs and verifies it, then installs it:
+Local source installation requires Swift and the mise-pinned Elixir/Erlang. It installs `<prefix>/bin/macus` and the paired server release at `<prefix>/libexec/macus`:
 
 ```sh
+locked="$(sed -n 's/.*"opsmaru_incus": {:hex, :opsmaru_incus, "\([^"]*\)".*/\1/p' server/mix.lock)"
+gh release download "v$locked" --repo upmaru/opsmaru-incus --dir server/priv/cassettes \
+  --pattern "opsmaru_incus-$locked.tama-cassette*"
+gh attestation verify "server/priv/cassettes/opsmaru_incus-$locked.tama-cassette" --repo upmaru/opsmaru-incus
 Packaging/install-local.sh --prefix /absolute/isolated/prefix
 ```
 
-The unified executable receives the virtualization entitlement for serve mode. The command does not create runtime state or install a launch agent. Ad-hoc development signatures are not notarized production artifacts. A future release package or formula must include macus and real checksums; none is published here.
+Before building anything, it refuses:
+
+- a relative path, a symlinked or non-file/non-directory destination, or an existing `<prefix>/libexec/macus` that is not a Macus release (it holds no `macus-build.json`);
+- a checkout without a git revision;
+- a missing pinned dependency: the cassette for the opsmaru_incus version `server/mix.lock` locks must be at `server/priv/cassettes/opsmaru_incus-<version>.tama-cassette`, or at the path given with `--cassette`, beside its `.sha256` from the same GitHub Release, and must match it.
+
+Both components get one identity: the version in `server/mix.exs` and the checkout's `HEAD`. A checkout with uncommitted changes gets a warning, because both still record `HEAD`. The Swift build embeds that identity as `MacusVersion` and `MacusSourceRevision` in the executable's Info.plist. The release is built with `MIX_ENV=prod`, `MACUS_SOURCE_REVISION`, `MACUS_CASSETTE_SHA256` (from the `.sha256`) and `MACUS_CASSETTE_PATH`. Its `Macus.Release.bundle_cassette/1` step bundles that file as the only cassette, replacing anything `server/priv/cassettes` holds for other versions.
+
+`--release /absolute/release` installs an already assembled release instead of building one. Either way, the staged executable and release are verified before the prefix changes:
+
+- the executable carries the virtualization entitlement and embeds the identity;
+- the release's read-only `macus-build.json` records the same version and revision;
+- the release bundles exactly the locked `opsmaru_incus` and its cassette at the recorded SHA-256;
+- it has one ERTS, its `bin/macus` launcher, and distribution off.
+
+A release built from another revision, or one missing its library or cassette, is refused with nothing installed. The release then replaces any earlier one by a rename, the executable is replaced the same way, and both are verified again in place. `Integration/scripts/test-install.sh` (part of `check.sh`) exercises each refusal and a complete install in isolated prefixes, using a fixture cassette.
+
+The unified executable receives the virtualization entitlement for serve mode. The command does not create runtime state or register or activate a launch agent; `macus start` does that explicitly. Ad-hoc development signatures are not notarized production artifacts. A future release package or formula must include macus and real checksums; none is published here.
 
 ## Git Flow
 
