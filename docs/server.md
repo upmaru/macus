@@ -151,7 +151,8 @@ The gateway's identity differs from the guest's in four places:
   never reach the guest.
 - An authenticated `GET /1.0` reports the gateway's certificate and
   advertised addresses instead of the guest's. Its `api_extensions` are
-  limited to those both the guest and the gateway support.
+  limited to those the guest reports, the gateway implements and Macus lists
+  in its `Macus.Proxy` `api_extensions` configuration (`server/config/config.exs`).
 - `/1.0/certificates` manages gateway trust and redeems enrollment tokens. It
   never touches the guest's own trust store.
 - If `incus.sock` can't be reached, native requests fail with
@@ -167,16 +168,21 @@ server has no gateway certificate, so Macus admits it narrowly:
   migration operation's WebSocket only when that operation is a running
   migration in the guest and the secret it presents is one of that
   migration's channel secrets. Exec and console sessions are never reachable
-  this way. Volume copies need the guest's `storage_api_local_volume_handling`
-  and `storage_api_remote_volume_handling` extensions listed in
-  `api_extensions`, and an `opsmaru_incus` release that allows them.
+  this way. Instance copies use the `container_push` and
+  `container_push_target` extensions. Volume copies use
+  `storage_api_local_volume_handling` and
+  `storage_api_remote_volume_handling`, which need an `opsmaru_incus`
+  release that allows them.
 - **Images:** the other server may reach only the image's info and export (a
   pull) or the upload and its wait (a push), and only when the secret it
   presents matches an image token or upload operation pending in the guest,
   which the client created through the gateway. This needs an
-  `opsmaru_incus` release with image-secret admission, and the guest's
-  `images_push_relay` extension listed in `api_extensions` to push an image
-  from Macus.
+  `opsmaru_incus` release with image-secret admission, and pushing an image
+  from Macus uses the `images_push_relay` extension.
+
+Macus lists all of these copy extensions in its default `api_extensions`.
+The shared gateway drops any its `opsmaru_incus` release doesn't implement,
+so with 0.2.3 clients see only the instance copy extensions.
 
 Native streams have fixed limits:
 

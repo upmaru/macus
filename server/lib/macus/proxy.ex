@@ -31,7 +31,9 @@ defmodule Macus.Proxy do
   and `identity` default to the running gateway's: its
   advertised URL and address and its certificate, with `api_extensions`
   (the verified backend's, which the shared gateway further limits to what
-  it implements) taken from this configuration. `identity_scope` defaults
+  it implements) taken from this configuration's top-level `api_extensions`.
+  `config/config.exs` lists the native protocols Macus mounts and the
+  instance, volume and image copy extensions. `identity_scope` defaults
   to the running gateway's: `:local` for a loopback or private-network
   listener, which may advertise local addresses and names, else `:public`.
   `recheck_interval` (default and maximum 5000 ms, the documented bound)
