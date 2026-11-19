@@ -6,10 +6,11 @@ Candidates are development packages, ad-hoc signed with `com.apple.security.virt
 
 ## Local generation and package acceptance
 
-Start from a clean committed feature branch. Use an ignored fresh output directory:
+Start from a clean committed feature branch with the mise-pinned Elixir/Erlang installed and the opsmaru_incus cassette for the locked version downloaded and attestation-checked (see [development](../../docs/development.md#macus-command)). Use an ignored fresh output directory:
 
 ```sh
-python3 Packaging/homebrew/candidate.py prepare --output .integration/homebrew-candidate
+python3 Packaging/homebrew/candidate.py prepare --output .integration/homebrew-candidate \
+  --cassette /absolute/opsmaru_incus-VERSION.tama-cassette
 python3 Packaging/homebrew/candidate.py build --opt-in --candidate .integration/homebrew-candidate
 brew uninstall upmaru/macus-local/macus
 python3 Packaging/homebrew/candidate.py install --opt-in --candidate .integration/homebrew-candidate
@@ -19,7 +20,9 @@ The build creates a local Git tap, trusts only its generated formula, builds thr
 
 These opt-in mutations refuse an existing Macus package, another `macus` on PATH or an unrelated local tap. Use a dedicated package environment: runtime isolation or a new account does not isolate machine-wide Homebrew. Candidate data, logs and partial installs are retained on failure for explicit recovery. No package command starts launchd or a VM. Generated artifacts must not be committed.
 
-`candidate.json` records commit, development version, measured digests, platform, toolchain and signing mode. `package-acceptance.json` records the installed keg and poured receipt. Rerun package checks with `python3 Packaging/homebrew/candidate.py verify --candidate /absolute/candidate`. Dirty inputs, symlink outputs, reused directories, placeholder hashes and changed artifacts are refused.
+`prepare` also assembles the Macus server release from the same commit with `Packaging/install-local.sh` (the pinned Elixir/OTP, statically linked OpenSSL, the cassette given) and archives it as `macus-server-<version>.tar.gz`. It refuses a release whose `macus-build.json` names another Macus version or revision, or another `opsmaru_incus` version or checksum than `server/mix.lock` locks at that commit. The formula installs that archive as its `server-release` resource at `libexec/macus`, beside `bin/macus`. Homebrew's own Elixir and Erlang are not used: they would link Homebrew's OpenSSL and wxWidgets and differ from the pinned versions. So neither the bottle nor a source build needs Elixir or Erlang; a source build needs only Swift. The formula embeds `MacusVersion` (from `server/mix.exs`) and `MacusSourceRevision` (the commit) in the executable and stops unless the release records the same identity and the locked `opsmaru_incus`.
+
+`candidate.json` (schema 2) records commit, development version, Macus package version, measured digests of the source and server release archives, the release's `opsmaru_incus` (version, Hex checksum and cassette SHA-256), `tama_dex`, `exqlite` and ERTS, platform, toolchain and signing mode. The library is recorded by its own version and checksum and never compared with the Macus commit. After the source build and after pouring, the installed pair is checked: the entitlement and signature, the identity embedded in `bin/macus`, the release's `macus-build.json` (same identity, the recorded `opsmaru_incus`) and its launcher. `package-acceptance.json` records the installed keg and poured receipt. Rerun package checks with `python3 Packaging/homebrew/candidate.py verify --candidate /absolute/candidate`. Dirty inputs, symlink outputs, reused directories, placeholder hashes and changed artifacts are refused.
 
 ## Explicit hardware acceptance
 
@@ -54,13 +57,14 @@ Before uninstall, use the same stop/status/bootout sequence, remove only the own
 
 ## Shared export and CI
 
-The PR/manually dispatched candidate workflow serializes package jobs, builds and pours a local bottle, retains artifacts and cleans up only its candidate-owned package and tap. Cleanup verifies the installed receipt/version and tap origin. Local failed partial installs remain for inspection; explicit package cleanup uses `candidate.py cleanup --opt-in --candidate /absolute/candidate`. Neither mode deletes runtime or Incus data. It does not publish releases, modify the shared tap or boot a VM. With publication authorization, upload the exact source and single-hyphen URL bottle filenames recorded in `candidate.json` as immutable development assets. Do not replace existing candidate assets.
+The PR/manually dispatched candidate workflow installs the pinned Elixir/Erlang, downloads the locked opsmaru_incus cassette and checks its `.sha256` and attestation (until task 9.7 moves that into the release build), serializes package jobs, builds and pours a local bottle, retains artifacts and cleans up only its candidate-owned package and tap. Cleanup verifies the installed receipt/version and tap origin. Local failed partial installs remain for inspection; explicit package cleanup uses `candidate.py cleanup --opt-in --candidate /absolute/candidate`. Neither mode deletes runtime or Incus data. It does not publish releases, modify the shared tap or boot a VM. With publication authorization, upload the exact source, server release and single-hyphen URL bottle filenames recorded in `candidate.json` as immutable development assets. Do not replace existing candidate assets.
 
 After those HTTPS assets exist, prepare a tap feature PR using:
 
 ```sh
 python3 Packaging/homebrew/candidate.py export --candidate /absolute/candidate \
   --source-url https://github.com/upmaru/macus/releases/download/CANDIDATE_VERSION/SOURCE_ARCHIVE \
+  --release-url https://github.com/upmaru/macus/releases/download/CANDIDATE_VERSION/SERVER_RELEASE_ARCHIVE \
   --bottle-root https://github.com/upmaru/macus/releases/download/CANDIDATE_VERSION \
   --destination /absolute/homebrew-tap/Formula/macus.rb
 ```

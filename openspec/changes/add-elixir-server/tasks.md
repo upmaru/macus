@@ -228,7 +228,28 @@ Revision 2026-11-12: `/mcp` advertises exactly two tools, `search` and `execute`
     - The "Swift and OpenSpec" CI job installs the mise-pinned Erlang/Elixir and Hex for it.
     - Real-cassette check: the v0.2.4 asset matched its `.sha256` (`f7e69a35…35a5`), and its attestation verified against upmaru/opsmaru-incus `refs/tags/v0.2.4`. Installed from `cb4b277` with it, `release-smoke.py` passed on `<prefix>/libexec/macus`: 23 system-linked Mach-O files, one gateway listener, `opsmaru_incus` 0.2.4 imported, and SIGTERM exit 0.
     - `macus start` against the installed pair was not run, because it activates launchd jobs (11.x hardware opt-in).
-- [ ] 9.3 Extend formula/candidate generation to include the shared dependency and full release; verify real contents/checksums, entitlement preservation and matched Macus revision plus distinct opsmaru-incus revision with existing candidate tests.
+- [x] 9.3 Extend formula/candidate generation to include the shared dependency and full release; verify real contents/checksums, entitlement preservation and matched Macus revision plus distinct opsmaru-incus revision with existing candidate tests.
+  - Done 2026-11-20: Candidate and formula.
+    - `candidate.py prepare` (schema 2) assembles the release from the candidate's commit with `Packaging/install-local.sh` and `--cassette`, then archives it as `macus-server-<version>.tar.gz`.
+    - It refuses a release whose `macus-build.json` names another Macus version or revision, another `opsmaru_incus` version or Hex checksum than `server/mix.lock` locks at that commit, or distribution on. Nothing is recorded then.
+    - It records the archive's SHA-256, the Macus package version, and the release's `opsmaru_incus` (version, checksum, cassette SHA-256), `tama_dex`, `exqlite` and ERTS. The library keeps its own version and checksum and is never compared with the Macus commit.
+    - `load` checks the archive like the source, and `render` refuses an unfilled placeholder.
+    - The formula gets a `server-release` resource (URL and SHA-256) and installs it at `libexec/macus`. It links `MacusVersion`/`MacusSourceRevision` into `bin/macus` and stops unless the release records the same identity and the locked `opsmaru_incus`. Its `test` checks the launcher version and the recorded revision. `export` takes `--release-url` and checks its remote bytes too.
+    - Homebrew's Elixir 1.20.5 and Erlang 29 are not used: they link `openssl@4` and wxWidgets and differ from the pinned versions. So a formula source build needs only Swift (design §7 updated).
+    - `verify_package` replaces the binary-only check after the source build and after pouring:
+      - signature and entitlement;
+      - the identity embedded in `bin/macus` (via `segedit`);
+      - the release's identity and recorded `opsmaru_incus`, and its `lib/opsmaru_incus-<version>`;
+      - `libexec/macus/bin/macus version`.
+    - `test_homebrew_candidate.py` adds:
+      - the recorded and rendered release, one identity and the distinct library record;
+      - a corrupted archive;
+      - a release from another revision, version or library, refused with no `candidate.json`;
+      - an unknown placeholder;
+      - installed pairs with another embedded revision, a failing launcher, or another release revision or library checksum.
+    - The candidate workflow installs the mise-pinned Erlang/Elixir and fetches the locked cassette, checking its `.sha256` and attestation (9.7 moves this into the build). It also runs on `server/**` and `Packaging/install-local.sh` changes and keeps `release.log`.
+    - Real prepare from a local commit with the attested 0.2.4 cassette: an 18 MB archive whose `macus-build.json` matched the commit. A keg assembled by hand as the formula does (archive unpacked at `libexec/macus`, the identity-linked `bin/macus` signed with the entitlement) passed `verify_package`, with the manifest kept 0444, and `release-smoke.py` passed on its release.
+    - Not run on this Mac: `brew install`, `bottle` and pour. They mutate Homebrew, and a Homebrew `macus` is installed here. That evidence comes from the candidate workflow on PR #9, and installed-package depth (full payload, opt paths, passivity) is 9.4.
 - [ ] 9.4 Extend installed verification for full ERTS/library payload, stable opt paths and passive installation; verify no third service or host toolchain requirement and retain source-fallback versus poured-bottle evidence.
 - [ ] 9.5 Document stop/unload of the same two owned jobs and upgrade/rollback/removal; verify package fixtures retain disks and credentials.
 - [ ] 9.6 Reconcile delivery with add-homebrew-tap and update provenance docs; verify no Opsmaru Linux packaging or publication/hardware claim is introduced into Macus.

@@ -7,11 +7,13 @@ import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import re
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
@@ -75,7 +77,7 @@ def checked_sha(value):
     return value
 
 
-def render(manifest, bottle_root=None, source_url=None, template=None):
+def render(manifest, bottle_root=None, source_url=None, template=None, release_url=None):
     bottle = ""
     if manifest.get("bottles"):
         lines = ["  bottle do", f"    root_url {ruby_string(bottle_root or manifest['bottle_root'])}"]
@@ -93,11 +95,19 @@ def render(manifest, bottle_root=None, source_url=None, template=None):
         lines.extend(["  end", ""])
         bottle = "\n".join(lines)
     text = (template or TEMPLATE).read_text()
+    release = manifest["server_release"]
     for key, value in {"SOURCE_URL": ruby_string(source_url or manifest["source_url"]),
                        "VERSION": ruby_string(manifest["version"]),
                        "SOURCE_SHA256": ruby_string(checked_sha(manifest["source_sha256"])),
+                       "RELEASE_URL": ruby_string(release_url or release["url"]),
+                       "RELEASE_SHA256": ruby_string(checked_sha(release["sha256"])),
+                       "MACUS_VERSION": ruby_string(manifest["macus_version"]),
+                       "SOURCE_COMMIT": ruby_string(manifest["source_commit"]),
+                       "OPSMARU_INCUS_VERSION": ruby_string(release["opsmaru_incus"]["version"]),
                        "BOTTLE": bottle}.items():
         text = text.replace("@" + key + "@", value)
+    if re.search(r"@[A-Z_]+@", text):
+        raise ValueError("The formula template has an unknown placeholder")
     return text
 
 
@@ -109,8 +119,10 @@ def save(root, manifest):
 def load(root):
     root = safe_path(root)
     data = json.loads((root / "candidate.json").read_text())
-    if data.get("schema_version") != 1 or not re.fullmatch(r"[0-9a-f]{40}", data["source_commit"]):
+    if data.get("schema_version") != 2 or not re.fullmatch(r"[0-9a-f]{40}", data["source_commit"]):
         raise ValueError("Invalid candidate provenance")
+    if not re.fullmatch(r"[0-9A-Za-z.+_-]{1,64}", data["macus_version"]):
+        raise ValueError("Invalid Macus package version")
     if not re.fullmatch(r"0\.0\.0-dev\.[0-9]{14}\.[0-9a-f]{12}", data["version"]):
         raise ValueError("Invalid development version")
     if not data["version"].endswith(data["source_commit"][:12]):
@@ -121,6 +133,10 @@ def load(root):
     source = root / data["source_file"]
     if source.parent != root or source.is_symlink() or digest(source) != checked_sha(data["source_sha256"]):
         raise ValueError("Candidate source integrity failed")
+    release = root / data["server_release"]["file"]
+    if (release.parent != root or release.is_symlink()
+            or digest(release) != checked_sha(data["server_release"]["sha256"])):
+        raise ValueError("Candidate server release integrity failed")
     for info in data.get("bottles", {}).values():
         path = root / info["local_filename"]
         if path.parent != root or path.is_symlink() or digest(path) != checked_sha(info["sha256"]):
@@ -128,7 +144,38 @@ def load(root):
     return root, data
 
 
-def prepare(output, repo=ROOT, stamp=None):
+def locked_opsmaru_incus(lock):
+    """The locked version and outer (last) checksum, as Macus.Build reads them."""
+    for line in lock.splitlines():
+        found = re.match(r'\s*"opsmaru_incus": \{:hex, :opsmaru_incus, "([^"]+)", .*"([0-9a-f]{64})"\},?$', line)
+        if found:
+            return {"version": found.group(1), "checksum": found.group(2)}
+    raise ValueError("server/mix.lock does not lock opsmaru_incus from Hex")
+
+
+def build_release(repo, root, cassette):
+    """Assembles and verifies the release with the source installer; returns its directory."""
+    arguments = ["sh", "Packaging/install-local.sh", "--prefix", str(root / "server-build")]
+    if cassette:
+        arguments += ["--cassette", str(Path(cassette).resolve())]
+    run(arguments, cwd=repo, log=root / "release.log", timeout=3600)
+    return root / "server-build/libexec/macus"
+
+
+def server_record(release, commit, macus_version, locked):
+    """The release's own build record, checked against the commit and its lock."""
+    record = json.loads((release / "macus-build.json").read_text())
+    if record.get("schema_version") != 1 or (record.get("version"), record.get("revision")) != (macus_version, commit):
+        raise ValueError(f"The server release is not Macus {macus_version} ({commit})")
+    library = record.get("opsmaru_incus", {})
+    if {"version": library.get("version"), "checksum": library.get("checksum")} != locked:
+        raise ValueError(f"The server release does not bundle the locked opsmaru_incus {locked['version']}")
+    if record.get("distribution") != "none":
+        raise ValueError("The server release does not keep distribution off")
+    return record
+
+
+def prepare(output, repo=ROOT, stamp=None, cassette=None):
     if run(["git", "status", "--porcelain"], cwd=repo):
         raise ValueError("Candidate generation requires a clean committed checkout")
     commit = run(["git", "rev-parse", "HEAD"], cwd=repo)
@@ -144,10 +191,26 @@ def prepare(output, repo=ROOT, stamp=None):
     run(["git", "archive", "--format=tar.gz", f"--prefix=macus-{version}/", "-o", str(source), commit], cwd=repo)
     template_text = run(["git", "show", f"{commit}:Packaging/homebrew/Formula/macus.rb.in"], cwd=repo) + "\n"
     write_text(root / "formula.rb.in", template_text)
+    found = re.search(r'^ *version: "([^"]+)",$', run(["git", "show", f"{commit}:server/mix.exs"], cwd=repo), re.M)
+    if not found:
+        raise ValueError("server/mix.exs records no package version")
+    macus_version = found.group(1)
+    locked = locked_opsmaru_incus(run(["git", "show", f"{commit}:server/mix.lock"], cwd=repo))
+    # The release from this commit, archived as the formula's server-release resource.
+    built = build_release(repo, root, cassette)
+    record = server_record(built, commit, macus_version, locked)
+    release = root / f"macus-server-{version}.tar.gz"
+    run(["tar", "-czf", str(release), "-s", f",^macus,macus-server-{version},", "-C", str(built.parent), "macus"])
+    shutil.rmtree(root / "server-build")
     (root / "tap/Formula").mkdir(parents=True)
-    manifest = {"schema_version": 1, "source_commit": commit, "version": version,
+    manifest = {"schema_version": 2, "source_commit": commit, "version": version,
+                "macus_version": macus_version,
                 "source_file": source.name, "source_url": source.as_uri(),
-                "source_sha256": digest(source), "bottle_root": root.as_uri(),
+                "source_sha256": digest(source),
+                "server_release": {"file": release.name, "url": release.as_uri(), "sha256": digest(release),
+                                   "opsmaru_incus": record["opsmaru_incus"], "tama_dex": record.get("tama_dex"),
+                                   "exqlite": record.get("exqlite"), "erts": record.get("erts")},
+                "bottle_root": root.as_uri(),
                 "formula_template_sha256": digest(root / "formula.rb.in"),
                 "signing_mode": "ad-hoc-development", "architecture": platform.machine(),
                 "host_macos": platform.mac_ver()[0], "deployment_target": "15.0",
@@ -186,6 +249,32 @@ def attach_local(root):
     return Path(run(["brew", "--repository", TAP]))
 
 
+def embedded_identity(binary):
+    """The (MacusVersion, MacusSourceRevision) an executable embeds in its Info.plist."""
+    with tempfile.TemporaryDirectory() as directory:
+        plist = Path(directory) / "identity.plist"
+        run(["/usr/bin/segedit", str(binary), "-extract", "__TEXT", "__info_plist", str(plist)])
+        info = plistlib.loads(plist.read_bytes())
+    return info.get("MacusVersion"), info.get("MacusSourceRevision")
+
+
+def verify_package(prefix, manifest):
+    """The installed pair: the entitled executable and the release, one identity, the recorded library."""
+    verify_binary(prefix / "bin/macus")
+    identity = (manifest["macus_version"], manifest["source_commit"])
+    if embedded_identity(prefix / "bin/macus") != identity:
+        raise ValueError("The installed macus does not embed the candidate's Macus identity")
+    release = prefix / "libexec/macus"
+    record = json.loads((release / "macus-build.json").read_text())
+    if (record.get("version"), record.get("revision")) != identity:
+        raise ValueError("The installed server release is not the candidate's Macus build")
+    expected = manifest["server_release"]["opsmaru_incus"]
+    if record.get("opsmaru_incus") != expected or not (release / f"lib/opsmaru_incus-{expected['version']}").is_dir():
+        raise ValueError("The installed server release does not bundle the recorded opsmaru_incus")
+    if run([str(release / "bin/macus"), "version"], cwd=release) != f"macus {manifest['macus_version']}":
+        raise ValueError("The installed server release launcher failed")
+
+
 def verify_binary(binary):
     run(["/usr/bin/codesign", "--verify", "--strict", str(binary)])
     result = subprocess.run(["/usr/bin/codesign", "-d", "--entitlements", ":-", str(binary)],
@@ -214,8 +303,7 @@ def build(args):
     refuse_package_conflict()
     tap = attach_local(root)
     run(["brew", "install", "--build-bottle", FORMULA], log=root / "build.log")
-    binary = Path(run(["brew", "--prefix", FORMULA])) / "bin/macus"
-    verify_binary(binary)
+    verify_package(Path(run(["brew", "--prefix", FORMULA])).resolve(strict=True), manifest)
     run(["brew", "test", FORMULA], log=root / "build.log")
     run(["brew", "bottle", "--json", "--root-url=" + root.as_uri(), FORMULA], cwd=root, log=root / "build.log")
     records = list(root.glob("*.bottle.json"))
@@ -269,9 +357,11 @@ def verify(root):
         raise ValueError("Installed receipt is not a poured candidate from the expected tap")
     if prefix.name != manifest["version"]:
         raise ValueError("Installed package version does not match candidate")
-    verify_binary(prefix / "bin/macus")
-    report = {"schema_version": 1, "source_commit": manifest["source_commit"],
-              "version": manifest["version"], "formula": FORMULA, "installed_keg": str(prefix),
+    verify_package(prefix, manifest)
+    report = {"schema_version": 2, "source_commit": manifest["source_commit"],
+              "version": manifest["version"], "macus_version": manifest["macus_version"],
+              "server_release": manifest["server_release"],
+              "formula": FORMULA, "installed_keg": str(prefix),
               "bottles": manifest["bottles"], "poured_from_bottle": True,
               "signature_verified": True, "virtualization_entitlement": True,
               "hardware_ran": False, "host_macos": platform.mac_ver()[0], "success": True}
@@ -301,7 +391,8 @@ def export(args):
     root, manifest = load(args.candidate)
     if not manifest["bottles"]:
         raise ValueError("Cannot export an unbottled candidate")
-    urls = [(args.source_url, manifest["source_sha256"])]
+    urls = [(args.source_url, manifest["source_sha256"]),
+            (args.release_url, manifest["server_release"]["sha256"])]
     for info in manifest["bottles"].values():
         urls.append((args.bottle_root.rstrip("/") + "/" + info["filename"], info["sha256"]))
     for url, expected in urls:
@@ -317,13 +408,17 @@ def export(args):
         raise ValueError("Refusing to replace an existing exported formula")
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("x") as output:
-        output.write(render(manifest, args.bottle_root, args.source_url, root / "formula.rb.in"))
+        output.write(render(manifest, args.bottle_root, args.source_url, root / "formula.rb.in",
+                            args.release_url))
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("prepare").add_argument("--output", type=Path, required=True)
+    preparing = commands.add_parser("prepare")
+    preparing.add_argument("--output", type=Path, required=True)
+    preparing.add_argument("--cassette", type=Path,
+                           help="the pinned opsmaru_incus cassette, beside its .sha256 (default: server/priv/cassettes)")
     for name in ("build", "install", "verify", "export", "cleanup"):
         sub = commands.add_parser(name)
         sub.add_argument("--candidate", type=Path, required=True)
@@ -331,11 +426,12 @@ def main():
             sub.add_argument("--opt-in", action="store_true")
         if name == "export":
             sub.add_argument("--source-url", required=True)
+            sub.add_argument("--release-url", required=True)
             sub.add_argument("--bottle-root", required=True)
             sub.add_argument("--destination", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "prepare":
-        root, _ = prepare(args.output)
+        root, _ = prepare(args.output, cassette=args.cassette)
         print(root / "candidate.json")
     elif args.command == "verify":
         verify(args.candidate)

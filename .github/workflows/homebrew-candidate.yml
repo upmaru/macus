@@ -6,12 +6,16 @@ on:
     branches: [develop]
     paths:
       - Packaging/homebrew/**
+      - Packaging/install-local.sh
       - Sources/**
       - Package.swift
+      - server/**
       - .github/workflows/homebrew-candidate.yml
 
 permissions:
   contents: read
+  # gh attestation verify reads the opsmaru-incus cassette's provenance.
+  attestations: read
 
 concurrency:
   group: homebrew-candidate
@@ -24,13 +28,36 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.app/Contents/Developer
       HOMEBREW_NO_AUTO_UPDATE: "1"
+      # The server release is assembled with `mise exec -- mix`.
+      MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: Homebrew/actions/setup-homebrew@e99025eb970cfa124b8284a35463d87426917478 # 2026.09.28.1
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          install_args: erlang elixir
+          cache: true
+      - name: Elixir toolchain
+        run: |
+          mise exec -- elixir --version
+          mise exec -- mix local.hex --force
+          mise exec -- mix local.rebar --force
+      # Until task 9.7 moves this into the release build.
+      - name: Fetch and verify the pinned opsmaru_incus cassette
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          locked="$(sed -n 's/.*"opsmaru_incus": {:hex, :opsmaru_incus, "\([^"]*\)".*/\1/p' server/mix.lock)"
+          mkdir -p .integration/cassette
+          gh release download "v$locked" --repo upmaru/opsmaru-incus --dir .integration/cassette \
+            --pattern "opsmaru_incus-$locked.tama-cassette*"
+          (cd .integration/cassette && shasum -a 256 -c "opsmaru_incus-$locked.tama-cassette.sha256")
+          gh attestation verify ".integration/cassette/opsmaru_incus-$locked.tama-cassette" --repo upmaru/opsmaru-incus
+          echo "MACUS_CANDIDATE_CASSETTE=$PWD/.integration/cassette/opsmaru_incus-$locked.tama-cassette" >> "$GITHUB_ENV"
       - name: Prepare immutable source candidate
-        run: python3 Packaging/homebrew/candidate.py prepare --output .integration/homebrew-candidate
+        run: python3 Packaging/homebrew/candidate.py prepare --output .integration/homebrew-candidate --cassette "$MACUS_CANDIDATE_CASSETTE"
       - name: Build and validate bottle
         run: python3 Packaging/homebrew/candidate.py build --opt-in --candidate .integration/homebrew-candidate
       - name: Remove source build before bottle acceptance
@@ -49,6 +76,7 @@ jobs:
           include-hidden-files: true
           path: |
             .integration/homebrew-candidate/*.tar.gz
+            .integration/homebrew-candidate/release.log
             .integration/homebrew-candidate/*.bottle.json
             .integration/homebrew-candidate/candidate.json
             .integration/homebrew-candidate/formula.rb.in

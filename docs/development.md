@@ -175,8 +175,8 @@ Elixir/Erlang). It checks:
 It boots no VM. The integrated Homebrew candidate workflow
 is the packaging baseline, with real measured hashes and passive installation;
 see [candidate documentation](../Packaging/homebrew/README.md). The source
-installer stages the release (below); the Homebrew candidate still packages
-Swift alone until task 9.3.
+installer stages the release (below), and the Homebrew candidate installs the
+same release as a checksummed resource built at candidate preparation.
 
 ## Build and sign
 
