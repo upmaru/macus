@@ -60,7 +60,8 @@ import Testing
   #expect(
     FileManager.default.fileExists(
       atPath: tools.conf.appendingPathComponent("servercerts/macus.crt").path))
-  #expect(try FileManager.default.contentsOfDirectory(atPath: tools.home.path).isEmpty)
+  let homeEntries = try tools.homeEntries()
+  #expect(homeEntries.isEmpty, "HOME gained \(homeEntries)")
 
   // Setting up the same endpoint again verifies and reuses the remote; only --set-default moves
   // the default.
@@ -504,6 +505,11 @@ private struct ToolFixture {
 
   func logText() -> String {
     (try? String(contentsOf: log, encoding: .utf8)) ?? ""
+  }
+
+  /// Every path under the isolated `HOME`, relative to it, so a stray write names itself.
+  func homeEntries() throws -> [String] {
+    try FileManager.default.subpathsOfDirectory(atPath: home.path).sorted()
   }
 
   func remove() { try? FileManager.default.removeItem(at: root) }
