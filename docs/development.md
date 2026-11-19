@@ -72,8 +72,10 @@ The initial scaffold is passive: it resolves `MACUS_STATE_DIR`, then legacy
 authorization, routes and coordinated startup are tracked in the active
 [change tasks](../openspec/changes/add-elixir-server/tasks.md). Until they are
 implemented, current installed Swift commands retain their Unix behavior.
-The canonical script currently checks Swift and packaging; the change also
-tracks adding the Mix/protocol/release checks to that script and CI.
+The canonical script currently checks Swift and packaging. CI also runs the
+Mix format, compile and test checks above on macOS, with the tools pinned in
+`mise.toml`; the change still tracks adding the Mix, protocol and release
+checks to the canonical script and the release smoke to CI (task 10.1).
 
 The [Cowboy transport trial](cowboy-transport-trial.md) exercises native
 SFTP/NBD HTTP upgrades with TLS/Unix fixtures and the pinned official client.
