@@ -10,7 +10,7 @@ and how to update the dependency.
 
 | | |
 | --- | --- |
-| Dependency | `opsmaru_incus` 0.2.3 |
+| Dependency | `opsmaru_incus` 0.2.4 |
 | Reference | `github.com/lxc/incus/v7` v7.0.1 (`13f3992766142d5087fff2e362cd2e1a75294fe8`) |
 | Inventory | 1280 declarations from 86 source files, SHA-256 `0aff3b4c5570fa8566fd955f6bc874a965163e01b76d31885aa6677bbd23a907` |
 | Dependency claims a complete port | no |
@@ -25,7 +25,7 @@ and how to update the dependency.
 | function | 17 | 0 | 13 | 4 |
 | interface_method | 342 | 0 | 340 | 2 |
 | method | 466 | 0 | 463 | 3 |
-| type | 265 | 0 | 234 | 31 |
+| type | 265 | 0 | 239 | 26 |
 | var | 2 | 0 | 1 | 1 |
 
 ## Not implemented
@@ -49,7 +49,6 @@ evidence.
 - `client/type/EventListener`
 - `client/type/EventTarget`
 - `client/type/HTTPTransporter`
-- `client/type/ImageCopyArgs`
 - `client/type/ImageCreateArgs`
 - `client/type/ImageFileRequest`
 - `client/type/ImageFileResponse`
@@ -57,20 +56,16 @@ evidence.
 - `client/type/InstanceBackupArgs`
 - `client/type/InstanceConsoleArgs`
 - `client/type/InstanceConsoleLogArgs`
-- `client/type/InstanceCopyArgs`
 - `client/type/InstanceExecArgs`
 - `client/type/InstanceFileArgs`
 - `client/type/InstanceFileResponse`
 - `client/type/InstanceNBDArgs`
 - `client/type/InstanceServer`
-- `client/type/InstanceSnapshotCopyArgs`
 - `client/type/ProtocolIncus`
 - `client/type/ProtocolOCI`
 - `client/type/ProtocolSimpleStreams`
 - `client/type/Server`
 - `client/type/StoragePoolBucketBackupArgs`
-- `client/type/StoragePoolVolumeCopyArgs`
-- `client/type/StoragePoolVolumeMoveArgs`
 - `client/type/StorageVolumeBackupArgs`
 - `client/type/StorageVolumeNBDPost`
 - `client/var/ErrOIDCExpired`

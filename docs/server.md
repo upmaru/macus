@@ -169,20 +169,21 @@ server has no gateway certificate, so Macus admits it narrowly:
   migration in the guest and the secret it presents is one of that
   migration's channel secrets. Exec and console sessions are never reachable
   this way. Instance copies use the `container_push` and
-  `container_push_target` extensions. Volume copies use
+  `container_push_target` extensions, and volume copies use
   `storage_api_local_volume_handling` and
-  `storage_api_remote_volume_handling`, which need an `opsmaru_incus`
-  release that allows them.
+  `storage_api_remote_volume_handling`.
 - **Images:** the other server may reach only the image's info and export (a
   pull) or the upload and its wait (a push), and only when the secret it
   presents matches an image token or upload operation pending in the guest,
-  which the client created through the gateway. This needs an
-  `opsmaru_incus` release with image-secret admission, and pushing an image
-  from Macus uses the `images_push_relay` extension.
+  which the client created through the gateway. A server pushing an image
+  may upload only the image itself: a JSON image request in its place (one
+  that would make the guest fetch from elsewhere, publish an instance or
+  mint a token) is refused with 403 before it reaches the guest. Pushing an
+  image from Macus uses the `images_push_relay` extension.
 
-Macus lists all of these copy extensions in its default `api_extensions`.
-The shared gateway drops any its `opsmaru_incus` release doesn't implement,
-so with 0.2.3 clients see only the instance copy extensions.
+Macus lists all of these copy extensions in its default `api_extensions`,
+and `opsmaru_incus` 0.2.4 implements every one, so clients see them all when
+the guest reports them.
 
 Native streams have fixed limits:
 

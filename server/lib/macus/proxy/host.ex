@@ -194,9 +194,7 @@ defmodule Macus.Proxy.Host do
     %{peer: kind, expires: DateTime.add(now(config), ttl, :millisecond)}
   end
 
-  # An optional Opsmaru.Incus.Gateway.Host callback in the opsmaru_incus
-  # release that adds it; earlier releases never call it, so it has no @impl.
-  @doc false
+  @impl true
   def admit_image_secret(%{image: %{route: route, secret: secret} = image} = request, config)
       when route in @image_routes and is_binary(secret) do
     with nil <- request.target,

@@ -633,7 +633,7 @@ defmodule Macus.GatewayTest do
       refute response =~ "Gateway identity is unavailable"
     end
 
-    test "the serving gateway advertises the configured copy extensions it implements",
+    test "the serving gateway advertises every configured native and copy extension",
          context do
       gateway = serve!(context)
       configured = Application.get_env(:macus, Macus.Proxy)[:api_extensions]
@@ -647,12 +647,11 @@ defmodule Macus.GatewayTest do
       [_, body] = socket |> get("/1.0") |> String.split("\r\n\r\n", parts: 2)
       advertised = Jason.decode!(body)["metadata"]["api_extensions"]
 
-      # The shared gateway serves only the configured extensions it implements.
+      # The shared gateway serves only the configured extensions it
+      # implements; opsmaru_incus 0.2.4 implements every configured one.
       supported = Opsmaru.Incus.Gateway.Identity.supported_extensions()
-      assert advertised == Enum.filter(configured, &(&1 in supported))
-
-      assert ~w(certificate_update instances container_push container_push_target) -- advertised ==
-               []
+      assert configured -- supported == []
+      assert advertised == configured
     end
 
     test "native request bodies reach incus.sock byte for byte, unparsed", context do

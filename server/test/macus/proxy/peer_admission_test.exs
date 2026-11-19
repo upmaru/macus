@@ -313,8 +313,6 @@ defmodule Macus.Proxy.PeerAdmissionTest do
       body: %{type: "sync", status: "Success", status_code: 200, metadata: metadata}
     }
 
-  # opsmaru_incus releases before the image callback have no :image field on
-  # the request struct; the host reads it as a map key.
   defp request(route, secret, fingerprint \\ @fp, operation \\ nil) do
     %Request{
       protocol: :http,
@@ -323,12 +321,12 @@ defmodule Macus.Proxy.PeerAdmissionTest do
       query: "",
       project: "image-project",
       operation: operation,
+      image: %{
+        route: route,
+        fingerprint: if(route == :wait, do: nil, else: fingerprint),
+        secret: secret
+      },
       peer: %{address: {192, 0, 2, 10}, port: 40_000, certificate: nil}
     }
-    |> Map.put(:image, %{
-      route: route,
-      fingerprint: if(route == :wait, do: nil, else: fingerprint),
-      secret: secret
-    })
   end
 end
