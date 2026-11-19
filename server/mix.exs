@@ -15,11 +15,15 @@ defmodule Macus.MixProject do
     ]
   end
 
-  # The release macus start launches. `macus-build.json` records the
-  # identity the Swift component checks before starting it.
+  # The release macus start launches: self-contained for macOS ARM64, with
+  # its own ERTS, so no host Elixir or Erlang is needed. Macus.Release
+  # verifies it and writes `macus-build.json`, the identity the Swift
+  # component checks before starting it. rel/env.sh.eex keeps distribution
+  # off.
   defp releases do
     [
       macus: [
+        include_erts: true,
         include_executables_for: [:unix],
         steps: [:assemble, &Macus.Release.write_manifest/1]
       ]

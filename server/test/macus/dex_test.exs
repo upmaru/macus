@@ -348,6 +348,16 @@ defmodule Macus.DexTest do
     end
 
     test "a pinned bundle that is absent is reported, never fetched", ctx do
+      # A release build may have bundled the real cassette in this checkout
+      # (server/priv/cassettes is the build input); set it aside meanwhile.
+      bundle = Macus.Build.cassette_path()
+
+      if File.exists?(bundle) do
+        aside = bundle <> ".aside-#{System.unique_integer([:positive])}"
+        File.rename!(bundle, aside)
+        on_exit(fn -> File.rename!(aside, bundle) end)
+      end
+
       Application.put_env(:macus, Macus.Build, cassette_sha256: String.duplicate("cd", 32))
       [spec] = Dex.children([], ctx.gateway)
       start_supervised!(spec)

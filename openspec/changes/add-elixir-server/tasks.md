@@ -146,7 +146,41 @@ Revision 2026-11-12: `/mcp` advertises exactly two tools, `search` and `execute`
 
 ## 9. Combined Mix release and package delivery
 
-- [ ] 9.1 Configure the macus release with bundled ERTS, the `:opsmaru_incus` library, the opsmaru_incus tama-dex cassette pinned by SHA-256 in build metadata, the macOS ARM64 exqlite NIF used by `tama_dex`, distribution disabled and immutable Macus/dependency metadata; verify isolated boot without host Elixir/Erlang, no dependency-owned listener and server-only shutdown.
+- [x] 9.1 Configure the macus release with bundled ERTS, the `:opsmaru_incus` library, the opsmaru_incus tama-dex cassette pinned by SHA-256 in build metadata, the macOS ARM64 exqlite NIF used by `tama_dex`, distribution disabled and immutable Macus/dependency metadata; verify isolated boot without host Elixir/Erlang, no dependency-owned listener and server-only shutdown.
+  - Done 2026-11-19: Configuration and verification.
+    - The `macus` release sets `include_erts: true`. `rel/env.sh.eex` forces `RELEASE_DISTRIBUTION=none` whatever the launcher's environment says, so the server is never an Erlang node and is stopped by SIGTERM.
+    - `Macus.Release.write_manifest/1` now first runs `Macus.Release.verify/2` on the assembled release and fails the build (`Mix.raise`) unless every check passes:
+      - the build host is `aarch64-apple-darwin`;
+      - a valid `MACUS_SOURCE_REVISION` was recorded;
+      - there is exactly one `erts-*`, with an ARM64 (thin or universal) `beam.smp`;
+      - `lib/` holds exactly the locked `opsmaru_incus` and `tama_dex`;
+      - the locked-version cassette is the only, regular file in `macus`'s `priv/cassettes/` and its SHA-256 equals `MACUS_CASSETTE_SHA256`;
+      - the locked exqlite's `priv/sqlite3_nif.so` is an ARM64 Mach-O;
+      - `releases/<vsn>/env.sh` carries the distribution line.
+    - `Macus.Build.manifest/1` keeps the fields the Swift side compares. It adds the cassette file and SHA-256, the `tama_dex` and `exqlite` lock entries (`Macus.Build.locked/1`, read from `server/mix.lock` at compile time) with the NIF's SHA-256, the ERTS version and target, and `distribution: none`. The manifest is written 0444, replacing an earlier one.
+    - The NIF is exqlite's precompiled macOS ARM64 build, which elixir_make verifies against the checksums in the locked exqlite package.
+    - Bundling the cassette in `server/priv/cassettes/` (gitignored) is still a manual build input until 9.7. For this run the v0.2.3 asset matched its `.sha256` (`5ef6a064…8997`) and `gh attestation verify --repo upmaru/opsmaru-incus` exited 0.
+    - `server/test/macus/release_test.exs` covers:
+      - a complete fixture release and the full manifest;
+      - the read-only rewrite;
+      - a missing or malformed revision;
+      - a non-ARM64 or non-Darwin host;
+      - an x86_64, missing or duplicate ERTS, and a universal binary accepted;
+      - a missing, other-version or duplicate library;
+      - a missing, malformed or mismatched pin, an extra cassette and a linked cassette;
+      - an x86_64 or missing NIF;
+      - three env.sh variants without the line;
+      - the template;
+      - the `mix.exs` release configuration.
+    - The new `Integration/scripts/release-smoke.py` copies a built release into a fresh prefix and starts `bin/macus start` with an empty environment: system PATH only (no `erl`/`elixir`/`mix`), a new HOME and state, a free loopback port in `gateway.json`, and `RELEASE_DISTRIBUTION=sname` requested.
+    - The smoke passed against a real release built from `360e8ea`:
+      - all 23 Mach-O files link only `/usr/lib` and `/System/Library` (OpenSSL is static in `crypto.so`);
+      - the published pid is the bundled `beam.smp`, with no `-sname`/`-name` and no EPMD contact;
+      - its only TCP listener is the gateway port;
+      - TLS 1.3 serves the published certificate, and an unauthenticated `/runtime/status` gets 401;
+      - `tama-dex.sqlite3` holds `opsmaru_incus` (imported, 0.2.3, the pinned SHA-256) and `macus` (local);
+      - SIGTERM exits 0 within the deadline, while a stand-in Swift process holding `runtime.sock` keeps running, and the runtime files, `gateway.crt`/`.key` and `gateway.json` are unchanged.
+    - With the env.sh line removed, the smoke fails on `-sname macus`. This is release evidence, not hardware acceptance; adding the smoke to canonical checks and CI is 10.1.
 - [ ] 9.2 Extend source installation to stage/verify the Swift and complete Macus release artifacts; verify unsafe destinations, mismatched Macus identity and missing pinned dependency are rejected without activation.
 - [ ] 9.3 Extend formula/candidate generation to include the shared dependency and full release; verify real contents/checksums, entitlement preservation and matched Macus revision plus distinct opsmaru-incus revision with existing candidate tests.
 - [ ] 9.4 Extend installed verification for full ERTS/library payload, stable opt paths and passive installation; verify no third service or host toolchain requirement and retain source-fallback versus poured-bottle evidence.

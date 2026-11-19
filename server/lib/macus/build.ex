@@ -38,16 +38,21 @@ defmodule Macus.Build do
     |> Code.string_to_quoted!(emit_warnings: false, file: @lock)
     |> Code.eval_quoted()
 
-  {version, checksum} =
-    case Map.fetch(locked, :opsmaru_incus) do
-      {:ok, {:hex, :opsmaru_incus, version, _inner, _managers, _deps, _repo, outer}} ->
-        {version, outer}
+  # The release bundles these Hex packages; each is recorded by its locked
+  # version and outer checksum.
+  @bundled [:opsmaru_incus, :tama_dex, :exqlite]
 
-      _ ->
-        raise "server/mix.lock does not lock :opsmaru_incus from Hex"
-    end
+  @locked Map.new(@bundled, fn name ->
+            case Map.fetch(locked, name) do
+              {:ok, {:hex, ^name, version, _inner, _managers, _deps, _repo, outer}} ->
+                {name, %{version: version, checksum: outer}}
 
-  @opsmaru_incus %{version: version, checksum: checksum}
+              _ ->
+                raise "server/mix.lock does not lock #{inspect(name)} from Hex"
+            end
+          end)
+
+  @opsmaru_incus @locked.opsmaru_incus
 
   @type identity :: %{
           version: String.t(),
@@ -84,16 +89,34 @@ defmodule Macus.Build do
     end
   end
 
+  @doc "The locked version and outer Hex checksum of a bundled package."
+  @spec locked(:opsmaru_incus | :tama_dex | :exqlite) :: %{
+          version: String.t(),
+          checksum: String.t()
+        }
+  def locked(name) when name in @bundled, do: Map.fetch!(@locked, name)
+
   @doc """
   The release build manifest, written to `macus-build.json` at the release
   root (`Macus.Release.write_manifest/1`) so the Swift component can check
-  pairing before it starts this release: schema version 1, this build's
-  package `version` and source `revision`, and the bundled `opsmaru_incus`
-  version and outer checksum.
+  pairing before it starts this release. Schema version 1 holds this
+  build's package `version` and source `revision` and the bundled
+  `opsmaru_incus` version and outer checksum, which the Swift component
+  compares. It also records what `Macus.Release` verified in the assembled
+  release, given as `bundle`: the cassette's file and SHA-256, the locked
+  `tama_dex` and `exqlite` packages with the SHA-256 of exqlite's NIF, the
+  bundled ERTS version and target, and that distribution is off.
   """
-  @spec manifest() :: map()
-  def manifest do
+  @spec manifest(%{
+          cassette_sha256: String.t(),
+          nif_sha256: String.t(),
+          erts: String.t(),
+          target: String.t()
+        }) :: map()
+  def manifest(bundle) do
     identity = identity()
+    tama_dex = locked(:tama_dex)
+    exqlite = locked(:exqlite)
 
     %{
       "schema_version" => 1,
@@ -101,8 +124,20 @@ defmodule Macus.Build do
       "revision" => identity.revision,
       "opsmaru_incus" => %{
         "version" => identity.opsmaru_incus.version,
-        "checksum" => identity.opsmaru_incus.checksum
-      }
+        "checksum" => identity.opsmaru_incus.checksum,
+        "cassette" => %{
+          "file" => cassette_file(),
+          "sha256" => bundle.cassette_sha256
+        }
+      },
+      "tama_dex" => %{"version" => tama_dex.version, "checksum" => tama_dex.checksum},
+      "exqlite" => %{
+        "version" => exqlite.version,
+        "checksum" => exqlite.checksum,
+        "nif_sha256" => bundle.nif_sha256
+      },
+      "erts" => %{"version" => bundle.erts, "target" => bundle.target},
+      "distribution" => "none"
     }
   end
 
@@ -124,24 +159,26 @@ defmodule Macus.Build do
           %{cassette: String.t(), path: String.t(), sha256: String.t()}
           | %{cassette: String.t(), unavailable: :unpinned_bundle}
   def cassette do
-    pin = Keyword.get(Application.get_env(:macus, __MODULE__, []), :cassette_sha256)
-
-    if is_binary(pin) and Regex.match?(~r/\A[0-9a-f]{64}\z/, pin) do
-      %{cassette: "opsmaru_incus", path: cassette_path(), sha256: pin}
-    else
-      %{cassette: "opsmaru_incus", unavailable: :unpinned_bundle}
+    case cassette_pin() do
+      nil -> %{cassette: "opsmaru_incus", unavailable: :unpinned_bundle}
+      pin -> %{cassette: "opsmaru_incus", path: cassette_path(), sha256: pin}
     end
   end
 
   @doc "Where the release bundles the cassette for the locked `:opsmaru_incus` version."
   @spec cassette_path() :: String.t()
-  def cassette_path,
-    do:
-      Application.app_dir(:macus, [
-        "priv",
-        "cassettes",
-        "opsmaru_incus-#{@opsmaru_incus.version}.tama-cassette"
-      ])
+  def cassette_path, do: Application.app_dir(:macus, ["priv", "cassettes", cassette_file()])
+
+  @doc "The bundled cassette's file name for the locked `:opsmaru_incus` version."
+  @spec cassette_file() :: String.t()
+  def cassette_file, do: "opsmaru_incus-#{@opsmaru_incus.version}.tama-cassette"
+
+  @doc "The recorded cassette pin, when it is well-formed."
+  @spec cassette_pin() :: String.t() | nil
+  def cassette_pin do
+    pin = Keyword.get(Application.get_env(:macus, __MODULE__, []), :cassette_sha256)
+    if is_binary(pin) and Regex.match?(~r/\A[0-9a-f]{64}\z/, pin), do: pin
+  end
 
   defp revision, do: Keyword.get(Application.get_env(:macus, __MODULE__, []), :revision)
 

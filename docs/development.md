@@ -122,11 +122,58 @@ Info.plist (link with `-Xlinker -sectcreate -Xlinker __TEXT -Xlinker
 __info_plist -Xlinker <plist>`), and the release's
 `Macus.Release.write_manifest/1` step writes `macus-build.json` (version,
 `MACUS_SOURCE_REVISION`, and the bundled `opsmaru_incus` version and
-checksum) at the release root; a release build without a valid revision
-fails. `macus start` refuses to launch a release whose record differs. The integrated Homebrew candidate workflow
+checksum) at the release root. `macus start` refuses to launch a release
+whose record differs.
+
+The release is built on macOS ARM64 from `server/`:
+
+```sh
+cd server
+MIX_ENV=prod MACUS_SOURCE_REVISION="$(git rev-parse HEAD)" \
+  MACUS_CASSETTE_SHA256=<sha256 of the bundled cassette> \
+  mise exec -- mix release macus --overwrite --path /absolute/release
+```
+
+The opsmaru_incus cassette for the locked version must already be at
+`server/priv/cassettes/opsmaru_incus-<version>.tama-cassette`. Until task 9.7
+automates it, download it and its `.sha256` from the matching upmaru/opsmaru-incus
+GitHub Release and verify both the hash and `gh attestation verify --repo
+upmaru/opsmaru-incus`. Before recording anything, `Macus.Release` checks the
+assembled release and fails the build unless all of the following hold:
+
+- it was built on `aarch64-apple-darwin`;
+- it bundles exactly one ERTS, with an ARM64 `beam.smp`;
+- `lib/` holds exactly the locked `opsmaru_incus` and `tama_dex`;
+- the cassette is alone in `priv/cassettes/` and matches the pin;
+- exqlite's `sqlite3_nif.so`, the SQLite NIF `tama_dex` uses, is ARM64;
+- `env.sh` turns distribution off.
+
+exqlite's precompiled NIF is verified by exqlite's own checksums, which the
+locked package checksum covers. The manifest then also records the cassette
+file and SHA-256, the `tama_dex` and `exqlite` lock entries with the NIF's
+SHA-256, the ERTS version and target, and `distribution: none`. It is mode
+0444. `rel/env.sh.eex` forces `RELEASE_DISTRIBUTION=none` whatever the
+environment says: the server is never an Erlang node, opens no EPMD or
+distribution port, and is stopped with SIGTERM, not `bin/macus stop`.
+
+`python3 Integration/scripts/release-smoke.py --release /absolute/release`
+copies a built release into a fresh prefix and starts it as launchd would,
+but with an empty environment (system PATH, new HOME and state, no host
+Elixir/Erlang). It checks:
+
+- every Mach-O links only system libraries;
+- the gateway serves TLS 1.3 with the published certificate and refuses
+  unauthenticated requests;
+- the pinned cassette and the runtime cassette are indexed;
+- the gateway port is the only listener, and no distribution flag or EPMD
+  contact appears;
+- SIGTERM stops the server alone with status 0, leaving a stand-in runtime
+  service, `runtime.sock`, the runtime files and the server identity in place.
+
+It boots no VM. The integrated Homebrew candidate workflow
 is the packaging baseline, with real measured hashes and passive installation;
 see [candidate documentation](../Packaging/homebrew/README.md). Current
-installers still package Swift alone until the delivery tasks are complete.
+installers still package Swift alone; staging the release is task 9.2.
 
 ## Build and sign
 
