@@ -7,6 +7,7 @@ struct StartupOverrides: Sendable {
   var downloader: (any ApplianceDownloader)?
   var launchControl: (any LaunchControl)?
   var server: (any ServerProbe)?
+  var gateway: (any GatewayTransport)?
   var build: BuildIdentity?
   var executablePath: (@Sendable () -> String)?
   var now: (@Sendable () -> ContinuousClock.Instant)?
@@ -25,7 +26,8 @@ func runStart(
   directory: URL, remote: String, setDefault: Bool, incusOverride: String?,
   progress: ProgressSelection,
   timeout: Int, json: Bool, environment: [String: String], transport: any LocalHTTPTransport,
-  runner: any LocalCommandRunner, streams: MacusStreams, overrides: StartupOverrides
+  gateway: any GatewayTransport = HTTPSGatewayClient(), runner: any LocalCommandRunner,
+  streams: MacusStreams, overrides: StartupOverrides
 ) async throws {
   let draft = try DraftQualification.load(environment: environment, state: directory)
   let rendering = ProgressRenderer.resolve(
@@ -51,7 +53,8 @@ func runStart(
     launchControl: overrides.launchControl
       ?? ProcessLaunchControl(
         runner: runner, environment: environment, uid: overrides.uid ?? getuid()),
-    server: overrides.server ?? GatewayServerProbe(),
+    server: overrides.server ?? GatewayServerProbe(transport: overrides.gateway ?? gateway),
+    gateway: overrides.gateway ?? gateway,
     build: overrides.build ?? .current,
     capabilities: overrides.capabilities ?? { await MainActor.run { CapabilityDetector.detect() } },
     hasEntitlement: overrides.hasEntitlement ?? { currentProcessHasVirtualizationEntitlement() },

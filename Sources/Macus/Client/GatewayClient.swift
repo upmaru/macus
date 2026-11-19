@@ -363,8 +363,12 @@ func gatewayRequest(
   transport: any GatewayTransport
 ) async throws -> LocalHTTPResponse {
   let endpoint = try GatewayEndpoint.discover(stateDirectory: directory)
-  let response = try await transport.request(
-    endpoint, method: method, path: path, body: body, timeout: timeout)
+  return try requireGatewaySuccess(
+    try await transport.request(endpoint, method: method, path: path, body: body, timeout: timeout))
+}
+
+/// A 2xx gateway answer, or the `RuntimeError` its body describes.
+func requireGatewaySuccess(_ response: LocalHTTPResponse) throws -> LocalHTTPResponse {
   guard (200...299).contains(response.status) else {
     if response.status == 401 {
       throw RuntimeError(

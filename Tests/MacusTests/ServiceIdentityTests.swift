@@ -444,7 +444,7 @@ import Testing
 
 /// An existing isolated runtime, an installed fake package (`<prefix>/bin/macus` and its release
 /// under `libexec/macus`), and a launchd stand-in that serves each job when it is started.
-private final class PairFixture: @unchecked Sendable {
+final class PairFixture: @unchecked Sendable {
   let tools: StartTools
   let state: URL
   let prefix: URL
@@ -453,7 +453,7 @@ private final class PairFixture: @unchecked Sendable {
   let launcher: String
   let runtimeLabel: String
   let serverLabel: String
-  let probe = FakeServerProbe(serving: false)
+  let probe = FakeServerProbe(serving: false, publishes: true)
   let launch: PairLaunch
   var build = BuildIdentity(version: "0.1.0", revision: String(repeating: "ab", count: 20))
   var release: URL { prefix.appendingPathComponent("libexec/macus") }
@@ -531,6 +531,7 @@ private final class PairFixture: @unchecked Sendable {
     var overrides = tools.overrides(
       downloader: downloader, launchControl: launch, agents: agents)
     overrides.server = probe
+    overrides.gateway = probe
     overrides.build = build
     let executable = self.executable
     overrides.executablePath = { executable }
@@ -549,7 +550,7 @@ private final class PairFixture: @unchecked Sendable {
   }
 }
 
-private final class PairLaunch: LaunchControl, @unchecked Sendable {
+final class PairLaunch: LaunchControl, @unchecked Sendable {
   private let lock = NSLock()
   private var jobs: [String: LaunchJob] = [:]
   private var bootstraps: [URL] = []
@@ -569,11 +570,15 @@ private final class PairLaunch: LaunchControl, @unchecked Sendable {
   var printed: [String] { lock.withLock { prints } }
   func register(_ job: LaunchJob) { lock.withLock { jobs[job.label] = job } }
 
+  /// The private runtime's answers; a ready runtime unless a test scripts another.
+  var responder: (@Sendable (String, String, Data) -> Data)?
+
   func openRuntime() throws -> ScriptedSocket {
     if let runtime = lock.withLock({ runtime }) { return runtime }
     let state = self.state
-    let socket = try ScriptedSocket(name: "runtime.sock", directory: state) { method, path, _ in
-      readyRuntime(method: method, path: path, directory: state)
+    let scripted = lock.withLock { responder }
+    let socket = try ScriptedSocket(name: "runtime.sock", directory: state) { method, path, body in
+      scripted?(method, path, body) ?? readyRuntime(method: method, path: path, directory: state)
     }
     lock.withLock { runtime = socket }
     return socket

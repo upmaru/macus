@@ -216,6 +216,14 @@ final class ScriptedGateway: @unchecked Sendable {
 
 /// Writes `server/endpoint.json` and `server/local-cli.token` (0600, in a 0700 directory).
 func writeGatewayState(directory: URL, url: String, fingerprint: String) throws {
+  try writeEndpointMetadata(directory: directory, url: url, fingerprint: fingerprint)
+  try writePrivate(
+    Data((ScriptedGateway.token + "\n").utf8),
+    to: directory.appendingPathComponent("server/local-cli.token"))
+}
+
+/// Writes only `server/endpoint.json`, as a serving server publishes it.
+func writeEndpointMetadata(directory: URL, url: String, fingerprint: String) throws {
   let server = directory.appendingPathComponent("server")
   if !FileManager.default.fileExists(atPath: server.path) {
     try FileManager.default.createDirectory(
@@ -230,9 +238,6 @@ func writeGatewayState(directory: URL, url: String, fingerprint: String) throws 
   try writePrivate(
     try JSONSerialization.data(withJSONObject: metadata),
     to: server.appendingPathComponent("endpoint.json"))
-  try writePrivate(
-    Data((ScriptedGateway.token + "\n").utf8),
-    to: server.appendingPathComponent("local-cli.token"))
 }
 
 func writePrivate(_ data: Data, to url: URL) throws {
@@ -254,21 +259,126 @@ func publicStatus(state: String, url: String = "https://127.0.0.1:8443") -> [Str
   ]
 }
 
-/// Stands in for the server probe: answers as a serving (or absent) Macus server and counts asks.
-final class FakeServerProbe: ServerProbe, @unchecked Sendable {
+/// Stands in for the Macus server: answers the probe as a serving (or absent) server and counts
+/// asks, and serves the public `/runtime` API the way the gateway does, relaying each request to
+/// the state's private `runtime.sock` beneath `/v1/runtime` and projecting the status.
+///
+/// With `publishes`, a serving answer also publishes `server/endpoint.json` for that state (the
+/// credential is the one `macus start` prepared), so gateway discovery succeeds.
+final class FakeServerProbe: ServerProbe, GatewayTransport, @unchecked Sendable {
+  struct Request: Equatable {
+    let method: String
+    let path: String
+    let body: String
+  }
+
   private let lock = NSLock()
   private var answer: Bool
   private var count = 0
-  init(serving: Bool = true) { answer = serving }
+  private let publishes: Bool
+  private var states: [String: URL] = [:]
+  private var recorded: [Request] = []
+  private var drops: [String: Drop] = [:]
+
+  /// How a scripted request loses its connection: before it reaches Swift, or after Swift has
+  /// accepted it (the gateway connection then breaks while Swift keeps working).
+  /// `interruptAfterDispatch` stands for the user interrupting start while Swift works on it.
+  enum Drop { case beforeDispatch, afterDispatch, interruptAfterDispatch }
+
+  init(serving: Bool = true, publishes: Bool = false) {
+    answer = serving
+    self.publishes = publishes
+  }
   var serving: Bool {
     get { lock.withLock { answer } }
     set { lock.withLock { answer = newValue } }
   }
   var asks: Int { lock.withLock { count } }
+  /// The public requests received, in order.
+  var requests: [Request] { lock.withLock { recorded } }
+  /// The next `method path` request loses its connection once.
+  func drop(_ method: String, _ path: String, _ drop: Drop) {
+    lock.withLock { drops["\(method) \(path)"] = drop }
+  }
+
   func serving(stateDirectory: URL, timeout: Int) async throws -> Bool {
-    lock.withLock {
+    let answer: Bool = lock.withLock {
       count += 1
-      return answer
+      return self.answer
     }
+    if answer && publishes { try publish(stateDirectory) }
+    return answer
+  }
+
+  private func publish(_ directory: URL) throws {
+    let url: String = lock.withLock {
+      if let existing = states.first(where: { $0.value == directory })?.key { return existing }
+      let url = "https://127.0.0.1:\(20_000 + states.count)"
+      states[url] = directory
+      return url
+    }
+    try writeEndpointMetadata(
+      directory: directory, url: url, fingerprint: String(repeating: "0", count: 64))
+  }
+
+  func request(
+    _ endpoint: GatewayEndpoint, method: String, path: String, body: Data, timeout: Int
+  ) async throws -> LocalHTTPResponse {
+    let (directory, drop, up): (URL?, Drop?, Bool) = lock.withLock {
+      recorded.append(
+        Request(method: method, path: path, body: String(decoding: body, as: UTF8.self)))
+      let drop = drops.removeValue(forKey: "\(method) \(path)")
+      return (states[endpoint.url.absoluteString], drop, answer)
+    }
+    guard let directory, up else {
+      throw RuntimeError(.unavailable, "Cannot connect to the Macus server (fixture)")
+    }
+    if drop == .beforeDispatch {
+      throw RuntimeError(.unavailable, "Cannot connect to the Macus server (fixture)")
+    }
+    let socket = directory.appendingPathComponent("runtime.sock")
+    let response: LocalHTTPResponse
+    do {
+      response = try await UnixHTTPClient().request(
+        socket: socket, method: method, path: "/v1" + path, body: body, timeout: timeout)
+    } catch let error as RuntimeError where error.code == .invalidRequest {
+      throw error
+    } catch {
+      var object: [String: Any] = [
+        "error": [
+          "code": "unavailable", "message": "The Swift runtime service did not answer.",
+          "outcome": "not_dispatched",
+        ]
+      ]
+      if path == "/runtime/status" {
+        object["server_ready"] = true
+        object["runtime_ready"] = false
+      }
+      return LocalHTTPResponse(
+        status: 503, body: try JSONSerialization.data(withJSONObject: object))
+    }
+    if drop == .afterDispatch {
+      throw RuntimeError(.unavailable, "The Macus server connection was lost (fixture)")
+    }
+    if drop == .interruptAfterDispatch { throw CancellationError() }
+    return project(response, url: endpoint.url.absoluteString)
+  }
+
+  private func project(_ response: LocalHTTPResponse, url: String) -> LocalHTTPResponse {
+    guard (200...299).contains(response.status),
+      var object = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
+      object["incus_socket"] != nil, let state = object["state"] as? String
+    else { return response }
+    object.removeValue(forKey: "incus_socket")
+    let endpoint: [String: Any] = [
+      "url": url, "certificate_fingerprint": String(repeating: "0", count: 64),
+    ]
+    object["server_endpoint"] = endpoint
+    object["incus_endpoint"] = endpoint
+    object["server_ready"] = true
+    object["runtime_ready"] = state == "ready"
+    return LocalHTTPResponse(
+      status: response.status,
+      body: (try? JSONSerialization.data(withJSONObject: object)) ?? response.body)
   }
 }

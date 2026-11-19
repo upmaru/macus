@@ -478,12 +478,14 @@ struct StartTools {
     downloader: any ApplianceDownloader, launchControl: (any LaunchControl)? = nil,
     agents: URL? = nil
   ) -> StartupOverrides {
-    StartupOverrides(
+    let gateway = FakeServerProbe(publishes: true)
+    return StartupOverrides(
       capabilities: { HostCapabilities(supported: true, nestedVirtualization: false) },
       hasEntitlement: { true },
       downloader: downloader,
       launchControl: launchControl ?? FakeLaunchControl(),
-      server: FakeServerProbe(),
+      server: gateway,
+      gateway: gateway,
       executablePath: { "/usr/bin/true" },
       homeDirectory: root,
       launchAgentsDirectory: agents ?? root.appendingPathComponent("LaunchAgents"),

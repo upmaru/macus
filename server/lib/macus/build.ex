@@ -145,7 +145,6 @@ defmodule Macus.Build do
 
   defp revision, do: Keyword.get(Application.get_env(:macus, __MODULE__, []), :revision)
 
-
   defp loaded_opsmaru_incus do
     case Application.spec(:opsmaru_incus, :vsn) do
       nil -> nil

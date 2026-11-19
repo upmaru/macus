@@ -659,7 +659,8 @@ private func execute(
     try await runStart(
       directory: directory, remote: remote, setDefault: setDefault, incusOverride: incus,
       progress: progress, timeout: timeout, json: json, environment: environment,
-      transport: transport, runner: runner, streams: streams, overrides: overrides)
+      transport: transport, gateway: gateway, runner: runner, streams: streams,
+      overrides: overrides)
   case .serverConfigShow:
     try ServerAdministration.showConfiguration(
       directory: directory, json: json, streams: streams, presentation: presentation)

@@ -7,6 +7,8 @@ struct StartupDependencies: Sendable {
   var launchControl: any LaunchControl
   /// Recognizes a serving Macus server only through its authenticated, pinned gateway.
   var server: any ServerProbe = GatewayServerProbe()
+  /// The public `/runtime` API every lifecycle, progress and health request uses.
+  var gateway: any GatewayTransport = HTTPSGatewayClient()
   /// This executable's package version and source revision, paired with the server release.
   var build: BuildIdentity = .current
   var capabilities: @Sendable () async -> HostCapabilities
@@ -362,10 +364,8 @@ private final class StartContext: @unchecked Sendable {
     configuration.readinessTimeoutSeconds = 1_800
     configuration.shares = []
     let body = try JSON.encoder().encode(configuration)
-    let response = try await control("POST", "/v1/runtime/create", body, paths: paths)
-    guard (200...299).contains(response.status) else {
-      throw responseFailure(status: response.status, body: response.body)
-    }
+    _ = try requireGatewaySuccess(
+      try await gateway("POST", "/runtime/create", body, paths: paths))
     emit(.runtimeCreation, .complete)
   }
 
@@ -390,10 +390,23 @@ private final class StartContext: @unchecked Sendable {
     let body = try JSONSerialization.data(withJSONObject: ["remaining_seconds": remaining])
     let poll = Task { await pollProgress(paths) }
     defer { poll.cancel() }
-    let response = try await control("POST", "/v1/runtime/start", body, paths: paths)
-    guard (200...299).contains(response.status) else {
-      throw responseFailure(status: response.status, body: response.body)
+    let endpoint = try GatewayEndpoint.discover(stateDirectory: paths.directory)
+    let response: LocalHTTPResponse
+    do {
+      response = try await dependencies.gateway.request(
+        endpoint, method: "POST", path: "/runtime/start", body: body,
+        timeout: try budget.remainingSeconds(at: dependencies.now()))
+    } catch let error as RuntimeError where error.code == .unavailable || error.code == .io {
+      // The connection to the server was lost, so Swift may have accepted the boot. It is never
+      // sent again: the guest keeps booting (expected reboot included) and readiness is
+      // observed through the gateway once it answers again.
+      try await awaitReadyAfterLostStart(paths)
+      let capabilities = try await liveCapabilities(paths)
+      emit(.provisioning, .complete)
+      emit(.readiness, .complete)
+      return capabilities
     }
+    _ = try requireGatewaySuccess(response)
     let capabilities = try await liveCapabilities(paths)
     emit(.provisioning, .complete)
     emit(.readiness, .complete)
@@ -405,8 +418,10 @@ private final class StartContext: @unchecked Sendable {
   ) {
     emit(.clientSetup, .active)
     let status = try await statusObject(paths)
-    guard jsonString(status["state"]) == "ready", let socket = jsonString(status["incus_socket"])
-    else {
+    // The public status never names the private Incus socket. Until client setup registers the
+    // HTTPS server, the remote still uses this state's own socket.
+    let socket = paths.incusSocket.path
+    guard jsonString(status["state"]) == "ready" else {
       throw RuntimeError(
         .unavailable,
         "Runtime is not ready. Client setup was not started and runtime data was preserved."
@@ -450,7 +465,7 @@ private final class StartContext: @unchecked Sendable {
     guard FileManager.default.fileExists(atPath: paths.controlSocket.path) else { return false }
     let status: LocalHTTPResponse
     do {
-      status = try await control("GET", "/v1/runtime/status", Data(), paths: paths)
+      status = try await privateProbe("GET", "/v1/runtime/status", Data(), paths: paths)
     } catch let error as RuntimeError where error.code == .invalidConfiguration {
       throw RuntimeError(
         .invalidConfiguration,
@@ -460,7 +475,7 @@ private final class StartContext: @unchecked Sendable {
       return false
     }
     guard (200...299).contains(status.status) else { return false }
-    let progress = try await control("GET", "/v1/runtime/progress", Data(), paths: paths)
+    let progress = try await privateProbe("GET", "/v1/runtime/progress", Data(), paths: paths)
     if progress.status == 404 {
       throw RuntimeError(
         .invalidConfiguration,
@@ -584,9 +599,48 @@ private final class StartContext: @unchecked Sendable {
       .timeout, "The background service did not open its control endpoint before the deadline")
   }
 
+  /// After the start request's connection was lost: waits, within the budget, for the gateway to
+  /// report the runtime ready. A gateway that is restarting or a Swift service it cannot reach yet
+  /// is waited for; a runtime that is no longer starting is reported, and the boot is not retried.
+  private func awaitReadyAfterLostStart(_ paths: RuntimePaths) async throws {
+    emit(.provisioning, .active, detail: "reconnecting to the Macus server")
+    while dependencies.now() < budget.deadline {
+      try Task.checkCancellation()
+      let response: LocalHTTPResponse
+      do {
+        response = try await gateway("GET", "/runtime/status", timeout: 5, paths: paths)
+      } catch let error as RuntimeError where error.code == .invalidConfiguration {
+        throw error
+      } catch is CancellationError {
+        throw CancellationError()
+      } catch {
+        try await Task.sleep(for: .milliseconds(250))
+        continue
+      }
+      if (200...299).contains(response.status), let object = try? jsonObject(response.body) {
+        switch jsonString(object["state"]) {
+        case "ready":
+          return
+        case "starting":
+          break
+        case let state:
+          throw RuntimeError(
+            .unavailable,
+            "The connection to the Macus server was lost while the runtime was starting, and the runtime is now \(state ?? "unknown"). The boot was not sent again; rerun macus start. Disks and logs were preserved."
+          )
+        }
+      }
+      try await Task.sleep(for: .milliseconds(250))
+    }
+    throw RuntimeError(
+      .timeout,
+      "The runtime did not become ready through the Macus server before the deadline. The guest was not force-stopped; disks and logs were preserved."
+    )
+  }
+
   private func pollProgress(_ paths: RuntimePaths) async {
     while !Task.isCancelled {
-      if let response = try? await control("GET", "/v1/runtime/progress", Data(), paths: paths),
+      if let response = try? await gateway("GET", "/runtime/progress", timeout: 5, paths: paths),
         (200...299).contains(response.status),
         let object = try? jsonObject(response.body)
       {
@@ -602,31 +656,41 @@ private final class StartContext: @unchecked Sendable {
   }
 
   private func liveCapabilities(_ paths: RuntimePaths) async throws -> RuntimeCapabilities {
-    let health = try await control("GET", "/v1/runtime/health", Data(), paths: paths)
-    guard (200...299).contains(health.status) else {
-      throw responseFailure(status: health.status, body: health.body)
-    }
+    let health = try requireGatewaySuccess(
+      try await gateway("GET", "/runtime/health", paths: paths))
     let decoded = try JSON.decoder().decode(GuestHealth.self, from: health.body)
     guard decoded.protocolVersion == 1 else {
       throw RuntimeError(
         .unavailable, "Guest health protocol is not live. Progress markers are not readiness.")
     }
-    let capabilities = try await control("GET", "/v1/runtime/capabilities", Data(), paths: paths)
-    guard (200...299).contains(capabilities.status) else {
-      throw responseFailure(status: capabilities.status, body: capabilities.body)
-    }
+    let capabilities = try requireGatewaySuccess(
+      try await gateway("GET", "/runtime/capabilities", paths: paths))
     return try JSON.decoder().decode(RuntimeCapabilities.self, from: capabilities.body)
   }
 
   private func statusObject(_ paths: RuntimePaths) async throws -> [String: Any] {
-    let response = try await control("GET", "/v1/runtime/status", Data(), paths: paths)
-    guard (200...299).contains(response.status) else {
-      throw responseFailure(status: response.status, body: response.body)
-    }
+    let response = try requireGatewaySuccess(
+      try await gateway("GET", "/runtime/status", paths: paths))
     return try jsonObject(response.body)
   }
 
-  private func control(_ method: String, _ path: String, _ body: Data, paths: RuntimePaths)
+  /// One public `/runtime` request within the remaining budget (at most `timeout` seconds). The
+  /// endpoint is discovered first, so missing or unsafe server files fail as themselves.
+  private func gateway(
+    _ method: String, _ path: String, _ body: Data = Data(), timeout: Int? = nil,
+    paths: RuntimePaths
+  ) async throws -> LocalHTTPResponse {
+    let endpoint = try GatewayEndpoint.discover(stateDirectory: paths.directory)
+    let remaining = try budget.remainingSeconds(at: dependencies.now())
+    return try await dependencies.gateway.request(
+      endpoint, method: method, path: path, body: body,
+      timeout: min(remaining, timeout ?? remaining))
+  }
+
+  /// Identifies the private Swift service while activating it (a compatible daemon already
+  /// serving this state, launchd-owned or foreground). This is bootstrap mechanics only: every
+  /// lifecycle, progress and health request goes through the public gateway.
+  private func privateProbe(_ method: String, _ path: String, _ body: Data, paths: RuntimePaths)
     async throws
     -> LocalHTTPResponse
   {
@@ -652,10 +716,9 @@ private final class StartContext: @unchecked Sendable {
   private func interruptedMessage() async -> String {
     let paths = RuntimePaths(directory: request.stateDirectory)
     var observed: String?
-    if FileManager.default.fileExists(atPath: paths.controlSocket.path),
-      let response = try? await dependencies.transport.request(
-        socket: paths.controlSocket, method: "GET", path: "/v1/runtime/status", body: Data(),
-        timeout: 2),
+    if let endpoint = try? GatewayEndpoint.discover(stateDirectory: paths.directory),
+      let response = try? await dependencies.gateway.request(
+        endpoint, method: "GET", path: "/runtime/status", body: Data(), timeout: 2),
       (200...299).contains(response.status),
       let object = try? jsonObject(response.body)
     {

@@ -317,6 +317,29 @@ defmodule MacusWeb.RuntimeTest do
     assert_receive {:swift, "POST", "/v1/runtime/start", ""}
   end
 
+  test "a boot whose Swift connection breaks is sent once; progress passes through", context do
+    progress =
+      ~s({"api_version":1,"ready":false,"state":"starting","phase":"kernel_transition","expected_reboot":true})
+
+    swift!(context, fn request ->
+      case request.target do
+        # Swift accepted the boot, then the connection closed without an answer.
+        "/v1/runtime/start" -> %{raw: ""}
+        "/v1/runtime/progress" -> %{raw: raw(200, progress)}
+      end
+    end)
+
+    assert {503, start, _} =
+             call(:post, "/runtime/start", context.tokens.write, ~s({"remaining_seconds":60}))
+
+    assert start["error"]["outcome"] == "unknown"
+    assert_receive {:swift, "POST", "/v1/runtime/start", ~s({"remaining_seconds":60})}
+    refute_receive {:swift, "POST", _, _}, 200
+
+    assert {200, _, conn} = call(:get, "/runtime/progress", context.tokens.read)
+    assert conn.resp_body == progress
+  end
+
   test "revoking a credential ends its in-flight runtime request", context do
     test = self()
 
@@ -459,7 +482,7 @@ defmodule MacusWeb.RuntimeTest do
   end
 
   defp raw(status, body) do
-    reason = %{400 => "Bad Request", 409 => "Conflict"}[status]
+    reason = %{200 => "OK", 400 => "Bad Request", 409 => "Conflict"}[status]
 
     "HTTP/1.1 #{status} #{reason}\r\ncontent-type: application/json\r\ncontent-length: #{byte_size(body)}\r\nconnection: close\r\n\r\n" <>
       body
