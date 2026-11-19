@@ -16,6 +16,9 @@ defmodule Macus.Proxy.NativeRelayTest do
   # A tightened revocation bound keeps the revocation tests short.
   @bound 400
   @mcp_version "2026-07-28"
+  # A receive timeout: Mint.WebSocket.recv/3 returns the raw :ssl reason after
+  # the upgrade, Mint.HTTP.recv/3 this struct before it.
+  @timeout %Mint.TransportError{reason: :timeout}
 
   setup_all do
     {output, status} =
@@ -1039,7 +1042,7 @@ defmodule Macus.Proxy.NativeRelayTest do
           do: {ws, :closed},
           else: until_closed(ws, timeout)
 
-      {:error, conn, %Mint.TransportError{reason: :timeout}, _} ->
+      {:error, conn, reason, _} when reason in [:timeout, @timeout] ->
         {%{ws | conn: conn}, :open}
 
       {:error, conn, _error, _} ->
@@ -1065,7 +1068,7 @@ defmodule Macus.Proxy.NativeRelayTest do
             close -> {:closed, close}
           end
 
-        {:error, conn, %Mint.TransportError{reason: :timeout}, _} ->
+        {:error, conn, reason, _} when reason in [:timeout, @timeout] ->
           keep_talking(%{ws | conn: conn}, deadline)
 
         {:error, _conn, error, _} ->

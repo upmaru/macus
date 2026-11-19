@@ -50,7 +50,7 @@ defmodule Macus.Proxy.CowboyUpgradeTest do
       # A transfer spanning many transport reads cannot be whole-body buffered.
       # Send while reading: the fixture tunnel relays both directions from one
       # process, so writing the whole payload before reading the echo can fill
-      # every buffer and trip its 1 s send timeout.
+      # every buffer and trip its send timeout.
       payload = :binary.copy(<<0, 255, 2, 128>>, 131_072)
       sender = Task.async(fn -> :ssl.send(socket, payload) end)
       assert receive_exact(socket, "", byte_size(payload)) == payload

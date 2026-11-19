@@ -6,6 +6,10 @@ defmodule Macus.TestSupport.CowboyUpgradeHandler do
 
   @behaviour :cowboy_handler
 
+  # Long enough for a slow CI runner to drain a stalled direction; tests
+  # check the bytes relayed, not how fast one send completes.
+  @send_timeout 5_000
+
   @impl true
   def init(req, opts) do
     protocol = :cowboy_req.header("upgrade", req)
@@ -51,7 +55,7 @@ defmodule Macus.TestSupport.CowboyUpgradeHandler do
              :binary,
              active: false,
              exit_on_close: false,
-             send_timeout: 1_000,
+             send_timeout: @send_timeout,
              send_timeout_close: true,
              buffer: 65_536
            ],
@@ -141,6 +145,9 @@ end
 defmodule Macus.TestSupport.CowboyTunnel do
   @moduledoc "Fixture-only socket takeover with one active read per direction."
 
+  # As CowboyUpgradeHandler's.
+  @send_timeout 5_000
+
   # Cowboy calls this in its connection process after sending HTTP 101. Both
   # descriptors belong to that process, not the now-terminated request worker.
   def takeover(_parent, _ref, client, transport, _opts, buffer, state) do
@@ -149,7 +156,11 @@ defmodule Macus.TestSupport.CowboyTunnel do
 
     try do
       :ok =
-        transport.setopts(client, active: false, send_timeout: 1_000, send_timeout_close: true)
+        transport.setopts(client,
+          active: false,
+          send_timeout: @send_timeout,
+          send_timeout_close: true
+        )
 
       :ok = :gen_tcp.send(backend, buffer)
       :ok = transport.send(client, state.backend_buffer)
