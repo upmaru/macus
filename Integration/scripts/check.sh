@@ -20,7 +20,7 @@ python3 -m py_compile Integration/guest/bridge.py Integration/scripts/prepare-ap
 python3 Integration/scripts/sync-guest-payload.py --check
 python3 Integration/scripts/check-catalog.py
 python3 -m py_compile Packaging/homebrew/candidate.py
-python3 -m py_compile Integration/scripts/homebrew-acceptance.py Integration/scripts/presentation-acceptance.py
+python3 -m py_compile Integration/scripts/homebrew-acceptance.py Integration/scripts/presentation-acceptance.py Integration/scripts/cross-component-fixture.py
 python3 -m py_compile Integration/qualification/prepare-zfs.py Integration/qualification/run-zfs.py
 python3 -m unittest discover -s Integration/tests -v
 sh Integration/scripts/test-install.sh
@@ -48,6 +48,13 @@ if [ -n "${MACUS_RELEASE_SMOKE_CASSETTE:-}" ]; then
     trap 'rm -rf "$smoke_prefix"' EXIT
     sh Packaging/install-local.sh --prefix "$smoke_prefix" --cassette "$MACUS_RELEASE_SMOKE_CASSETTE"
     python3 Integration/scripts/release-smoke.py --release "$smoke_prefix/libexec/macus"
+    # Opt-in cross-component fixture (task 10.2): the installed binaries and the standard
+    # Incus CLI named by MACUS_FIXTURE_INCUS, against the Incus fixture, without a VM.
+    if [ -n "${MACUS_FIXTURE_INCUS:-}" ]; then
+        python3 Integration/scripts/cross-component-fixture.py --prefix "$smoke_prefix" --incus "$MACUS_FIXTURE_INCUS"
+    else
+        echo "check: cross-component fixture skipped: set MACUS_FIXTURE_INCUS to an absolute incus executable to run it."
+    fi
 else
     echo "check: release smoke skipped: set MACUS_RELEASE_SMOKE_CASSETTE to an absolute, verified opsmaru_incus-<locked>.tama-cassette (with its .sha256 sidecar) to run it."
 fi

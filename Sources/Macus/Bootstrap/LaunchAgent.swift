@@ -141,10 +141,12 @@ struct ProcessLaunchControl: LaunchControl {
   var runner: any LocalCommandRunner
   var environment: [String: String]
   var uid: uid_t
+  /// `/bin/launchctl`, or an isolated `MACUS_FIXTURE_LAUNCHCTL` stand-in given the same arguments.
+  var executable = "/bin/launchctl"
 
   func printJob(label: String, timeout: Int) async throws -> LaunchJob? {
     let result = try await runner.run(
-      executable: "/bin/launchctl", arguments: ["print", "gui/\(uid)/\(label)"],
+      executable: executable, arguments: ["print", "gui/\(uid)/\(label)"],
       environment: environment, timeout: timeout)
     guard result.status == 0 else { return nil }
     let text = String(decoding: result.stdout, as: UTF8.self)
@@ -153,7 +155,7 @@ struct ProcessLaunchControl: LaunchControl {
 
   func kickstart(label: String, timeout: Int) async throws {
     let result = try await runner.run(
-      executable: "/bin/launchctl", arguments: ["kickstart", "gui/\(uid)/\(label)"],
+      executable: executable, arguments: ["kickstart", "gui/\(uid)/\(label)"],
       environment: environment, timeout: timeout)
     guard result.status == 0 else {
       let detail = terminalSafe(
@@ -165,7 +167,7 @@ struct ProcessLaunchControl: LaunchControl {
 
   func bootstrap(plist: URL, timeout: Int) async throws {
     let result = try await runner.run(
-      executable: "/bin/launchctl", arguments: ["bootstrap", "gui/\(uid)", plist.path],
+      executable: executable, arguments: ["bootstrap", "gui/\(uid)", plist.path],
       environment: environment, timeout: timeout)
     guard result.status == 0 else {
       let detail = terminalSafe(

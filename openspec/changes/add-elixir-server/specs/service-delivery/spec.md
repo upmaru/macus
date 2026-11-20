@@ -131,3 +131,27 @@ The pinned `:opsmaru_incus` library SHALL ship inside the existing Macus release
 
 - **WHEN** the installed shared dependency is absent or conflicts with recorded build identity
 - **THEN** startup fails before guest mutation without downloading a replacement
+
+### Requirement: Isolated cross-component fixture seams
+
+The shipped Swift executable SHALL offer two opt-in fixture seams for cross-component checks without a VM: `MACUS_FIXTURE_GUEST_DIR` for `macus serve` (a guest whose vsock ports are owner-private Unix sockets in that directory) and `MACUS_FIXTURE_LAUNCHCTL` for `macus start` (an executable run in place of `/bin/launchctl` with the same arguments). Each seam MUST be refused before any state, socket or job is touched unless the state directory and the fixture path resolve beneath `/private/tmp`, are owned by the current user, are not group- or world-writable and contain no symbolic link other than the system's `/tmp -> private/tmp`. Without these variables behavior SHALL be unchanged. Evidence produced through a seam MUST NOT satisfy hardware, package or remote acceptance.
+
+#### Scenario: Fixture guest in an isolated state
+
+- **WHEN** `macus serve` runs for a state beneath `/private/tmp` with `MACUS_FIXTURE_GUEST_DIR` naming an owner-private directory beneath `/private/tmp`
+- **THEN** starting the runtime creates no virtual machine, guest streams connect to `vsock-<port>.sock` in that directory, the production health, relay and runtime routes are used, and the output identifies the fixture guest
+
+#### Scenario: Fixture seam outside isolation
+
+- **WHEN** either fixture variable is set for the default state, a state outside `/private/tmp`, or a fixture path that is a symbolic link, foreign-owned or group- or world-writable
+- **THEN** the command fails before touching state, sockets or launchd and names the refused variable
+
+#### Scenario: Fixture launch control
+
+- **WHEN** `macus start` runs for an isolated state with `MACUS_FIXTURE_LAUNCHCTL`
+- **THEN** it writes and validates its production plists and passes the stand-in exactly the arguments it would pass `/bin/launchctl`, and the user's launchd domain is not used
+
+#### Scenario: Fixture evidence is not acceptance
+
+- **WHEN** a check completes through either fixture seam
+- **THEN** its report records fixture evidence and the hardware, package and remote acceptance tasks remain open

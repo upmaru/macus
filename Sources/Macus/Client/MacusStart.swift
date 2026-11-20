@@ -29,6 +29,10 @@ func runStart(
   gateway: any GatewayTransport = HTTPSGatewayClient(), runner: any LocalCommandRunner,
   streams: MacusStreams, overrides: StartupOverrides
 ) async throws {
+  // A launchctl stand-in is refused before qualification, state or any launchd job is touched.
+  let fixtureLaunchctl = try FixtureSeam.path(
+    FixtureSeam.launchctlVariable, environment: environment, stateDirectory: directory,
+    kind: .executable)
   let draft = try DraftQualification.load(environment: environment, state: directory)
   let rendering = ProgressRenderer.resolve(
     selection: progress, stderrIsTTY: overrides.stderrIsTTY ?? streams.stderrIsTTY,
@@ -52,7 +56,8 @@ func runStart(
     downloader: overrides.downloader ?? draft?.downloader ?? URLSessionApplianceDownloader(),
     launchControl: overrides.launchControl
       ?? ProcessLaunchControl(
-        runner: runner, environment: environment, uid: overrides.uid ?? getuid()),
+        runner: runner, environment: environment, uid: overrides.uid ?? getuid(),
+        executable: fixtureLaunchctl?.path ?? "/bin/launchctl"),
     server: overrides.server ?? GatewayServerProbe(transport: overrides.gateway ?? gateway),
     gateway: overrides.gateway ?? gateway,
     build: overrides.build ?? .current,

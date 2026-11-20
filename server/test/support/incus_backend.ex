@@ -12,7 +12,9 @@ defmodule Macus.TestSupport.IncusBackend do
   discovery record's API extensions) and `:script`, a function of
   `%{method, path, qs, headers, body}` answering scripted routes (see
   `Handler`) or `nil` for the built-in ones. Returns `%{ref, connections}`;
-  `open_connections/1` counts backend connections still open.
+  `open_connections/1` counts backend connections still open. Outside a test
+  process (the standalone fixture of task 10.2), pass `on_exit: false`; the
+  socket then lives until the VM exits.
   """
   def start!(path, observer, opts \\ "") do
     opts = if is_binary(opts), do: [guest_pem: opts], else: opts
@@ -46,12 +48,14 @@ defmodule Macus.TestSupport.IncusBackend do
     acceptor = spawn(fn -> accept(listener, inner, connections) end)
     :ok = :gen_tcp.controlling_process(listener, acceptor)
 
-    ExUnit.Callbacks.on_exit(fn ->
-      Process.exit(acceptor, :kill)
-      :cowboy.stop_listener(ref)
-      File.rm(path)
-      File.rm(inner)
-    end)
+    if Keyword.get(opts, :on_exit, true) do
+      ExUnit.Callbacks.on_exit(fn ->
+        Process.exit(acceptor, :kill)
+        :cowboy.stop_listener(ref)
+        File.rm(path)
+        File.rm(inner)
+      end)
+    end
 
     %{ref: ref, connections: connections}
   end
