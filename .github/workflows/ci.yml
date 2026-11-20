@@ -10,6 +10,8 @@ on:
 
 permissions:
   contents: read
+  # gh attestation verify reads the opsmaru-incus cassette's provenance.
+  attestations: read
 
 concurrency:
   group: native-checks-${{ github.ref }}
@@ -17,12 +19,14 @@ concurrency:
 
 jobs:
   native:
-    name: Swift and OpenSpec
+    name: Swift, Mix and OpenSpec
     runs-on: xcode-27
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.app/Contents/Developer
-      # The source install test builds the server release with `mise exec -- mix`.
+      # check.sh builds the server release with `mise exec -- mix`, and the
+      # server tests build the official Incus reference drivers with
+      # `mise exec -- go`, so the repository's mise.toml must be trusted.
       MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,46 +35,32 @@ jobs:
           node-version: '22'
       - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          install_args: erlang elixir
+          install_args: erlang elixir go
           cache: true
       - name: Toolchain
         run: |
           swift --version
           mise exec -- elixir --version
+          mise exec -- go version
           mise exec -- mix local.hex --force
           mise exec -- mix local.rebar --force
-      - name: Debug, tests, release, formatting and guest syntax
+      # Until task 9.7 moves this into the release build, the opt-in release
+      # smoke in check.sh installs with this verified cassette.
+      - name: Fetch and verify the pinned opsmaru_incus cassette
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          locked="$(sed -n 's/.*"opsmaru_incus": {:hex, :opsmaru_incus, "\([^"]*\)".*/\1/p' server/mix.lock)"
+          mkdir -p .integration/cassette
+          gh release download "v$locked" --repo upmaru/opsmaru-incus --dir .integration/cassette \
+            --pattern "opsmaru_incus-$locked.tama-cassette*"
+          (cd .integration/cassette && shasum -a 256 -c "opsmaru_incus-$locked.tama-cassette.sha256")
+          gh attestation verify ".integration/cassette/opsmaru_incus-$locked.tama-cassette" --repo upmaru/opsmaru-incus
+          echo "MACUS_RELEASE_SMOKE_CASSETTE=$PWD/.integration/cassette/opsmaru_incus-$locked.tama-cassette" >> "$GITHUB_ENV"
+      - name: Canonical checks: Swift, Mix, guest syntax and embedded release smoke
+        env:
+          # install-local.sh verifies the cassette's attestation with gh.
+          GH_TOKEN: ${{ github.token }}
         run: Integration/scripts/check.sh
       - name: Validate OpenSpec
         run: npx --yes --package @fission-ai/openspec@1.14.0 openspec validate --all --strict --no-interactive
-
-  server:
-    name: Elixir server
-    runs-on: xcode-27
-    timeout-minutes: 30
-    env:
-      # The server tests build the official Incus reference drivers with
-      # `mise exec -- go`, so the repository's mise.toml must be trusted.
-      MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
-    defaults:
-      run:
-        working-directory: server
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
-        with:
-          install_args: erlang elixir go
-          cache: true
-      - name: Toolchain
-        run: mise exec -- elixir --version && mise exec -- go version
-      - name: Dependencies
-        run: |
-          mise exec -- mix local.hex --force
-          mise exec -- mix local.rebar --force
-          mise exec -- mix deps.get
-      - name: Formatting
-        run: mise exec -- mix format --check-formatted
-      - name: Compile without warnings
-        run: mise exec -- mix compile --warnings-as-errors
-      - name: Tests
-        run: mise exec -- mix test
