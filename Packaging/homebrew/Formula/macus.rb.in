@@ -62,7 +62,9 @@ class Macus < Formula
     <<~EOS
       Run macus start explicitly to prepare and start the per-user runtime and server.
       Development bottles are ad-hoc signed, not Developer ID signed or notarized.
-      Before upgrade or uninstall, stop the runtime and unload its owned launchd jobs.
+      Before upgrade, rollback or uninstall: run macus runtime stop, then unload both owned jobs
+      (com.upmaru.macus.server, then com.upmaru.macus) and remove the server job's plist;
+      for uninstall remove both plists. macus start registers them again.
       Runtime disks, server credentials and Incus configuration are preserved outside the keg.
       If no compatible bottle is available, source builds require Xcode 27 / Swift 6.4.
     EOS

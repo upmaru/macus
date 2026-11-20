@@ -271,7 +271,31 @@ Revision 2026-11-12: `/mcp` advertises exactly two tools, `search` and `execute`
       - separate, non-overwritable reports;
       - the formula template's passivity.
     - Real Homebrew evidence for these checks (source build, bottle, pour) comes from the candidate workflow on PR #9.
-- [ ] 9.5 Document stop/unload of the same two owned jobs and upgrade/rollback/removal; verify package fixtures retain disks and credentials.
+- [x] 9.5 Document stop/unload of the same two owned jobs and upgrade/rollback/removal; verify package fixtures retain disks and credentials.
+  - Done 2026-11-20: Lifecycle documentation and package fixtures.
+    - `Packaging/homebrew/README.md` "Upgrade, rollback and removal" names the two owned jobs for the default and isolated states (labels, plist locations, the shared hash) and one stop/unload sequence: `runtime stop` and `status` through the server, then `launchctl bootout` of the server job and then the Swift job, and `launchctl print` confirming neither is loaded.
+      - Upgrade and rollback remove only the server plist. It records `MACUS_EXPECTED_REVISION`, so `start` refuses the old one as a conflict. The Swift plist names the stable `opt/macus` path and is bootstrapped again unchanged.
+      - Rollback installs a retained, verified earlier bottle and never touches guest disks, credentials or client configuration.
+      - Removal removes both plists, since a default plist would try to start a missing executable at login, then the package.
+      - The section lists what every transition keeps: `STATE/runtime/root.raw`, `data.raw`, `efi.bin`, `STATE/config.json`, the `STATE/server` identity, configuration, tokens and trust, and the Incus client configuration. A reinstall serves the same gateway identity.
+    - The formula caveats name the two jobs and the plist removal. `docs/cli.md` (service pair) and `Packaging/README.md` (source installs: the same sequence, then rerun the installer) link to the section.
+    - `Integration/scripts/homebrew-acceptance.py` (report schema 2) uses both labels:
+      - start requires `service_label` and `server_label`;
+      - stop unloads the server job and then the runtime job, waits until neither is loaded and removes only plists that are this state's jobs. With `--transition upgrade` that is the server plist; with `--transition removal`, both. A plist for another label or state is refused before anything is unloaded;
+      - stop records the retained data: disk inode and size, which a booted guest keeps while rewriting the contents; keyed BLAKE2b digests of `config.json`, the server credential and trust files and the client `config.yml`, `client.crt`, `client.key` and `servercerts/*.crt`; and the gateway certificate's SHA-256. The report holds no secret and no plain digest of one. `endpoint.json` and client caches are excluded, since every start rewrites the first;
+      - resume requires a stop recorded for an upgrade, the retained data unchanged after `start`, and a server plist registered again for the installed revision;
+      - removed requires a removal stop, neither job loaded, no owned plist left and the retained data unchanged;
+      - each phase's `candidate.verify` writes its own report.
+    - `test_homebrew_acceptance.py` (12 tests) covers:
+      - one hash on both labels;
+      - bootout order, and plist removal for both transitions, sparing a foreign plist;
+      - no secret or plain digest in the report;
+      - refusal of a running runtime and of a plist for another state, before any unload;
+      - retention accepting in-place disk writes, a rewritten `endpoint.json` and a client cache, and refusing a replaced or resized disk, changed settings, a new gateway key or certificate, a removed token, changed trust, another client certificate and a removed pinned remote;
+      - re-registration for the new revision;
+      - resume after a removal stop refused;
+      - removal refusing a loaded job, a remaining owned plist or changed credentials.
+    - These are fixture checks. Running the phases on hardware with an installed package (upgrade, rollback, removal keeping the workload marker, disks and credentials) is 11.6 and stays unchecked.
 - [ ] 9.6 Reconcile delivery with add-homebrew-tap and update provenance docs; verify no Opsmaru Linux packaging or publication/hardware claim is introduced into Macus.
 - [ ] 9.7 Obtain the tama-dex cassette during the release build: read the locked `opsmaru_incus` version from `server/mix.lock`, download `opsmaru_incus-<version>.tama-cassette` and `.sha256` from that upmaru/opsmaru-incus GitHub Release, verify the hash and provenance (`gh attestation verify --repo upmaru/opsmaru-incus`), bundle it and record its SHA-256 in build metadata as the import pin; verify a version/lock mismatch, missing asset, hash mismatch or failed attestation fails the build, and installed startup never fetches it.
 

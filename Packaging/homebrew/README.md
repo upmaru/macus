@@ -47,21 +47,70 @@ python3 Integration/scripts/start-acceptance.py --opt-in --hardware \
 
 The runner records its isolated `INCUS_CONF`; retain that configuration for standard Incus connectivity/workload persistence checks. Never target ordinary runtime or client state. Failures retain disks and logs. The binary embeds its verified Alpine catalog and guest payload and does not need the checkout.
 
-## Upgrade and removal
+## Upgrade, rollback and removal
 
-Stop the runtime, confirm it is stopped, then unload its owned service before package changes. `runtime stop` does not unload launchd. Get the label/plist from startup and the selected state: default `com.upmaru.macus`, isolated `com.upmaru.macus.<state-hash>`.
+`macus start` owns exactly two per-user jobs for a state, and every package change stops and unloads the same two. Nothing else is registered, so nothing else needs unloading.
+
+| State | Swift runtime job | Macus server job | Plists |
+| --- | --- | --- | --- |
+| Default (`~/.tama/incus-mac`) | `com.upmaru.macus` | `com.upmaru.macus.server` | `~/Library/LaunchAgents/<label>.plist` |
+| Any other state | `com.upmaru.macus.<hash>` | `com.upmaru.macus.server.<hash>` | `STATE/launchd/<label>.plist` |
+
+`<hash>` is the same on both labels. `macus start --json` reports both as `service_label` and `server_label`.
+
+### Stop and unload
+
+1. Stop the runtime through the server while both jobs still run, and confirm it is stopped. `runtime stop` shuts the guest down cleanly; it does not unload launchd.
+2. Unload the server job, then the Swift runtime job (the reverse of start). Unloading the Swift job alone would leave the server answering without a runtime; unloading the server alone would leave the VM's daemon behind.
+3. Wait until `launchctl print` reports neither label.
 
 ```sh
 macus --state-dir /absolute/selected/state runtime stop
 macus --state-dir /absolute/selected/state runtime status
-launchctl bootout "gui/$(id -u)/OWNED_SERVICE_LABEL"
+launchctl bootout "gui/$(id -u)/SERVER_LABEL"
+launchctl bootout "gui/$(id -u)/RUNTIME_LABEL"
+launchctl print "gui/$(id -u)/SERVER_LABEL"   # must fail: not loaded
+launchctl print "gui/$(id -u)/RUNTIME_LABEL"  # must fail: not loaded
+```
+
+Replace the state and labels with the exact owned registration. Never boot out or remove a label outside this pair, and never a legacy `com.kritama.*` job as part of a package change.
+
+### Upgrade
+
+After stop and unload, remove only the server job's plist, change the package, then start again:
+
+```sh
+rm "$HOME/Library/LaunchAgents/com.upmaru.macus.server.plist"   # isolated: STATE/launchd/SERVER_LABEL.plist
 brew upgrade upmaru/tap/macus
 macus --state-dir /absolute/selected/state start
 ```
 
-Replace the example state and label with the exact owned registration. New Homebrew registrations use validated `opt/macus/bin/macus`; after stop/unload the opt link can advance without leaving a removed keg path. An old versioned-keg plist remains a conflict: explicitly remove only its owned plist after stop/unload, then start again. Registration replacement is never implicit.
+The server plist records the package's source revision (`MACUS_EXPECTED_REVISION`), so after a package change `start` refuses the old one as a conflict instead of replacing it. Start writes a new one for the installed revision. The Swift job's plist names the stable `opt/macus/bin/macus` and stays valid across versions; start bootstraps it again unchanged. An older plist that names a versioned keg path is a conflict: after stop and unload, remove that owned plist too. Registration replacement is never implicit.
 
-Before uninstall, use the same stop/status/bootout sequence, remove only the owned plist, then `brew uninstall upmaru/tap/macus` (or the local test formula). Retain runtime disks and Incus configuration. Rollback reinstalls a retained verified prior bottle after stop/unload; it does not replace or downgrade guest disks.
+### Rollback
+
+Rollback is the same sequence with a retained, verified earlier bottle in place of `brew upgrade`: stop and unload both jobs, remove the server plist, install the earlier bottle (for a candidate, `candidate.py install --opt-in --candidate /absolute/earlier/candidate` after uninstalling the current one), then `macus start`. Rollback changes only the package. It never replaces or downgrades guest disks, server credentials or the Incus client configuration.
+
+### Removal
+
+After stop and unload, remove both owned plists, then the package:
+
+```sh
+rm "$HOME/Library/LaunchAgents/com.upmaru.macus.server.plist" "$HOME/Library/LaunchAgents/com.upmaru.macus.plist"
+brew uninstall upmaru/tap/macus
+```
+
+A default plist left in LaunchAgents would try to start a missing executable at the next login. Uninstalling removes only the keg.
+
+### What every transition keeps
+
+Upgrade, rollback and removal keep the selected state, which lives outside the keg:
+
+- runtime disks and settings: `STATE/runtime/root.raw`, `data.raw`, `efi.bin` and `STATE/config.json`, with every guest workload;
+- server credentials and trust: `STATE/server/gateway.crt` and `gateway.key` (clients keep their pinned certificate), `gateway.json`, `bearer-tokens.json`, `local-cli.token`, `trusted-certificates.json` and the enrollment token records;
+- the standard Incus client configuration and its `macus` remote.
+
+A reinstall followed by `macus start` serves the same gateway identity and the same credentials. To discard them, remove those files deliberately; no package command does it.
 
 ## Shared export and CI
 
@@ -79,4 +128,4 @@ python3 Packaging/homebrew/candidate.py export --candidate /absolute/candidate \
 
 Replace uppercase examples with actual generated names. Export checks remote bytes against measured hashes, requires version-specific HTTPS URLs and refuses an existing destination. Macus code PRs target `develop`; tap formula PRs target `main`. Development acceptance is not a stable production release or authorization to finish Git Flow branches.
 
-For repeatable hardware phases, run `Integration/scripts/homebrew-acceptance.py --opt-in --hardware --candidate /absolute/candidate --root /private/tmp/SHORT_FRESH_ROOT --phase start`. It creates isolated state/client configuration and checks first/repeated startup plus a standard Incus workload marker. Run `--phase stop` before changing the package, then `--phase resume` with a different poured candidate. Resume rejects the same version or a missing stop/unload record. After stop/unload/uninstall, `--phase removed` verifies retained data. `retry-start` explicitly retries a retained owned failed fixture without resetting it. The report stays under the test root.
+For repeatable hardware phases, run `Integration/scripts/homebrew-acceptance.py --opt-in --hardware --candidate /absolute/candidate --root /private/tmp/SHORT_FRESH_ROOT --phase start`. It creates isolated state/client configuration and checks first/repeated startup plus a standard Incus workload marker. Run `--phase stop` before changing the package: it stops the runtime, unloads the server job and then the runtime job, waits until neither is loaded, removes only the owned server plist (and with `--transition removal` the runtime plist too) and records what must be retained: disk identities, keyed digests of the server credentials and the Incus client configuration, and the gateway certificate fingerprint. The report holds no secret or unkeyed digest of one. Then run `--phase resume` with a different poured candidate. Resume rejects the same version or a missing stop/unload record, and after start requires the retained data unchanged and a server plist re-registered for the new revision. After a removal stop and `brew uninstall`, `--phase removed` verifies that neither job is loaded, no owned plist remains and the retained data is unchanged. `retry-start` explicitly retries a retained owned failed fixture without resetting it. The report stays under the test root.
