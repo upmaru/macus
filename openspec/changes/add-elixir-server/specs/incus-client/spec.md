@@ -17,7 +17,7 @@ Macus SHALL consume an immutable shared-client dependency with a pinned upstream
 
 ### Requirement: Canonical Incus transport
 
-The shared client SHALL use Macus's explicitly configured native Incus socket and authenticated HTTPS identities where applicable. It SHALL preserve project/target parameters, extensions, ETags and native models. It MUST NOT start another bridge, invoke a host VM CLI or depend on a separate shared-service listener.
+The shared client SHALL use only Macus's explicitly configured native Incus socket; Macus SHALL NOT connect to Incus over HTTPS. It SHALL preserve project/target parameters, extensions, ETags and native models. It MUST NOT start another bridge, invoke a host VM CLI or depend on a separate shared-service listener.
 
 #### Scenario: Same local bridge
 

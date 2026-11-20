@@ -128,10 +128,19 @@ a duplicate entry.
 
 ## Native Incus
 
+**Known limitation (task 10.2, upmaru/opsmaru-incus#85).** The gateway does
+not yet advertise the `api_filtering` and `instance_get_full` extensions,
+because both its own allowlist (`config :macus, Macus.Proxy, api_extensions`)
+and the shared gateway's (`Opsmaru.Incus.Gateway.Identity`) omit them. Until a
+library release and Macus add them, the standard `incus list` refuses the
+remote (so `macus start` fails its client setup), and with its default columns
+it would drop every instance. Other native commands are unaffected.
+
 Native Incus clients use the same HTTPS listener as the runtime API and `/mcp`,
 at the canonical paths only: `/`, `/1.0` and `/1.0/*`. There is no `/incus`
 prefix or other alias, and nothing else listens. Standard clients such as
-`incus` connect unmodified, with no patch or Macus plugin. Requests,
+`incus` connect unmodified, with no patch or Macus plugin (but see the known
+limitation below). Requests,
 WebSockets and raw upgrades reach the guest's `incus.sock` only after the
 client certificate is found in gateway trust. Requests keep their method,
 path, query, conditional headers, body and status, and errors arrive in

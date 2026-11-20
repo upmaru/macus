@@ -80,7 +80,7 @@ Start SHALL use one overall monotonic deadline across acquisition, both service 
 
 ### Requirement: Low-level command compatibility
 
-Existing `serve`, `runtime`, `doctor`, and `client setup` commands SHALL remain available; normal runtime, doctor and setup requests SHALL use the public server, while serve SHALL remain the private Swift foreground daemon. Their documented installation side effects and state resolution SHALL be retained; only high-level start SHALL implicitly acquire an appliance and activate the complete service pair; explicit connect may activate/recover only the installed Elixir job for enrollment without guest provisioning. Explicit low-level start SHALL benefit from safe expected-reboot handling without provisioning an absent runtime.
+Existing `serve`, `runtime`, `doctor`, and `client setup` commands SHALL remain available; normal runtime, doctor and setup requests SHALL use the public server, while serve SHALL remain the private Swift foreground daemon. Their documented installation side effects and state resolution SHALL be retained; only high-level start SHALL implicitly acquire an appliance and activate the complete service pair. Explicit low-level start SHALL benefit from safe expected-reboot handling without provisioning an absent runtime.
 
 #### Scenario: Read-only inspection
 

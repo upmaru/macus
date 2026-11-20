@@ -162,7 +162,7 @@ The gateway SHALL use the pure `:opsmaru_incus` library inside its existing serv
 
 ### Requirement: One configured local target per Macus endpoint
 
-The composed endpoint SHALL use Macus's registered runtime and Incus backend. Arbitrary request addresses SHALL not select independent hosts. Gateway restart or shared worker restart MUST NOT start, stop or delete the Swift VM or its workloads implicitly.
+The composed endpoint SHALL use Macus's configured runtime and Incus backend. Arbitrary request addresses SHALL not select independent hosts. Gateway restart or shared worker restart MUST NOT start, stop or delete the Swift VM or its workloads implicitly.
 
 #### Scenario: Shared worker recovery
 

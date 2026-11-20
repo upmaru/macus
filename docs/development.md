@@ -71,11 +71,12 @@ The initial scaffold is passive: it resolves `MACUS_STATE_DIR`, then legacy
 `PHX_SERVER`/`PORT` variables do not enable a cleartext listener. The HTTPS
 state, authorization, routes and coordinated two-service startup have since
 shipped (change tasks 8.x); the private Unix endpoints remain only the
-server's backend and bootstrap mechanics. The canonical script currently
-checks Swift, source installation and packaging. CI also runs the
-Mix format, compile and test checks above on macOS, with the tools pinned in
-`mise.toml`; the change still tracks adding the Mix, protocol and release
-checks to the canonical script and the release smoke to CI (task 10.1).
+server's backend and bootstrap mechanics. `Integration/scripts/check.sh` runs
+the Swift gates, source installation and packaging checks, then
+`Integration/scripts/check-server.sh` (the Hex guard and the Mix format,
+compile and test checks above, with the tools pinned in `mise.toml`). The
+embedded release smoke is opt-in through `MACUS_RELEASE_SMOKE_CASSETTE`, and
+CI runs it with the verified locked cassette (task 10.1).
 
 The [Cowboy transport trial](cowboy-transport-trial.md) exercises native
 SFTP/NBD HTTP upgrades with TLS/Unix fixtures and the pinned official client.

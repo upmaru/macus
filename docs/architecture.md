@@ -70,6 +70,8 @@ server. Central manages multiple targets; the local gateway uses only its
 configured Swift/Incus backend. Local startup will remain usable without
 enrollment or central availability. Disconnect will disable central dispatch
 without stopping the VM or deleting workloads/credentials/task receipts.
+This is planned in the separate `add-central-registration` change, which
+prefers direct HTTPS and uses a connector only behind NAT.
 
 The `macus` CLI is a client of the public endpoint. `runtime`, `doctor`,
 client-setup readiness and every lifecycle, progress and health request of
@@ -83,10 +85,11 @@ startup deadline: `com.upmaru.macus` (Swift) and `com.upmaru.macus.server`
 by version, source revision and `opsmaru_incus` version. `:opsmaru_incus` is
 part of that release, so it needs no install, job or activation of its own.
 
-Packaging has not caught up yet. One passive package will install Swift at
-`bin/macus` and a matching bundled-ERTS Mix release at `libexec/macus`; until
-then source installation stages only Swift, and `macus start` refuses with
-`invalid_configuration` before downloading or activating anything. See the
+One passive installation carries both components: the entitled Swift
+executable at `bin/macus` and the matching bundled-ERTS Mix release at
+`libexec/macus`. `Packaging/install-local.sh` stages both from source, and the
+Homebrew candidate formula packages both. Neither creates runtime state or
+activates a job; `macus start` does. See the
 [approved design](../openspec/changes/add-elixir-server/design.md) and its
 tasks.
 

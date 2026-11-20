@@ -23,7 +23,7 @@ One Macus installation SHALL provide the entitled Swift executable and the match
 
 ### Requirement: Security
 
-Private directories SHALL be mode 0700 and sockets, authentication files and durable host state mode 0600. Swift SHALL remain the single owner of the VM state lock; the server SHALL independently protect its credential/task state. Symlinks and foreign ownership MUST be rejected. Runtime configuration MUST NOT contain API secrets; dedicated credential stores SHALL be private and excluded from packages, ordinary status responses and logs.
+Private directories SHALL be mode 0700 and sockets, authentication files and durable host state mode 0600. Swift SHALL remain the single owner of the VM state lock; the server SHALL independently protect its credential and index state. Symlinks and foreign ownership MUST be rejected. Runtime configuration MUST NOT contain API secrets; dedicated credential stores SHALL be private and excluded from packages, ordinary status responses and logs.
 
 #### Scenario: Second daemon
 
