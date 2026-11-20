@@ -28,9 +28,9 @@ sh Integration/scripts/test-install.sh
 sh Integration/scripts/check-server.sh
 # Opt-in embedded release smoke (task 10.1). MACUS_RELEASE_SMOKE_CASSETTE must
 # name an absolute path to a verified opsmaru_incus-<locked>.tama-cassette whose
-# .sha256 sidecar is beside it; install-local.sh re-checks the sidecar pin (and
-# the attestation, once task 9.7 lands) and release-smoke.py boots the assembled
-# release in isolation. check.sh never downloads anything.
+# .sha256 sidecar is beside it; install-local.sh re-checks the sidecar pin and
+# the attestation (gh), and release-smoke.py boots the assembled release in
+# isolation. check.sh never downloads anything.
 if [ -n "${MACUS_RELEASE_SMOKE_CASSETTE:-}" ]; then
     case "$MACUS_RELEASE_SMOKE_CASSETTE" in
         /*) ;;

@@ -44,8 +44,9 @@ jobs:
           mise exec -- go version
           mise exec -- mix local.hex --force
           mise exec -- mix local.rebar --force
-      # Until task 9.7 moves this into the release build, the opt-in release
-      # smoke in check.sh installs with this verified cassette.
+      # check.sh never downloads, so CI fetches the locked cassette once and hands
+      # it to the opt-in release smoke; install-local.sh re-verifies its sidecar
+      # pin and attestation before bundling it.
       - name: Fetch and verify the pinned opsmaru_incus cassette
         env:
           GH_TOKEN: ${{ github.token }}
