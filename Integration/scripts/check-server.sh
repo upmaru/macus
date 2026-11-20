@@ -16,16 +16,33 @@ set -eu
 cd "$(dirname "$0")/../.."
 root="$PWD"
 
-# The dependency must stay a released Hex package, never a sibling path.
-if grep -nE '\{ *:opsmaru_incus *[^}]*(:path|:git|\.\.)' server/mix.exs; then
-    echo "check-server: server/mix.exs references a non-Hex opsmaru_incus dependency" >&2
-    exit 1
+# The dependency must stay a released Hex package, never a sibling path or a
+# git revision. Mix dependencies use keyword syntax, so catch every form:
+#   {:opsmaru_incus, path: "../opsmaru-incus"}
+#   {:opsmaru_incus, git: "..."}
+#   {:opsmaru_incus, github: "upmaru/opsmaru-incus"}
+# plus any literal "../" on the dependency line.
+guard_hex_dependency() {
+    project_root="$1"
+    if grep -nE '\{ *:opsmaru_incus *[^}]*(\.\.|[ (](path|git|github):)' "$project_root/server/mix.exs"; then
+        echo "check-server: $project_root/server/mix.exs references a non-Hex opsmaru_incus dependency" >&2
+        return 1
+    fi
+    source="$(sed -n 's/^  "opsmaru_incus": {:\([a-z]*\).*/\1/p' "$project_root/server/mix.lock")"
+    if [ "$source" != "hex" ]; then
+        echo "check-server: $project_root/server/mix.lock does not lock opsmaru_incus from Hex (found: ${source:-nothing})" >&2
+        return 1
+    fi
+}
+
+# `check-server.sh --guard-only PROJECT_ROOT` runs only the guard, so a copy
+# of the manifest can be pointed at without running Mix.
+if [ "${1:-}" = "--guard-only" ]; then
+    guard_hex_dependency "${2:?usage: check-server.sh [--guard-only PROJECT_ROOT]}"
+    exit 0
 fi
-source="$(sed -n 's/^  "opsmaru_incus": {:\([a-z]*\).*/\1/p' server/mix.lock)"
-if [ "$source" != "hex" ]; then
-    echo "check-server: server/mix.lock does not lock opsmaru_incus from Hex (found: ${source:-nothing})" >&2
-    exit 1
-fi
+
+guard_hex_dependency "$root"
 
 cd server
 mise exec -- mix deps.get
