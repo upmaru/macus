@@ -73,12 +73,21 @@ defmodule Macus.Incus.TypedClientTest do
       for file <- sources do
         content = File.read!(file)
         relative = Path.relative_to(file, @server)
-        # No pinned model schemas, method tables or constants of its own, and
-        # reference records only through Coverage, from the dependency.
-        refute content =~ ~r/models\.json|methods\.json|constants\.json/,
-               "#{relative} reads library codec data"
+        # No pinned model schemas, method tables or constants of its own.
+        # Evidence is the single exception: it must name those records to
+        # verify the linked evidence's provenance (10.3), through
+        # Macus.Incus.Coverage.dir/0, and it never implements codec data.
+        if relative != "lib/macus/incus/evidence.ex",
+          do:
+            refute(
+              content =~ ~r/models\.json|methods\.json|constants\.json/,
+              "#{relative} reads library codec data"
+            )
 
-        if relative != "lib/macus/incus/coverage.ex",
+        # Reference records are read only through Coverage, from the
+        # dependency; the two modules that document the records' directory
+        # may name it.
+        if relative not in ~w(lib/macus/incus/coverage.ex lib/macus/incus/evidence.ex),
           do: refute(content =~ "priv/incus", "#{relative} reads Incus records itself")
 
         refute content =~ ~r/defmodule Macus\.Incus\.(Model|Inventory|Codec|Response|Error)\b/,
