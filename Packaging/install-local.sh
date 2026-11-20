@@ -4,7 +4,11 @@
 #   prefix/libexec/macus/      the matching bundled-ERTS server release
 # Both are built, staged and verified before anything in the prefix changes.
 # Requires Swift, and Elixir/Erlang (through mise when available) unless
-# --release names an already assembled release. Ad-hoc signatures are
+# --release names an already assembled release. A release built here bundles
+# the opsmaru_incus cassette for the version server/mix.lock locks: it is
+# downloaded from that upmaru/opsmaru-incus GitHub Release (or taken from
+# --cassette, beside its .sha256), and its hash and attestation are verified
+# with the GitHub CLI before anything is built. Ad-hoc signatures are
 # development signatures, not notarization. Does not create runtime state,
 # register or activate launch agents, or install the Incus CLI.
 set -eu
@@ -104,15 +108,36 @@ sha256() {
   shasum -a 256 "$1" | cut -d ' ' -f 1
 }
 
-# The pinned opsmaru_incus cassette, checked before anything is built.
+stage=$(mktemp -d "${TMPDIR:-/tmp}/macus-install.XXXXXX")
+new_release=
+cleanup() {
+  rm -rf "$stage"
+  if [ -n "$new_release" ]; then
+    rm -rf "$new_release"
+  fi
+}
+trap cleanup EXIT INT TERM
+
+# The pinned opsmaru_incus cassette, obtained and checked before anything is
+# built. Only the release build fetches it; installed startup never does.
+cassette_repo=upmaru/opsmaru-incus
 pin=
 if [ -z "$release" ]; then
-  if [ -z "$cassette" ]; then
-    cassette="$root/server/priv/cassettes/$cassette_name"
-  fi
   missing_cassette() {
-    fail "Refusing to install without the pinned opsmaru_incus $locked cassette: $1. Download $cassette_name and $cassette_name.sha256 from the upmaru/opsmaru-incus v$locked GitHub Release, check them with 'gh attestation verify --repo upmaru/opsmaru-incus', and put both in server/priv/cassettes or pass --cassette."
+    fail "Refusing to install without the pinned opsmaru_incus $locked cassette: $1."
   }
+  if ! command -v gh >/dev/null 2>&1; then
+    missing_cassette "the GitHub CLI (gh) is required to download it and verify its attestation; install it and sign in with 'gh auth login'"
+  fi
+  if [ -z "$cassette" ]; then
+    # The release for exactly the locked version, so a lock change fetches its own cassette.
+    mkdir "$stage/cassette"
+    if ! gh release download "v$locked" --repo "$cassette_repo" --dir "$stage/cassette" \
+           --pattern "$cassette_name" --pattern "$cassette_name.sha256" </dev/null >"$stage/download.log" 2>&1; then
+      missing_cassette "the $cassette_repo v$locked release does not provide $cassette_name and its .sha256 ($(tail -n 1 "$stage/download.log"))"
+    fi
+    cassette="$stage/cassette/$cassette_name"
+  fi
   if [ "$(basename "$cassette")" != "$cassette_name" ]; then
     missing_cassette "$cassette is not $cassette_name, the version server/mix.lock locks"
   fi
@@ -129,6 +154,10 @@ if [ -z "$release" ]; then
   if [ "$(sha256 "$cassette")" != "$pin" ]; then
     missing_cassette "$cassette does not match its .sha256"
   fi
+  # Provenance: built and attested by the opsmaru-incus release workflow.
+  if ! gh attestation verify "$cassette" --repo "$cassette_repo" </dev/null >"$stage/attestation.log" 2>&1; then
+    missing_cassette "$cassette has no valid $cassette_repo attestation ($(tail -n 1 "$stage/attestation.log"))"
+  fi
   if command -v mise >/dev/null 2>&1; then
     set -- mise exec -- mix
   elif command -v mix >/dev/null 2>&1; then
@@ -139,16 +168,6 @@ if [ -z "$release" ]; then
 elif [ -L "$release" ] || [ ! -d "$release" ]; then
   fail "Refusing --release $release: it is not a release directory"
 fi
-
-stage=$(mktemp -d "${TMPDIR:-/tmp}/macus-install.XXXXXX")
-new_release=
-cleanup() {
-  rm -rf "$stage"
-  if [ -n "$new_release" ]; then
-    rm -rf "$new_release"
-  fi
-}
-trap cleanup EXIT INT TERM
 
 # Swift: embed the identity in the executable's Info.plist. The file name
 # carries the identity, so a different identity always relinks.

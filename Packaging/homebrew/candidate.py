@@ -649,7 +649,7 @@ def main():
     preparing = commands.add_parser("prepare")
     preparing.add_argument("--output", type=Path, required=True)
     preparing.add_argument("--cassette", type=Path,
-                           help="the pinned opsmaru_incus cassette, beside its .sha256 (default: server/priv/cassettes)")
+                           help="the pinned opsmaru_incus cassette, beside its .sha256 (default: downloaded and verified by the release build)")
     for name in ("build", "install", "verify", "export", "cleanup"):
         sub = commands.add_parser(name)
         sub.add_argument("--candidate", type=Path, required=True)

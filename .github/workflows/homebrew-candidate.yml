@@ -44,20 +44,11 @@ jobs:
           mise exec -- elixir --version
           mise exec -- mix local.hex --force
           mise exec -- mix local.rebar --force
-      # Until task 9.7 moves this into the release build.
-      - name: Fetch and verify the pinned opsmaru_incus cassette
+      # The release build downloads the locked opsmaru_incus cassette and verifies its hash and attestation.
+      - name: Prepare immutable source candidate
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          locked="$(sed -n 's/.*"opsmaru_incus": {:hex, :opsmaru_incus, "\([^"]*\)".*/\1/p' server/mix.lock)"
-          mkdir -p .integration/cassette
-          gh release download "v$locked" --repo upmaru/opsmaru-incus --dir .integration/cassette \
-            --pattern "opsmaru_incus-$locked.tama-cassette*"
-          (cd .integration/cassette && shasum -a 256 -c "opsmaru_incus-$locked.tama-cassette.sha256")
-          gh attestation verify ".integration/cassette/opsmaru_incus-$locked.tama-cassette" --repo upmaru/opsmaru-incus
-          echo "MACUS_CANDIDATE_CASSETTE=$PWD/.integration/cassette/opsmaru_incus-$locked.tama-cassette" >> "$GITHUB_ENV"
-      - name: Prepare immutable source candidate
-        run: python3 Packaging/homebrew/candidate.py prepare --output .integration/homebrew-candidate --cassette "$MACUS_CANDIDATE_CASSETTE"
+        run: python3 Packaging/homebrew/candidate.py prepare --output .integration/homebrew-candidate
       - name: Build and validate bottle
         run: python3 Packaging/homebrew/candidate.py build --opt-in --candidate .integration/homebrew-candidate
       - name: Remove source build before bottle acceptance

@@ -35,10 +35,6 @@ export MACUS_TEST_ROOT="$(mktemp -d /private/tmp/macus-fresh.XXXXXX)"
 git clone --branch develop https://github.com/upmaru/macus.git "$MACUS_TEST_ROOT/src"
 cd "$MACUS_TEST_ROOT/src"
 mise trust && mise install
-locked="$(sed -n 's/.*"opsmaru_incus": {:hex, :opsmaru_incus, "\([^"]*\)".*/\1/p' server/mix.lock)"
-gh release download "v$locked" --repo upmaru/opsmaru-incus --dir server/priv/cassettes \
-  --pattern "opsmaru_incus-$locked.tama-cassette*"
-gh attestation verify "server/priv/cassettes/opsmaru_incus-$locked.tama-cassette" --repo upmaru/opsmaru-incus
 Packaging/install-local.sh --prefix "$MACUS_TEST_ROOT/install"
 export PATH="$MACUS_TEST_ROOT/install/bin:$PATH"
 export MACUS_STATE_DIR="$MACUS_TEST_ROOT/state"
@@ -80,10 +76,6 @@ GitHub access to the repository is required. The short test path avoids Darwin's
 
 ```sh
 mise trust && mise install
-locked="$(sed -n 's/.*"opsmaru_incus": {:hex, :opsmaru_incus, "\([^"]*\)".*/\1/p' server/mix.lock)"
-gh release download "v$locked" --repo upmaru/opsmaru-incus --dir server/priv/cassettes \
-  --pattern "opsmaru_incus-$locked.tama-cassette*"
-gh attestation verify "server/priv/cassettes/opsmaru_incus-$locked.tama-cassette" --repo upmaru/opsmaru-incus
 Packaging/install-local.sh --prefix "$MACUS_TEST_ROOT/install"
 command -v macus
 codesign --verify --strict "$MACUS_TEST_ROOT/install/bin/macus"

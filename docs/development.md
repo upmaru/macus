@@ -136,12 +136,12 @@ MIX_ENV=prod MACUS_SOURCE_REVISION="$(git rev-parse HEAD)" \
   mise exec -- mix release macus --overwrite --path /absolute/release
 ```
 
-The opsmaru_incus cassette for the locked version must already be at
-`server/priv/cassettes/opsmaru_incus-<version>.tama-cassette`. Until task 9.7
-automates it, download it and its `.sha256` from the matching upmaru/opsmaru-incus
-GitHub Release and verify both the hash and `gh attestation verify --repo
-upmaru/opsmaru-incus`. Before recording anything, `Macus.Release` checks the
-assembled release and fails the build unless all of the following hold:
+`Packaging/install-local.sh` is the supported way to build it: it obtains the
+opsmaru_incus cassette for the locked version (see below) and sets
+`MACUS_CASSETTE_SHA256` and `MACUS_CASSETTE_PATH` for you. To run `mix release`
+by hand, give it a cassette you have checked the same way. Before recording
+anything, `Macus.Release` checks the assembled release and fails the build unless
+all of the following hold:
 
 - it was built on `aarch64-apple-darwin`;
 - it bundles exactly one ERTS, with an ARM64 `beam.smp`;
@@ -200,10 +200,6 @@ VZ requires `com.apple.security.virtualization` on the daemon executable. Develo
 Local source installation requires Swift and the mise-pinned Elixir/Erlang. It installs `<prefix>/bin/macus` and the paired server release at `<prefix>/libexec/macus`:
 
 ```sh
-locked="$(sed -n 's/.*"opsmaru_incus": {:hex, :opsmaru_incus, "\([^"]*\)".*/\1/p' server/mix.lock)"
-gh release download "v$locked" --repo upmaru/opsmaru-incus --dir server/priv/cassettes \
-  --pattern "opsmaru_incus-$locked.tama-cassette*"
-gh attestation verify "server/priv/cassettes/opsmaru_incus-$locked.tama-cassette" --repo upmaru/opsmaru-incus
 Packaging/install-local.sh --prefix /absolute/isolated/prefix
 ```
 
@@ -211,7 +207,12 @@ Before building anything, it refuses:
 
 - a relative path, a symlinked or non-file/non-directory destination, or an existing `<prefix>/libexec/macus` that is not a Macus release (it holds no `macus-build.json`);
 - a checkout without a git revision;
-- a missing pinned dependency: the cassette for the opsmaru_incus version `server/mix.lock` locks must be at `server/priv/cassettes/opsmaru_incus-<version>.tama-cassette`, or at the path given with `--cassette`, beside its `.sha256` from the same GitHub Release, and must match it.
+- a missing or unverified pinned dependency. The release build needs the cassette for the opsmaru_incus version `server/mix.lock` locks, and the GitHub CLI (`gh`, signed in) to get and check it:
+  - without `--cassette`, it downloads `opsmaru_incus-<version>.tama-cassette` and its `.sha256` from the upmaru/opsmaru-incus `v<version>` GitHub Release, and nothing else; a missing release or asset is refused;
+  - with `--cassette /absolute/opsmaru_incus-<version>.tama-cassette`, that file must be named for the locked version and have the release's `.sha256` beside it;
+  - either way the file must match its `.sha256`, and `gh attestation verify --repo upmaru/opsmaru-incus` must accept it, so only a cassette built by the opsmaru-incus release workflow is bundled.
+
+  The downloaded files stay in the installer's temporary directory. Only the build fetches the cassette: installed startup imports the bundled file at the pinned SHA-256 and never downloads one.
 
 Both components get one identity: the version in `server/mix.exs` and the checkout's `HEAD`. A checkout with uncommitted changes gets a warning, because both still record `HEAD`. The Swift build embeds that identity as `MacusVersion` and `MacusSourceRevision` in the executable's Info.plist. The release is built with `MIX_ENV=prod`, `MACUS_SOURCE_REVISION`, `MACUS_CASSETTE_SHA256` (from the `.sha256`) and `MACUS_CASSETTE_PATH`. Its `Macus.Release.bundle_cassette/1` step bundles that file as the only cassette, replacing anything `server/priv/cassettes` holds for other versions.
 
