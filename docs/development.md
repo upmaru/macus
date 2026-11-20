@@ -68,11 +68,11 @@ ignored. Tests start the OTP tree in process without a listener or VM.
 
 The initial scaffold is passive: it resolves `MACUS_STATE_DIR`, then legacy
 `TIM_STATE_DIR`, then `~/.tama/incus-mac`, without creating that state. Generic
-`PHX_SERVER`/`PORT` variables do not enable a cleartext listener. HTTPS state,
-authorization, routes and coordinated startup are tracked in the active
-[change tasks](../openspec/changes/add-elixir-server/tasks.md). Until they are
-implemented, current installed Swift commands retain their Unix behavior.
-The canonical script currently checks Swift and packaging. CI also runs the
+`PHX_SERVER`/`PORT` variables do not enable a cleartext listener. The HTTPS
+state, authorization, routes and coordinated two-service startup have since
+shipped (change tasks 8.x); the private Unix endpoints remain only the
+server's backend and bootstrap mechanics. The canonical script currently
+checks Swift, source installation and packaging. CI also runs the
 Mix format, compile and test checks above on macOS, with the tools pinned in
 `mise.toml`; the change still tracks adding the Mix, protocol and release
 checks to the canonical script and the release smoke to CI (task 10.1).
@@ -106,9 +106,9 @@ verified host UID. It resolves `runtime.sock` without creating state. Each
 request validates private ownership/modes and ancestors, uses one monotonic
 deadline, limits request JSON to 1 MiB and responses to 16 MiB/16 KiB headers,
 and closes its connection. An uncertain mutation is never replayed. The
-public gateway/host adapter will supply that trusted configuration; request
+public gateway/host adapter supplies that trusted configuration; request
 inputs must not select another path or UID. Ordinary read-only startup remains
-passive while those public integration tasks are pending.
+passive.
 
 The optional central `connect`, passive `connection status` and `disconnect`
 commands are later integration work. Normal installation/start must not enroll
@@ -225,7 +225,7 @@ Both components get one identity: the version in `server/mix.exs` and the checko
 
 A release built from another revision, or one missing its library or cassette, is refused with nothing installed. The release then replaces any earlier one by a rename, the executable is replaced the same way, and both are verified again in place. `Integration/scripts/test-install.sh` (part of `check.sh`) exercises each refusal and a complete install in isolated prefixes, using a fixture cassette.
 
-The unified executable receives the virtualization entitlement for serve mode. The command does not create runtime state or register or activate a launch agent; `macus start` does that explicitly. Ad-hoc development signatures are not notarized production artifacts. A future release package or formula must include macus and real checksums; none is published here.
+The unified executable receives the virtualization entitlement for serve mode. The command does not create runtime state or register or activate a launch agent; `macus start` does that explicitly. Ad-hoc development signatures are not notarized production artifacts. A future release package or formula must include both components and real checksums; none is published here.
 
 ## Git Flow
 

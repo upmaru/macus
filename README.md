@@ -6,7 +6,7 @@ Requires Apple Silicon, macOS 15+ and Swift 6.4. SwiftPM builds one library (`Ma
 
 **Development status:** Installation is currently from source. Local prebuilt Homebrew candidates are documented in [Homebrew packaging](Packaging/homebrew/README.md). There is no published Macus Homebrew formula. `macus start` downloads and verifies the pinned Alpine appliance; it does not upgrade an existing root image or install Homebrew. Hardware results and distribution limitations are recorded in [the acceptance record](docs/acceptance.md).
 
-**Transition:** `macus start` runs the Swift runtime service and the Elixir Macus server together. `Packaging/install-local.sh` installs both from source: the Swift executable at `<prefix>/bin/macus` and the paired server release at `<prefix>/libexec/macus`. A source build needs Swift and the mise-pinned Elixir/Erlang, plus the opsmaru_incus tama-dex cassette for the locked library version, downloaded and attestation-checked from its GitHub Release (the walkthroughs below show how). Homebrew delivery of the server release is still pending (the packaging tasks of the [add-elixir-server change](openspec/changes/add-elixir-server/tasks.md)). An installation without a paired release makes `macus start` stop with `invalid_configuration` and reinstall guidance before it downloads, activates or boots anything.
+**Transition:** `macus start` runs the Swift runtime service and the Elixir Macus server together. `Packaging/install-local.sh` installs both from source: the Swift executable at `<prefix>/bin/macus` and the paired server release at `<prefix>/libexec/macus`. A source build needs Swift, the mise-pinned Elixir/Erlang and a signed-in GitHub CLI: the release build downloads the opsmaru_incus tama-dex cassette for the locked library version from its GitHub Release and verifies its `.sha256` sidecar and attestation before building ([details](docs/development.md#macus-command)). Homebrew candidates package the same release as a checksummed resource ([candidate documentation](Packaging/homebrew/README.md), including [artifact provenance](Packaging/homebrew/README.md#artifact-provenance)); publication of the shared tap formula remains open in the [add-homebrew-tap change](openspec/changes/add-homebrew-tap/tasks.md). An installation without a paired release makes `macus start` stop with `invalid_configuration` and reinstall guidance before it downloads, activates or boots anything.
 
 Macus runs two per-user services. The Swift runtime service owns the VM and serves two private Unix sockets in the selected state directory (default `~/.tama/incus-mac`): `runtime.sock` for outer VM lifecycle and `incus.sock` for transparent Incus traffic over vsock. The Macus server publishes the one client endpoint, a pinned TLS 1.3 HTTPS gateway on `127.0.0.1:8443` by default. It carries the runtime API at `/runtime`, native Incus at `/1.0` and MCP at `/mcp`, and it reaches the private sockets only after authenticating the caller. The `macus` CLI and the standard Incus client both use that endpoint. Normal use needs no GUI or SSH. Instance/image/profile/project/network/storage/migration operations belong to Incus. See [the Macus server](docs/server.md).
 
@@ -28,7 +28,7 @@ Homebrew must already be installed if `incus` is not on `PATH`. Start installs t
 
 ## Test a fresh installation
 
-Use a clean supported Mac or a new macOS account to exercise first-use prerequisites. The walkthrough also works alongside an existing installation when it uses a separate prefix, state directory and Incus client configuration. Each new test starts with a new short test root. This is opt-in hardware acceptance: `macus start` boots a real Linux VM. Keep the test root and its logs on failure.
+Use a clean supported Mac or a new macOS account to exercise first-use prerequisites. The walkthrough also works alongside an existing installation when it uses a separate prefix, state directory and Incus client configuration. Each new test starts with a new short test root. This is opt-in hardware acceptance: `macus start` boots a real Linux VM. Keep the test root and its logs on failure. The installer needs the mise-pinned Elixir/Erlang (from `mise install`) and a signed-in GitHub CLI for the cassette download and attestation; run `brew install gh` and `gh auth login` first if `gh` is missing.
 
 ```sh
 export MACUS_TEST_ROOT="$(mktemp -d /private/tmp/macus-fresh.XXXXXX)"
@@ -227,7 +227,7 @@ mise run spec:validate
 - [MCP: search and execute](docs/mcp.md) and the [operation manifest](docs/mcp-operations.md)
 - [The shared Incus client](docs/incus-client.md) and its [coverage](docs/incus-coverage.md)
 - [Architecture and scope](docs/architecture.md)
-- [Per-user launchd packaging](Packaging/README.md)
+- [Per-user launchd packaging](Packaging/README.md) and [artifact provenance](Packaging/homebrew/README.md#artifact-provenance)
 - [OpenSpec design and decisions](openspec/changes/archive/2026-10-04-native-incus-runtime/design.md)
 - [Implementation and acceptance checklist](openspec/changes/archive/2026-10-04-native-incus-runtime/tasks.md)
 - [Git Flow development workflow](docs/development.md#git-flow)

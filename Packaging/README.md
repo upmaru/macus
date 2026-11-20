@@ -1,6 +1,6 @@
 # Per-user packaging
 
-One Macus installation supplies the `macus` executable. From a checkout with Swift installed:
+One Macus installation supplies the `macus` executable and the paired bundled-ERTS Macus server release. From a checkout with Swift installed:
 
 ```sh
 Packaging/install-local.sh --prefix /absolute/path
