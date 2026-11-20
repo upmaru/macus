@@ -31,6 +31,27 @@ These opt-in mutations refuse an existing Macus package, another `macus` on PATH
 
 Each install path keeps its own report (schema 3): `source-build-acceptance.json` for the source build (`built_as_bottle`, not poured) and `package-acceptance.json` for the poured bottle. Neither replaces the other. Rerun package checks with `python3 Packaging/homebrew/candidate.py verify --candidate /absolute/candidate`; it writes a separate `package-verify-<time>.json` without a passivity result. Dirty inputs, symlink outputs, reused directories, placeholder hashes and changed artifacts are refused.
 
+## Artifact provenance
+
+Every file in a candidate package traces to a verified origin. `candidate.json` and the release's `macus-build.json` record the provenance; the acceptance reports record the verification. The provenance contract itself is owned by [add-elixir-server design §7](../../openspec/changes/add-elixir-server/design.md); this section is the tracing table.
+
+| Artifact | Origin | Verification |
+| --- | --- | --- |
+| `bin/macus` (Swift executable) | built with SwiftPM from the candidate's commit, recorded in `candidate.json` | ad-hoc signed with `com.apple.security.virtualization`; `MacusVersion` and `MacusSourceRevision` embedded in its Info.plist match the commit; signature, entitlement and embedded identity are re-verified after the source build and again after pouring |
+| `libexec/macus` (Macus server release) | assembled by `Packaging/install-local.sh` from the same commit and archived as `macus-server-<version>.tar.gz` | the archive's SHA-256 is in `candidate.json`; the formula installs it as the checksummed `server-release` resource; the installed tree is compared entry by entry against the archived release, and the release's read-only `macus-build.json` records the same Macus version and source revision as the executable |
+| Bundled ERTS | the mise-pinned OTP toolchain that assembles the release | exactly the recorded `erts-<version>` with an ARM64 `beam.smp`; every Mach-O in the keg links only `/usr/lib` and `/System/Library` |
+| `lib/opsmaru_incus-<version>` | Hex `opsmaru_incus` locked in `server/mix.lock` | the release carries exactly the locked library with its `.app`; its version and Hex checksum are recorded separately in `macus-build.json` and `candidate.json` and are never compared with the Macus commit |
+| exqlite's `sqlite3_nif.so` | the prebuilt macOS ARM64 NIF of the locked exqlite package | exqlite's own checksums, covered by the mix.lock checksum; on pour Homebrew may rewrite its install name to `opt/macus/...` and re-sign it ad hoc, and the payload check accepts that only when the Mach-O's code, data and link-edit content are otherwise unchanged; `macus-build.json`'s `nif_sha256` therefore describes the archived NIF, not the installed one |
+| opsmaru_incus tama-dex cassette | the `v<version>` GitHub Release of upmaru/opsmaru-incus, with `<version>` read from `server/mix.lock` | its `.sha256` sidecar and `gh attestation verify --repo upmaru/opsmaru-incus` at build time; its SHA-256 is recorded in `macus-build.json` as the import pin, and installed startup imports only the bundled file at that pin, never fetching it |
+
+The Macus identity is one: the version in `server/mix.exs` and the candidate's commit, embedded in the executable and recorded in the release's manifest. The `:opsmaru_incus` dependency keeps its own identity (Hex version and checksum) because it comes from a different repository; the two are matched by the lockfile at the build commit, not by comparing commits across repositories.
+
+### What the candidate evidence does and does not prove
+
+The workflow in [`.github/workflows/homebrew-candidate.yml`](../../.github/workflows/homebrew-candidate.yml) prepares the candidate from the PR head, assembles the release with the mise-pinned Elixir/OTP (downloading and attestation-verifying the locked cassette), builds and pours the bottle on the `xcode-27` runner, and retains per run: `candidate.json`, the bottle JSON, the release log, and the two separate reports `source-build-acceptance.json` (built as a bottle, not poured) and `package-acceptance.json` (poured). A passing run proves, on that runner and for the local tap: the bottle's digest and receipt, the entitlement and signature, the embedded identity, the full release payload, the stable `opt` paths, the absence of host Swift/Elixir/Erlang/OpenSSL, and passive installation.
+
+It does not prove anything beyond that run: nothing is pushed to the shared tap and no formula is distributed outside the candidate, no VM is booted (hardware acceptance stays opt-in and separate, and so does remote-tap verification), the tested runner is not the whole advertised macOS 15+ coverage, and the signing is ad-hoc development signing without notarization. The acceptance record in [docs/acceptance.md](../../docs/acceptance.md) keeps the package evidence and the separately executed hardware runs distinct.
+
 ## Explicit hardware acceptance
 
 Use the installed binary and existing opt-in runner with fresh short state and a report outside the runtime/install directories:
