@@ -59,7 +59,8 @@ final class FlowTestPeer: @unchecked Sendable {
   private var credit = FlowRelayProtocol.window
   private var received = Data()
   private var endReceived = false
-  private var closed = false
+  /// Why the reader stopped: nil while open, "end of stream" for a clean close.
+  private var stopReason: String?
   private(set) var creditReceived = 0
   /// Grant credit for received data immediately, as if delivered to Incus.
   let grantsCredit: Bool
@@ -78,20 +79,28 @@ final class FlowTestPeer: @unchecked Sendable {
     try socket.write(bytes)
   }
 
-  /// Reads frames until EOF, recording data and applying credit.
+  /// Reads frames until EOF, recording data and applying credit. Every exit records why,
+  /// so a read error or protocol violation fails a close expectation instead of timing out.
   func runReader() throws {
     var parser = FlowFrameParser()
+    var reason = "reader stopped"
+    defer { markClosed(reason) }
     while true {
       let chunk: Data
-      do { chunk = try socket.read() } catch {
-        markClosed()
+      do { chunk = try readPolling(socket) } catch {
+        reason = "read failed: \(error)"
         return
       }
       if chunk.isEmpty {
-        markClosed()
+        reason = Self.endOfStream
         return
       }
-      for frame in try chunk.withUnsafeBytes({ try parser.append($0) }) {
+      let frames: [FlowRelayProtocol.Frame]
+      do { frames = try chunk.withUnsafeBytes { try parser.append($0) } } catch {
+        reason = "invalid frame: \(error)"
+        throw error
+      }
+      for frame in frames {
         switch frame {
         case .data(let payload):
           condition.lock()
@@ -115,9 +124,11 @@ final class FlowTestPeer: @unchecked Sendable {
     }
   }
 
-  private func markClosed() {
+  static let endOfStream = "end of stream"
+
+  private func markClosed(_ reason: String) {
     condition.lock()
-    closed = true
+    stopReason = reason
     condition.broadcast()
     condition.unlock()
   }
@@ -127,9 +138,9 @@ final class FlowTestPeer: @unchecked Sendable {
     var offset = 0
     while offset < data.count {
       condition.lock()
-      while credit == 0 && !closed { condition.wait() }
+      while credit == 0 && stopReason == nil { condition.wait() }
       let available = credit
-      let isClosed = closed
+      let isClosed = stopReason != nil
       condition.unlock()
       guard !isClosed else { throw RuntimeError(.io, "peer closed") }
       let size = min(available, FlowRelayProtocol.maximumPayload, data.count - offset)
@@ -142,7 +153,11 @@ final class FlowTestPeer: @unchecked Sendable {
     if end { try write(.end) }
   }
 
-  func waitForEnd(seconds: Double = 5) -> Data? {
+  /// Waits outlast the 10-second socket timeouts: they only bound success paths, and CI
+  /// runners schedule the reader several times slower than a local Mac.
+  static let deadline: Double = 30
+
+  func waitForEnd(seconds: Double = deadline) -> Data? {
     let deadline = Date().addingTimeInterval(seconds)
     condition.lock()
     defer { condition.unlock() }
@@ -152,14 +167,22 @@ final class FlowTestPeer: @unchecked Sendable {
     return received
   }
 
-  func waitUntilClosed(seconds: Double = 5) -> Bool {
+  /// `waitUntilClosed` on the SocketIO queue, keeping the blocking wait off the
+  /// cooperative executor the relay and other tests run on.
+  func closure() async throws -> String? {
+    try await SocketIO.run { self.waitUntilClosed() }
+  }
+
+  /// How the reader stopped within `seconds`: `endOfStream` for a clean close, otherwise
+  /// the failure, or nil if it is still open.
+  func waitUntilClosed(seconds: Double = deadline) -> String? {
     let deadline = Date().addingTimeInterval(seconds)
     condition.lock()
     defer { condition.unlock() }
-    while !closed {
-      guard condition.wait(until: deadline) else { return false }
+    while stopReason == nil {
+      guard condition.wait(until: deadline) else { return nil }
     }
-    return true
+    return stopReason
   }
 
   var availableCredit: Int {
@@ -169,10 +192,27 @@ final class FlowTestPeer: @unchecked Sendable {
   }
 }
 
+/// Reads like `socket.read()` without sleeping in it. Darwin can lose the wakeup of a read
+/// blocked on an AF_UNIX socket while its peer shuts down: the socket already reports end of
+/// stream, yet the read sleeps until SO_RCVTIMEO. Polling in short slices rechecks the socket
+/// state, so a lost wakeup costs one slice. The relay itself waits on dispatch sources.
+func readPolling(_ socket: SocketDescriptor, seconds: Double = 10) throws -> Data {
+  var descriptor = pollfd(fd: socket.rawValue, events: Int16(POLLIN), revents: 0)
+  let deadline = Date().addingTimeInterval(seconds)
+  while Date() < deadline {
+    let ready = poll(&descriptor, 1, 100)
+    if ready > 0 { return try socket.read() }
+    if ready < 0 && errno != EINTR {
+      throw RuntimeError(.io, "Socket poll failed (errno \(errno))")
+    }
+  }
+  throw RuntimeError(.io, "Socket read timed out")
+}
+
 func readAll(_ socket: SocketDescriptor) throws -> Data {
   var received = Data()
   while true {
-    let chunk = try socket.read()
+    let chunk = try readPolling(socket)
     if chunk.isEmpty { return received }
     received.append(chunk)
   }
@@ -238,7 +278,8 @@ struct FlowRelayFixture {
   }
   await fixture.relay.value
   // Normal completion closes the guest stream only after both ends of stream.
-  #expect(fixture.guestPeer.waitUntilClosed())
+  let closure = try await fixture.guestPeer.closure()
+  #expect(closure == FlowTestPeer.endOfStream)
 }
 
 @Test func flowRelayTransfersLargeStreamsBothWaysWithinTheWindow() async throws {
@@ -264,7 +305,7 @@ struct FlowRelayFixture {
   #expect(try await readReverse.value == reverse)
   try await writeForward.value
   try await sendReverse.value
-  let forwarded = try await SocketIO.run { peer.waitForEnd(seconds: 10) }
+  let forwarded = try await SocketIO.run { peer.waitForEnd() }
   #expect(forwarded == forward)
   await fixture.relay.value
 }
@@ -305,7 +346,8 @@ struct FlowRelayFixture {
     try peer.write(.data(Data([2])))
   }
   await fixture.relay.value
-  #expect(peer.waitUntilClosed())
+  let closure = try await peer.closure()
+  #expect(closure == FlowTestPeer.endOfStream)
 }
 
 @Test(arguments: [
@@ -318,7 +360,8 @@ struct FlowRelayFixture {
   let peer = fixture.guestPeer
   try await SocketIO.run { try peer.writeRaw(bytes) }
   await fixture.relay.value
-  #expect(peer.waitUntilClosed())
+  let closure = try await peer.closure()
+  #expect(closure == FlowTestPeer.endOfStream)
 }
 
 @Test func excessCreditAbortsTheRelay() async throws {
@@ -327,7 +370,8 @@ struct FlowRelayFixture {
   let peer = fixture.guestPeer
   try await SocketIO.run { try peer.write(.credit(1)) }
   await fixture.relay.value
-  #expect(peer.waitUntilClosed())
+  let closure = try await peer.closure()
+  #expect(closure == FlowTestPeer.endOfStream)
 }
 
 @Test func guestCloseBeforeEndOfStreamAbortsTheClient() async throws {
@@ -350,7 +394,8 @@ struct FlowRelayFixture {
   try await Task.sleep(for: .milliseconds(50))
   fixture.relay.cancel()
   await fixture.relay.value
-  #expect(fixture.guestPeer.waitUntilClosed())
+  let closure = try await fixture.guestPeer.closure()
+  #expect(closure == FlowTestPeer.endOfStream)
 }
 
 func waitUntil(seconds: Double = 5, _ condition: @Sendable () -> Bool) async throws {
