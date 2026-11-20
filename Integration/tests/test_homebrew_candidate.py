@@ -1,7 +1,10 @@
 """Packaging guards run without installing packages or booting hardware."""
 import argparse
+import contextlib
+import io
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -136,6 +139,239 @@ class CandidateTests(unittest.TestCase):
                 (release / "macus-build.json").write_text(json.dumps({**record, **change}))
                 with self.assertRaisesRegex(ValueError, "server release"):
                     check()
+
+    def dylib(self, folder, name="libfixture.dylib"):
+        """A real signed dylib whose install name is a build path, like exqlite's NIF."""
+        source = folder / "fixture.c"
+        source.write_text("int fixture(void) { return 42; }\n")
+        path = folder / name
+        candidate.run(["/usr/bin/xcrun", "clang", "-dynamiclib", "-install_name", f"/build/{name}",
+                       "-o", str(path), str(source)])
+        return path
+
+    def relink(self, path, name):
+        """What Homebrew does to a bundled dylib: a new install name, signed again ad hoc."""
+        candidate.run(["/usr/bin/xcrun", "install_name_tool", "-id", name, str(path)])
+        candidate.run(["/usr/bin/codesign", "--force", "--sign", "-", str(path)])
+
+    def test_only_an_opt_install_name_and_new_signature_may_differ(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            original = self.dylib(folder).read_bytes()
+            installed = folder / "installed.dylib"
+            installed.write_bytes(original)
+            self.relink(installed, "/brew/opt/macus/libexec/macus/lib/libfixture.dylib")
+            self.assertNotEqual(installed.read_bytes(), original)
+            self.assertTrue(candidate.relinked_by_homebrew(
+                original, installed, "/brew/opt/macus/libexec/macus/lib/libfixture.dylib"))
+            # Another install name, a changed code byte, or a non-Mach-O file is not a relink.
+            self.assertFalse(candidate.relinked_by_homebrew(original, installed, "/elsewhere/libfixture.dylib"))
+            layout = candidate.macho_layout(original)[0]
+            code = next(chunk for chunk in layout[4] if chunk)
+            start = original.index(code)
+            tampered = bytearray(original)
+            tampered[start] ^= 0xFF
+            self.assertFalse(candidate.relinked_by_homebrew(
+                bytes(tampered), installed, "/brew/opt/macus/libexec/macus/lib/libfixture.dylib"))
+            self.assertFalse(candidate.relinked_by_homebrew(b"text", installed, "/brew/opt/macus/libexec/macus/lib/libfixture.dylib"))
+
+    def release_tree(self, folder):
+        release = folder / "release"
+        (release / "bin").mkdir(parents=True)
+        (release / "bin/macus").write_text("#!/bin/sh\n")
+        (release / "bin/macus").chmod(0o755)
+        (release / "releases/0.1.0").mkdir(parents=True)
+        (release / "releases/0.1.0/env.sh").write_text("export RELEASE_DISTRIBUTION=none\n")
+        (release / "lib/empty").mkdir(parents=True)
+        (release / "lib/nif").mkdir()
+        self.dylib(release / "lib/nif", "nif.so")
+        (release / "lib/nif/fixture.c").unlink()
+        (release / "current").symlink_to("releases/0.1.0")
+        archive = folder / "macus-server.tar.gz"
+        candidate.run(["tar", "--no-mac-metadata", "-czf", str(archive), "-s", ",^release,macus-server-fixture,S",
+                       "-C", str(folder), "release"])
+        return release, archive
+
+    def test_the_installed_release_must_be_its_archive(self):
+        stable = Path("/brew/opt/macus/libexec/macus")
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            release, archive = self.release_tree(folder)
+            payload = candidate.verify_payload(release, archive, stable)
+            self.assertEqual((payload["relinked_install_names"], payload["pruned_empty_directories"]), ([], []))
+            # Homebrew's own changes: an opt install name and a pruned empty directory.
+            self.relink(release / "lib/nif/nif.so", str(stable / "lib/nif/nif.so"))
+            (release / "lib/empty").rmdir()
+            payload = candidate.verify_payload(release, archive, stable)
+            self.assertEqual(payload["relinked_install_names"], ["lib/nif/nif.so"])
+            self.assertEqual(payload["pruned_empty_directories"], ["lib/empty"])
+            self.assertEqual(payload["archive_sha256"], candidate.digest(archive))
+
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            release, _ = self.release_tree(folder)
+            metadata = folder / "metadata.tar.gz"
+            candidate.run(["tar", "--mac-metadata", "-czf", str(metadata), "-C", str(folder), "release"])
+            candidate.run(["/usr/bin/xattr", "-w", "org.fixture", "1", str(release / "bin/macus")])
+            candidate.run(["tar", "--mac-metadata", "-czf", str(metadata), "-C", str(folder), "release"])
+            with self.assertRaisesRegex(ValueError, "AppleDouble"):
+                candidate.verify_payload(release, metadata, stable)
+
+        changes = {
+            "extra": lambda release: (release / "lib/extra.beam").write_text("x"),
+            "missing": lambda release: (release / "releases/0.1.0/env.sh").unlink(),
+            "changed": lambda release: (release / "releases/0.1.0/env.sh").write_text("export RELEASE_DISTRIBUTION=sname\n"),
+            "executable": lambda release: (release / "bin/macus").chmod(0o644),
+            "link": lambda release: ((release / "current").unlink(), (release / "current").symlink_to("bin")),
+            "relinked elsewhere": lambda release: self.relink(release / "lib/nif/nif.so", "/elsewhere/nif.so"),
+        }
+        for label, change in changes.items():
+            with tempfile.TemporaryDirectory() as directory, self.subTest(change=label):
+                release, archive = self.release_tree(Path(directory))
+                change(release)
+                with self.assertRaisesRegex(ValueError, "differs from its archive|changed|executable bit"):
+                    candidate.verify_payload(release, archive, stable)
+
+    def bundled(self, folder):
+        """A release laid out with the payload the candidate records."""
+        release = folder / "libexec/macus"
+        for name in ("erts-15.2.7.12/bin", "lib/opsmaru_incus-0.2.4", "lib/tama_dex-0.1.0",
+                     "lib/exqlite-0.43.0", "lib/macus-0.1.0/priv/cassettes", "releases/0.1.0"):
+            (release / name).mkdir(parents=True)
+        for tool in ("erl", "beam.smp"):
+            (release / "erts-15.2.7.12/bin" / tool).write_text("")
+            (release / "erts-15.2.7.12/bin" / tool).chmod(0o755)
+        cassette = release / "lib/macus-0.1.0/priv/cassettes/opsmaru_incus-0.2.4.tama-cassette"
+        cassette.write_bytes(b"cassette")
+        (release / "releases/0.1.0/env.sh").write_text("#!/bin/sh\nexport RELEASE_DISTRIBUTION=none\n")
+        (release / "macus-build.json").write_text("{}")
+        (release / "macus-build.json").chmod(0o444)
+        manifest = {"macus_version": "0.1.0", "server_release": {
+            "erts": {"version": "15.2.7.12"}, "tama_dex": {"version": "0.1.0"}, "exqlite": {"version": "0.43.0"},
+            "opsmaru_incus": {"version": "0.2.4", "cassette": {"file": cassette.name, "sha256": candidate.digest(cassette)}}}}
+        return release, manifest
+
+    def test_the_full_recorded_payload_is_installed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release, manifest = self.bundled(Path(directory))
+            candidate.release_contents(release, manifest)
+        changes = {
+            "ERTS": lambda release: (release / "erts-15.2.7.11").mkdir(),
+            "launcher": lambda release: (release / "erts-15.2.7.12/bin/beam.smp").chmod(0o644),
+            "library": lambda release: (release / "lib/tama_dex-0.0.9").mkdir(),
+            "cassette": lambda release: (release / "lib/macus-0.1.0/priv/cassettes/other.tama-cassette").write_text(""),
+            "pin": lambda release: (release / "lib/macus-0.1.0/priv/cassettes/opsmaru_incus-0.2.4.tama-cassette").write_text("other"),
+            "record": lambda release: (release / "macus-build.json").chmod(0o644),
+            "distribution": lambda release: (release / "releases/0.1.0/env.sh").write_text("#!/bin/sh\n"),
+        }
+        for label, change in changes.items():
+            with tempfile.TemporaryDirectory() as directory, self.subTest(change=label):
+                release, manifest = self.bundled(Path(directory))
+                change(release)
+                with self.assertRaisesRegex(ValueError, "server release"):
+                    candidate.release_contents(release, manifest)
+
+    def homebrew(self, folder, version="0.0.0-dev.fixture"):
+        """A Homebrew prefix with the keg, its opt link and its linked executable."""
+        brew = folder / "brew"
+        keg = brew / "Cellar/macus" / version
+        (keg / "bin").mkdir(parents=True)
+        (keg / "bin/macus").write_text("")
+        (keg / "libexec/macus/bin").mkdir(parents=True)
+        (keg / "libexec/macus/bin/macus").write_text("")
+        (keg / "INSTALL_RECEIPT.json").write_text(json.dumps({"runtime_dependencies": [], "poured_from_bottle": True}))
+        (brew / "opt").mkdir()
+        (brew / "opt/macus").symlink_to(f"../Cellar/macus/{version}")
+        (brew / "bin").mkdir()
+        (brew / "bin/macus").symlink_to(f"../Cellar/macus/{version}/bin/macus")
+        return keg.resolve(), brew / "opt/macus", brew
+
+    def test_stable_opt_paths_and_no_added_service_or_dependency(self):
+        def check(keg, opt, brew):
+            with patch.object(candidate, "verify_package") as package, \
+                    patch.object(candidate, "release_contents"), \
+                    patch.object(candidate, "macho_files", return_value=[]), \
+                    patch.object(candidate, "verify_payload", return_value={"entries": 1}) as payload:
+                evidence = candidate.verify_installation(keg, opt, brew, {"server_release": {"file": "r.tar.gz"}}, Path("/c"))
+            # The launcher is run through the opt path both jobs record.
+            self.assertEqual(package.call_args.args[2], opt)
+            self.assertEqual(payload.call_args.args[2], opt / "libexec/macus")
+            return evidence
+
+        with tempfile.TemporaryDirectory() as directory:
+            keg, opt, brew = self.homebrew(Path(directory))
+            evidence = check(keg, opt, brew)
+            self.assertEqual((evidence["opt_prefix"], evidence["runtime_dependencies"], evidence["homebrew_service"]),
+                             (str(opt), [], False))
+            self.assertTrue(evidence["receipt"]["poured_from_bottle"])
+
+        def stale_opt(keg, opt, brew):
+            (brew / "Cellar/macus/old/bin").mkdir(parents=True)
+            opt.unlink()
+            opt.symlink_to("../Cellar/macus/old")
+
+        changes = {
+            "opt": (stale_opt, "stable path"),
+            "linked": (lambda keg, opt, brew: ((brew / "bin/macus").unlink(), (brew / "bin/macus").write_text("")),
+                       "linked macus"),
+            "dependency": (lambda keg, opt, brew: (keg / "INSTALL_RECEIPT.json").write_text(
+                json.dumps({"runtime_dependencies": [{"full_name": "erlang"}]})), "other formulae"),
+            "service": (lambda keg, opt, brew: (keg / "homebrew.mxcl.macus.plist").write_text(""), "Homebrew service"),
+        }
+        for label, (change, message) in changes.items():
+            with tempfile.TemporaryDirectory() as directory, self.subTest(change=label):
+                keg, opt, brew = self.homebrew(Path(directory))
+                change(keg, opt, brew)
+                with self.assertRaisesRegex((ValueError, OSError), message):
+                    check(keg, opt, brew)
+
+    def test_passivity_covers_both_jobs_and_a_homebrew_service(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"HOME": directory}):
+            agents = Path(directory) / "Library/LaunchAgents"
+            agents.mkdir(parents=True)
+            jobs = ["PID\tStatus\tLabel", "-\t0\tcom.apple.fixture"]
+
+            def snapshot():
+                listing = subprocess.CompletedProcess([], 0, "\n".join(jobs) + "\n", "")
+                with patch.object(candidate.subprocess, "run", return_value=listing):
+                    return candidate.passive_snapshot()
+
+            before = snapshot()
+            (agents / "com.example.other.plist").write_text("")
+            self.assertEqual(snapshot(), before)
+            for name in ("com.upmaru.macus.server.plist", "homebrew.mxcl.macus.plist"):
+                (agents / name).write_text("")
+                self.assertNotEqual(snapshot(), before)
+                (agents / name).unlink()
+            jobs.append("123\t0\tcom.upmaru.macus.server")
+            self.assertNotEqual(snapshot(), before)
+
+    def test_source_and_bottle_evidence_are_kept_apart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, data = self.prepared(Path(directory))
+            evidence = {"installed_keg": "/brew/Cellar/macus/x", "payload": {"entries": 1}}
+            stack = contextlib.ExitStack()
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            self.addCleanup(stack.close)
+            candidate.write_evidence(root, "source-build-acceptance.json", data, evidence,
+                                     evidence_kind="source-build", poured_from_bottle=False)
+            candidate.write_evidence(root, "package-acceptance.json", data, evidence,
+                                     evidence_kind="poured-bottle", poured_from_bottle=True)
+            source = json.loads((root / "source-build-acceptance.json").read_text())
+            poured = json.loads((root / "package-acceptance.json").read_text())
+            self.assertEqual((source["evidence_kind"], source["poured_from_bottle"]), ("source-build", False))
+            self.assertEqual((poured["evidence_kind"], poured["poured_from_bottle"]), ("poured-bottle", True))
+            self.assertFalse(source["hardware_ran"])
+            with self.assertRaises(FileExistsError):
+                candidate.write_evidence(root, "source-build-acceptance.json", data, evidence, evidence_kind="again")
+            self.assertEqual(json.loads((root / "source-build-acceptance.json").read_text()), source)
+
+    def test_the_formula_adds_no_service_hook_or_toolchain(self):
+        """Installation stays passive: macus start owns the only two jobs."""
+        template = candidate.TEMPLATE.read_text()
+        for forbidden in ("service do", "post_install", "launchctl", "plist_options",
+                          'depends_on "erlang"', 'depends_on "elixir"', 'depends_on "openssl'):
+            self.assertNotIn(forbidden, template)
 
     def test_dirty_source_and_existing_output_are_refused(self):
         with tempfile.TemporaryDirectory() as directory:
