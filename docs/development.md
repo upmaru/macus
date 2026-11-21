@@ -335,6 +335,42 @@ python3 Integration/scripts/start-acceptance.py --opt-in --hardware \
 
 A run that is refused, or that stops before `--hardware`, is not hardware acceptance.
 
+## Workload acceptance runner
+
+`Integration/scripts/workload-acceptance.py` (task 11.3) runs against a state that `start-acceptance.py` already started, with that run's installed pair and isolated `INCUS_CONF` (its report's `incus_conf`). It has the same opt-in steps. Without `--opt-in` it touches nothing. With `--opt-in` it checks the report path, refuses ordinary state, prefix and client configuration, and checks the installed pair. Without `--hardware` nothing reaches the guest. With `--hardware` it first requires the client's remote to name exactly this state's published endpoint; until then it changes nothing.
+
+```bash
+python3 Integration/scripts/workload-acceptance.py --opt-in --hardware \
+  --state-dir /tmp/macus-accept --prefix "$(brew --prefix macus)" \
+  --incus-conf "$(python3 -c 'import json;print(json.load(open(".integration/start-acceptance.json"))["incus_conf"])')" \
+  --incus "$(command -v incus)" --remote macus \
+  --report "$PWD/.integration/workload-acceptance.json"
+```
+
+Through the standard client and the gateway it checks the following:
+
+- **Workload:** it creates one system container (`--image`, default `images:alpine/3.22`), then reuses and keeps it.
+- **Exec:** native exec returns stdout, stderr, the exit status and stdin.
+- **Console:** an attached console receives what the instance writes to `/dev/console`, then detaches with Ctrl-A q.
+- **Events:** a lifecycle event arrives for a snapshot made while `incus monitor` runs.
+- **Binary transfers:** 8 MiB of random bytes are pushed, hashed in the guest, then pulled back unchanged.
+- **MCP:** `search` and `execute` work over the shared Incus and Macus runtime operations, each with only the scopes it needs.
+
+It also checks that these are refused without affecting the guest:
+
+- no bearer token, an unknown one, or a revoked one (401);
+- a token that lacks the scope (`not_found`, not dispatched);
+- a missing or empty confirmation (`confirmation_required`, not dispatched), or a wrong one (`operation_error`, nothing deleted);
+- a gateway-untrusted client certificate, or a bearer token, on native list, exec and delete routes (403).
+
+The guest's marker file, snapshots, instance status and runtime state must be identical before and after the run. Tokens are revoked afterwards.
+
+The runner never stops, restarts or force-stops the VM. The only thing it deletes is the snapshot it created itself, through the confirmed MCP delete.
+
+It creates the workload with `incus create` and `incus start` rather than `incus launch`. The client always sends `"start": true`, and it starts the instance a second time unless the server advertises `instance_create_start`. The gateway doesn't advertise it yet, so `incus launch` reports "already running" after the container has started.
+
+Every child process gets an empty stdin, because `incus snapshot create` and `incus create` read YAML from a stdin that is not a terminal. If a command stalls anyway, the report keeps its `--debug` log, a goroutine dump and a TLS probe of the gateway.
+
 ## Integration acceptance
 
 Install a standard native Incus client separately, or point `--incus` at a verified local binary. The runtime has no client dependency. The runner configures a standard `unix:` remote in an isolated client directory, because macOS clients have no implicit local server. It creates uniquely named workloads/remotes and removes workloads on success; failures preserve instances and diagnostics.

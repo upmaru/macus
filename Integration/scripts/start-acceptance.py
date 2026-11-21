@@ -356,7 +356,7 @@ class Run:
 
     def command(self, arguments, timeout, tool):
         result = subprocess.run(arguments, env=self.env, text=True, capture_output=True,
-                                timeout=timeout)
+                                stdin=subprocess.DEVNULL, timeout=timeout)
         self.report.setdefault("commands", []).append({
             "tool": tool, "arguments": arguments[1:], "exit_code": result.returncode,
             "stdout": result.stdout[-4000:], "stderr": result.stderr[-4000:],
@@ -379,7 +379,8 @@ class Tokens:
         os.chmod(directory, 0o700)
 
     def issue(self, scope):
-        path = self.directory / f"{scope}.token"
+        self.issued = getattr(self, "issued", 0) + 1
+        path = self.directory / f"{self.issued}-{scope}.token"
         self.run.macus(["server", "token", "issue", "--principal", "macus-acceptance",
                         "--scope", scope, "--expires-in", "1h", "--output", str(path)])
         token = path.read_text().strip()
