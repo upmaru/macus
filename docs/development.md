@@ -435,6 +435,42 @@ The VM, the runtime job and the kept workload are never stopped or restarted, an
 
 Gateway trust is read with a plain `GET /1.0/certificates?recursion=1` that presents the owner's client certificate. The standard `incus config trust list` sends an empty `filter=`, which servers older than this fix refuse, and `incus query` sends a JSON body (`""` without `--data`), which the certificate and discovery handlers of `opsmaru_incus` before 0.2.8 refuse ([opsmaru-incus#91](https://github.com/upmaru/opsmaru-incus/issues/91)). The plain request works against either. The runner records what `incus config trust list` returns under `findings`.
 
+## Upgrade acceptance runner
+
+`Integration/scripts/upgrade-acceptance.py` (task 11.6) changes the installed package under a started state with a kept workload, following [Upgrade, rollback and removal](../Packaging/homebrew/README.md#upgrade-rollback-and-removal) without running Homebrew. It takes the restart runner's state, `--incus-conf`, `--incus` and `--remote` arguments, plus:
+
+- `--old-candidate` and `--new-candidate`: two installed pairs of different revisions, each `bin/macus` with its `libexec/macus` release (for example from `Packaging/install-local.sh --prefix`). Each must pass the pair checks against its own revision's lockfile: `--old-lock`, and `--new-lock` (default: this checkout's `server/mix.lock`).
+- `--package-root`: a short isolated directory, never Homebrew's prefix, a system path or ordinary user data. Candidates are poured into `ROOT/Cellar/macus/<version>_<revision>`, and `ROOT/opt/macus` links to the installed one, as Homebrew lays out a keg. The runtime plist therefore names the stable `ROOT/opt/macus/bin/macus`.
+- `--hardware`: without it, only the two candidates are checked.
+
+```bash
+python3 Integration/scripts/upgrade-acceptance.py --opt-in --hardware \
+  --state-dir /tmp/macus-accept --package-root /tmp/macus-pkg/root \
+  --old-candidate /tmp/macus-pkg/candidates/old --new-candidate /tmp/macus-pkg/candidates/new \
+  --old-lock "$PWD/.integration/mix.lock-old" \
+  --incus-conf /absolute/isolated/incus-conf --incus "$(command -v incus)" --remote macus \
+  --report "$PWD/.integration/upgrade-acceptance.json"
+```
+
+It runs six transitions in order: adopt (the running pair to the old candidate in the package root), upgrade, rollback, upgrade again, removal and reinstall. Each package change stops the runtime through the server, unloads the server job and then the runtime job, and removes only owned plists: the server plist always, and both for adopt (the old runtime plist names a path outside the package root) and removal. Removal then deletes the opt link and every keg, and requires both jobs unloaded, no plist, a closed gateway port and a released runtime disk.
+
+After every start the runner requires:
+
+- the runtime disks (same files), settings, server credentials and trust, and the client configuration unchanged, and the same gateway certificate;
+- the server plist registered for the installed revision, and the runtime plist naming the stable opt path, byte-identical across every transition;
+- the kept workload with the same `volatile.uuid` and data;
+- the client still trusted without enrolling again, and bearer tokens issued before the first transition still accepted over `/runtime` and `/mcp`.
+
+On the new candidate it also checks product fixes on hardware: `incus query` of gateway trust, `incus config trust list`, `macus --json server config show` with a stored `gateway.json`, and `incus launch` of a throwaway instance (deleted afterwards). The first failure stops the sequence and keeps the state, the package root, the plists and the workload as they are.
+
+## Linux acceptance runner
+
+`Integration/scripts/linux-acceptance.py` (task 11.7) boots Linux workloads through the public gateway of a state started from an installed package. It takes `--state-dir`, `--prefix` (the installed package, for example `ROOT/opt/macus`), `--lock`, `--incus-conf`, `--incus`, `--remote`, `--report`, `--fixture` (default `Integration/fixtures/linux-acceptance.json`) and `--hardware`.
+
+With `--hardware` it stops the runtime and starts it again from the installed package. The guest kernel's boot id must change, and `/1.0` must report a trusted Linux guest and its Incus server. It then creates the fixture's own project (refused if it already exists). If the gateway does not advertise the `projects` API extension, which the standard client requires for `--project` (the case with opsmaru_incus 0.2.8), it records that under `findings` and uses the isolated state's default project, refusing any workload name that already exists. It launches each fixture workload with the standard client: a system container, an OCI container through the fixture's own OCI remote in the isolated client configuration, and a nested virtual machine. Each must reach `Running` and pass the fixture's readiness command, with its expected output, within the fixture's timeout. A workload whose capability (`oci`, `vm`) the runtime does not report is recorded under `skipped` with the reported capabilities, never as a pass; the run succeeds only if the virtual machine was attempted.
+
+Boot, readiness, gateway (HTTP) and capability evidence are recorded separately under `evidence`. On success the workloads, the project and the OCI remote are removed. On failure they, the state and the server logs are kept.
+
 ## Integration acceptance
 
 Install a standard native Incus client separately, or point `--incus` at a verified local binary. The runtime has no client dependency. The runner configures a standard `unix:` remote in an isolated client directory, because macOS clients have no implicit local server. It creates uniquely named workloads/remotes and removes workloads on success; failures preserve instances and diagnostics.
