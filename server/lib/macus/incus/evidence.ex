@@ -310,38 +310,40 @@ defmodule Macus.Incus.Evidence do
     end
   end
 
+  defp shipped_errors(kind, file) do
+    expected = file["amended_sha256"] || file["transferred_sha256"]
+
+    case sha256(Path.join(Application.app_dir(:opsmaru_incus), file["destination"])) do
+      nil ->
+        ["#{kind} #{file["destination"]} is missing from the package"]
+
+      ^expected ->
+        []
+
+      _ ->
+        [
+          "#{kind} #{file["destination"]} no longer hashes to #{expected} recorded in transfer.json"
+        ]
+    end
+  end
+
   defp integrity_with(transfer) do
     case transfer["files"] do
       files when is_list(files) ->
-        # The priv/incus records are the linked evidence and must be byte for
-        # byte what the record hashes. The priv/notices files are provenance
-        # the package maintains, so they only have to ship.
+        # The priv/incus records are the linked evidence and the priv/notices
+        # files their provenance; each must be byte for byte what transfer.json
+        # records: its amended digest when the package amended the file after
+        # transfer (opsmaru_incus 0.2.5, upmaru/opsmaru-incus#82), otherwise
+        # its transferred digest.
         records = for %{"destination" => "priv/incus/" <> _} = file <- files, do: file
         notices = for %{"destination" => "priv/notices/" <> _} = file <- files, do: file
 
         errors =
-          for file <- records do
-            case sha256(Path.join(Application.app_dir(:opsmaru_incus), file["destination"])) do
-              nil ->
-                "evidence record #{file["destination"]} is missing from the package"
-
-              digest ->
-                if digest != file["transferred_sha256"],
-                  do:
-                    "evidence record #{file["destination"]} no longer hashes to " <>
-                      "#{file["transferred_sha256"]} recorded in transfer.json",
-                  else: nil
-            end
-          end
-          |> Enum.reject(&is_nil/1)
-          |> then(fn errors ->
-            errors ++
-              for file <- notices,
-                  not File.exists?(
-                    Path.join(Application.app_dir(:opsmaru_incus), file["destination"])
-                  ),
-                  do: "notice #{file["destination"]} is missing from the package"
-          end)
+          Enum.flat_map(
+            Enum.map(records, &{"evidence record", &1}) ++
+              Enum.map(notices, &{"notice", &1}),
+            fn {kind, file} -> shipped_errors(kind, file) end
+          )
 
         if errors == [], do: {:ok, length(records)}, else: {:error, errors}
 

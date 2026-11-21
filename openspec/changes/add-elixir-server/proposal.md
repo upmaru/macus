@@ -2,12 +2,12 @@
 
 ## Why
 
-Macus needs an authenticated public gateway for its Swift runtime, canonical Incus access and agent tools. The first milestone is a standalone Macus. It uses the pure `:opsmaru_incus` library (`upmaru/opsmaru-incus`, on Hex; Macus locks 0.2.4) for the Incus client, native gateway mechanics and shared Incus operation descriptors, the same definitions central Opsmaru uses, without depending on the `:opsmaru` central service. Registering a Mac with central Opsmaru is a later change (`add-central-registration`).
+Macus needs an authenticated public gateway for its Swift runtime, canonical Incus access and agent tools. The first milestone is a standalone Macus. It uses the pure `:opsmaru_incus` library (`upmaru/opsmaru-incus`, on Hex; Macus locks 0.2.6) for the Incus client, native gateway mechanics and shared Incus operation descriptors, the same definitions central Opsmaru uses, without depending on the `:opsmaru` central service. Registering a Mac with central Opsmaru is a later change (`add-central-registration`).
 
 ## What Changes
 
 - Keep one headless Phoenix/Cowboy Mix project in `server/`, OTP application `:macus` with `Macus`/`MacusWeb` namespaces, as Macus's public gateway.
-- Depend on the pure `:opsmaru_incus` library from Hex (`~> 0.2.4`, locked in `server/mix.lock`). It has no application callback, so it starts no endpoint, listener or process inside the Macus BEAM; no other service is installed.
+- Depend on the pure `:opsmaru_incus` library from Hex (`~> 0.2.6`, locked in `server/mix.lock`). It has no application callback, so it starts no endpoint, listener or process inside the Macus BEAM; no other service is installed.
 - Expose authenticated HTTPS for local and explicitly configured LAN/remote access. Retain gateway-owned certificate trust for standard Incus clients and scoped bearer credentials for `/runtime` and `/mcp` before private backend access.
 - Expose `/runtime/*` mapped to Swift's private `/v1/runtime/*`; preserve `/` and native `/1.0/*` paths, HTTP/streaming/native upgrades and gateway identity mediation without `/incus` aliases or an upstream client patch.
 - **BREAKING**: make the Macus gateway the normal connection boundary for Swift CLI and standard Incus clients. Keep `runtime.sock` and `incus.sock` internal and preserve existing remote conflict rules.
@@ -15,7 +15,7 @@ Macus needs an authenticated public gateway for its Swift runtime, canonical Inc
 - Expose agents to one `/mcp` endpoint advertising exactly two tools, `search` and `execute`, using maintained TamaMCP contracts. The tools cover one catalogue: the exported shared `:opsmaru_incus` operation descriptors plus Macus-owned Swift runtime operations. The separate tama-dex library (`Tama.Dex`) indexes `tama-operations/1` documents into SQLite at `<state-dir>/server/tama-dex.sqlite3`. Macus loads the bundled, SHA-pinned opsmaru_incus cassette and its own `macus` runtime document at server start, reporting index readiness separately from VM readiness. Macus owns both tool modules, built from `Tama.Dex.MCP`. `execute` dispatches shared operations to `Opsmaru.Incus.Operations.Composite.run/3`, and the opt-in native source to `Opsmaru.Incus.Operations.Native.run/3`, with Macus's verified principal/scopes and its local connection through the library's operations host contract. Operations are synchronous and return native operation identity; durable MCP tasks are deferred. No per-operation MCP tools are registered.
 - Install the Swift executable and matching bundled-ERTS Macus release containing the pinned `:opsmaru_incus` dependency as one package. Installation is passive; `macus start` activates the same two independently supervised Swift/Elixir jobs.
 - Central registration (`macus connect`/`connection status`/`disconnect`, outbound connector, delegated execution) moved to the later `add-central-registration` change.
-- Preserve canonical checks and explicit isolated package/hardware/remote acceptance. Completed scaffold, pinned-reference foundation and Cowboy transport-trial evidence remain valid historical work. Integration tasks through 10.3 are complete except 6.12 (blocked on the library's complete port) and 10.2 (blocked on upmaru/opsmaru-incus#85); 10.4 and all 11.x hardware, package and remote acceptance remain unchecked.
+- Preserve canonical checks and explicit isolated package/hardware/remote acceptance. Completed scaffold, pinned-reference foundation and Cowboy transport-trial evidence remain valid historical work. Integration tasks through 10.4 and the 11.1 acceptance runner are complete except 6.12 (blocked on the library's complete port); 11.2–11.7 hardware, package and remote acceptance remain unchecked.
 
 ## Capabilities
 

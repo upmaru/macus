@@ -137,6 +137,32 @@ defmodule Macus.Incus.EvidenceTest do
              ]
     end
 
+    test "a notice that no longer matches its amended digest fails" do
+      transfer = ctx_record("transfer.json")
+
+      notice =
+        Enum.find(transfer["files"], &(&1["destination"] == "priv/notices/INCUS-NOTICE.md"))
+
+      assert notice["amended_sha256"] && notice["amended_sha256"] != notice["transferred_sha256"]
+
+      tampered =
+        Map.put(transfer, "files", [Map.put(notice, "amended_sha256", @other_revision <> "00")])
+
+      assert {:error, errors} =
+               Evidence.integrity(with_record(Evidence.records(), "transfer.json", tampered))
+
+      assert errors == [
+               "notice priv/notices/INCUS-NOTICE.md no longer hashes to " <>
+                 "#{@other_revision}00 recorded in transfer.json"
+             ]
+
+      # The transferred digest alone no longer describes the shipped, amended file.
+      untracked = Map.put(transfer, "files", [Map.delete(notice, "amended_sha256")])
+
+      assert {:error, [_]} =
+               Evidence.integrity(with_record(Evidence.records(), "transfer.json", untracked))
+    end
+
     test "a coverage entry outside the inventory fails the check" do
       records =
         with_record(Evidence.records(), "coverage.json", %{

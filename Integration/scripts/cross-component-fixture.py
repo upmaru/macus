@@ -331,15 +331,15 @@ class Harness:
         return [json.loads(line) for line in self.backend_log.read_text().splitlines()]
 
     def direct(self, path):
-        """GET `path` from the running Incus socket itself, bypassing every Macus process."""
+        """GET `path` from the backend's Incus socket itself, bypassing every Macus process."""
         connection = http.client.HTTPConnection("localhost", timeout=10)
         connection.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         connection.sock.settimeout(10)
-        connection.sock.connect(str(self.incus_socket))
+        connection.sock.connect(str(self.incus_socket or self.root / "incus.sock"))
         try:
             connection.request("GET", path)
             response = connection.getresponse()
-            check(response.status == 200, "the running Incus answered %s for %s" % (response.status, path))
+            check(response.status == 200, "the backend answered %s for %s" % (response.status, path))
             return json.loads(response.read())["metadata"]
         finally:
             connection.close()
@@ -484,11 +484,11 @@ class Harness:
             project = projects[0] if projects else "default"
             expected = sorted(url.split("?")[0].rsplit("/", 1)[-1]
                               for url in self.direct("/1.0/instances?project=%s" % project))
-            extensions = set(self.direct("/1.0")["api_extensions"])
-            check(set(server_info["api_extensions"]) <= extensions,
-                  "the gateway advertises extensions the running Incus lacks")
         else:
             expected = ["c1", "c2"]
+        extensions = set(self.direct("/1.0")["api_extensions"])
+        check(set(server_info["api_extensions"]) <= extensions,
+              "the gateway advertises extensions the backend lacks")
 
         def listed(*columns):
             result = self.incus_command(
@@ -499,11 +499,16 @@ class Harness:
         # The name column alone needs no per-instance state, snapshots or backups.
         names = listed("--columns", "n")
         check(names == expected, "incus list -c n returned %s, the backend has %s" % (names, expected))
+        # The default columns need instance_get_full (upmaru/opsmaru-incus#85): without it the
+        # client falls back to per-instance reads that stop at container_backup and drop every
+        # instance. The gateway must advertise both listing extensions the backend reports.
+        listing = {"api_filtering", "instance_get_full"}
+        missing = listing & extensions - set(server_info["api_extensions"])
+        self.soft(not missing, "the gateway does not advertise %s, which the backend reports"
+                  % sorted(missing))
         default_columns = listed()
         self.soft(default_columns == expected,
-                  "incus list with its default columns returned %s, the backend has %s: the "
-                  "gateway advertises neither instance_get_full nor container_backup, so the "
-                  "client's per-instance fallback fails and drops every instance"
+                  "incus list with its default columns returned %s, the backend has %s"
                   % (default_columns, expected))
         checks["runtime_mapping"] = {
             "runtime_state": status["state"], "server_version": version, "project": project,

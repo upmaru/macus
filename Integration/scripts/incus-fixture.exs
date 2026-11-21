@@ -59,8 +59,23 @@ script = fn
     {:sync, %{}}
 
   %{method: "GET", path: "/1.0/instances", qs: qs} when qs != "" ->
-    if String.contains?(qs, "recursion=") and not String.contains?(qs, "recursion=0") do
-      {:sync, Enum.map(["c1", "c2"], instance)}
+    cond do
+      # instance_get_full: each record carries its state, snapshots and backups.
+      String.contains?(qs, "recursion=2") ->
+        {:sync,
+         Enum.map(["c1", "c2"], fn name ->
+           Map.merge(instance.(name), %{
+             "state" => %{"status" => "Running", "status_code" => 103, "network" => %{}},
+             "snapshots" => [],
+             "backups" => []
+           })
+         end)}
+
+      String.contains?(qs, "recursion=") and not String.contains?(qs, "recursion=0") ->
+        {:sync, Enum.map(["c1", "c2"], instance)}
+
+      true ->
+        nil
     end
 
   %{method: "GET", path: "/1.0/instances/" <> name} when name in ["c1", "c2"] ->
@@ -125,6 +140,7 @@ extensions = [
   "instances",
   "projects",
   "api_filtering",
+  "instance_get_full",
   "instance_all_projects",
   "container_exec_signal_handling",
   "container_exec_recording",
