@@ -299,6 +299,36 @@ Use a new appliance ID and a new state directory when changing the base image. E
 
 `Integration/scripts/start-acceptance.py` is opt-in and does not boot hardware unless `--hardware` is passed. Its `--report` path is validated before any directory creation or executable invocation. A report inside the state directory, installation prefix, ordinary Incus configuration, or a symlink is refused so runtime disks and configuration cannot be overwritten by the report. Put the report in a separate directory.
 
+It runs only the installed pair: `<prefix>/bin/macus` and the server release beside it at `<prefix>/libexec/macus`. `--macus` may only name that executable. Without `--opt-in` it refuses before it reads, creates or runs anything. With `--opt-in`, and before anything runs or any state is created, it checks the installed pair by reading it:
+
+- **Paired artifacts:** the identity embedded in the executable equals the release's `macus-build.json`.
+- **Pinned dependency:** the release bundles exactly the `opsmaru_incus` that `server/mix.lock` locks, plus only its recorded cassette.
+- **Service labels:** the state's runtime and server labels differ from each other and from the default `com.upmaru.macus` and `com.upmaru.macus.server`.
+
+Without `--hardware` it records those checks and stops, so `macus` never runs and VZ never starts. It also never touches the ordinary state or client configuration.
+
+With `--hardware` it also:
+
+1. Creates a fresh `INCUS_CONF`.
+2. Writes a gateway port of its own to an owner-private `<state>/server/gateway.json`. It keeps an existing file, and never uses the default port 8443.
+3. Removes `MACUS_STATE_DIR` and the fixture seams from the environment.
+4. Runs `macus start`.
+
+Success then requires all of the following:
+
+- the reported labels and endpoint port are this state's;
+- both plists are in `<state>/launchd` and name this state, the installed executable and the paired release revision;
+- `server/` holds owner-private credentials;
+- the default jobs, their plists and the default endpoint are unchanged. The runner only reads these, with `launchctl print` and `stat`.
+
+```bash
+python3 Integration/scripts/start-acceptance.py --opt-in --hardware \
+  --state-dir /tmp/macus-accept --prefix "$(brew --prefix macus)" \
+  --report .integration/start-acceptance.json
+```
+
+A run that is refused, or that stops before `--hardware`, is not hardware acceptance.
+
 ## Integration acceptance
 
 Install a standard native Incus client separately, or point `--incus` at a verified local binary. The runtime has no client dependency. The runner configures a standard `unix:` remote in an isolated client directory, because macOS clients have no implicit local server. It creates uniquely named workloads/remotes and removes workloads on success; failures preserve instances and diagnostics.
