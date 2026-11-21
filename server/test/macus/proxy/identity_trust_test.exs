@@ -357,6 +357,10 @@ defmodule Macus.Proxy.IdentityTrustTest do
 
       assert {400, _, _} = request(:get, "/1.0/certificates?filter=name+eq+x", as_admin)
 
+      # The standard `incus config trust list` always sends an empty filter.
+      assert {200, %{"metadata" => [^object]}, _} =
+               request(:get, "/1.0/certificates?filter=&recursion=1", as_admin)
+
       # Create from base64 DER, as `incus config trust add-certificate` sends.
       {200, body, conn} =
         request(

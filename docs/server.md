@@ -76,7 +76,18 @@ it starts:
   certificate (optionally followed by its chain) must be yours and writable
   by nobody else. At start the server proves the key belongs to the
   certificate, that the certificate is currently valid and that it names the
-  advertised host (DNS name or IP address).
+  advertised host (DNS name or IP address). An EC key and its certificate
+  must name their curve (P-256, P-384 or P-521), because TLS 1.3 negotiates
+  only named curves. macOS's `/usr/bin/openssl req -newkey ec` writes the
+  curve's parameters out instead, so create the key first:
+
+  ```bash
+  openssl ecparam -name secp384r1 -param_enc named_curve -genkey -noout \
+    -out macus.example.net.key
+  openssl req -x509 -new -key macus.example.net.key -sha384 -days 365 \
+    -subj /CN=macus.example.net -addext subjectAltName=DNS:macus.example.net \
+    -out macus.example.net.pem
+  ```
 
 The server reads `gateway.json` only when it starts; `set` and `reset` say so
 and restart nothing. `macus server config reset` removes the file, returning

@@ -106,6 +106,26 @@ defmodule Macus.TestSupport.TLSIdentity do
     %{certfile: certfile, keyfile: keyfile, pem: pem, der: der}
   end
 
+  # An EC key and certificate that spell out the curve's parameters instead of
+  # naming it, as macOS's LibreSSL `req -newkey ec` writes them.
+  def explicit_curve(root, name, hostname) do
+    certfile = Path.join(root, name <> ".pem")
+    keyfile = Path.join(root, name <> ".key")
+
+    run!(~w(ecparam -name secp384r1 -param_enc explicit -genkey -noout -out) ++ [keyfile])
+
+    run!(
+      ~w(req -x509 -new -sha384 -days 2) ++
+        ["-key", keyfile, "-subj", "/CN=#{hostname}", "-addext", "subjectAltName=DNS:#{hostname}"] ++
+        ["-out", certfile]
+    )
+
+    for path <- [certfile, keyfile], do: File.chmod!(path, 0o600)
+    pem = File.read!(certfile)
+    [{:Certificate, der, _}] = :public_key.pem_decode(pem)
+    %{certfile: certfile, keyfile: keyfile, pem: pem, der: der}
+  end
+
   defp run!(args) do
     {output, status} = System.cmd("openssl", args, stderr_to_stdout: true)
     if status != 0, do: raise("fixture certificate generation failed: #{output}")

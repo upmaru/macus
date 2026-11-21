@@ -42,6 +42,8 @@ defmodule Macus.Gateway.Certificate do
   @max_chain 8
   @ecdsa_sha384 {1, 2, 840, 10_045, 4, 3, 3}
   @ec_public_key {1, 2, 840, 10_045, 2, 1}
+  # The curves TLS 1.3 can use for a certificate: P-256, P-384 and P-521.
+  @tls13_curves [{1, 2, 840, 10_045, 3, 1, 7}, {1, 3, 132, 0, 34}, {1, 3, 132, 0, 35}]
   @rsa_encryption {1, 2, 840, 113_549, 1, 1, 1}
 
   @type t :: %{der: binary(), pem: String.t(), fingerprint: String.t()}
@@ -169,6 +171,7 @@ defmodule Macus.Gateway.Certificate do
              | :unsafe_key
              | :invalid_key
              | :key_mismatch
+             | :unnamed_curve
              | :certificate_not_current
              | :identity_mismatch}
   def load(%{certfile: certfile, keyfile: keyfile}, uid, host, now) do
@@ -176,6 +179,7 @@ defmodule Macus.Gateway.Certificate do
          {:ok, key} <- read_key(keyfile, uid),
          [leaf | _] = chain,
          :ok <- matches(leaf, key),
+         :ok <- named_curve(leaf, key),
          true <- Trust.valid_at?(leaf, now) || {:error, :certificate_not_current},
          true <- names?(leaf, host) || {:error, :identity_mismatch} do
       {:ok, %{der: leaf, pem: Trust.pem(leaf), fingerprint: Trust.fingerprint(leaf)}}
@@ -259,6 +263,22 @@ defmodule Macus.Gateway.Certificate do
   rescue
     _ -> {:error, :key_mismatch}
   end
+
+  # TLS 1.3 negotiates only named curves; a key or certificate that spells
+  # out its curve's parameters would load, then fail every handshake.
+  defp named_curve(_leaf, {:RSAPrivateKey, _, _, _, _, _, _, _, _, _, _}), do: :ok
+
+  defp named_curve(leaf, {:ECPrivateKey, _, _, key_parameters, _, _}) do
+    with {:ok, {_point, certificate_parameters}} <- public_key(leaf),
+         true <- tls13_curve?(key_parameters) and tls13_curve?(certificate_parameters) do
+      :ok
+    else
+      _ -> {:error, :unnamed_curve}
+    end
+  end
+
+  defp tls13_curve?({:namedCurve, oid}), do: oid in @tls13_curves
+  defp tls13_curve?(_parameters), do: false
 
   defp public_key(der) do
     {:OTPCertificate, tbs, _, _} = :public_key.pkix_decode_cert(der, :otp)

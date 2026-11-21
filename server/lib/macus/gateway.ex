@@ -421,6 +421,10 @@ defmodule Macus.Gateway do
   def describe(:invalid_key), do: "the gateway key is not an unencrypted EC or RSA key"
   def describe(:key_mismatch), do: "the gateway key does not belong to the certificate"
 
+  def describe(:unnamed_curve),
+    do:
+      "the gateway EC key and certificate must name their curve (P-256, P-384 or P-521) for TLS 1.3"
+
   def describe(:certificate_not_current),
     do: "the gateway certificate is expired or not yet valid"
 

@@ -504,8 +504,9 @@ defmodule Macus.Proxy.Host do
   defp list_options(query) do
     params = URI.decode_query(query || "")
 
+    # The standard client sends `filter=` with every list; only a real filter is refused.
     cond do
-      Map.has_key?(params, "filter") -> {:error, :filter}
+      params["filter"] not in [nil, ""] -> {:error, :filter}
       params["recursion"] in [nil, "", "0"] -> {:ok, false}
       true -> {:ok, true}
     end

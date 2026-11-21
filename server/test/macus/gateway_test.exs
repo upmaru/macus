@@ -416,6 +416,22 @@ defmodule Macus.GatewayTest do
       assert prepare(context) == {:error, :unsafe_certificate}
     end
 
+    test "an operator EC identity must name its curve, as TLS 1.3 requires", context do
+      explicit = TLSIdentity.explicit_curve(context.root, "explicit", "macus.example.net")
+      {text, 0} = System.cmd("openssl", ["x509", "-in", explicit.certfile, "-noout", "-text"])
+      refute text =~ "ASN1 OID"
+
+      configure!(context, %{
+        "bind_address" => "192.168.1.20",
+        "advertised_url" => "https://macus.example.net:8443",
+        "certificate_file" => explicit.certfile,
+        "key_file" => explicit.keyfile
+      })
+
+      # Accepted, it would publish an endpoint whose every handshake fails.
+      assert prepare(context) == {:error, :unnamed_curve}
+    end
+
     test "the default identity names only loopback", context do
       configure!(context, %{
         "bind_address" => "192.168.1.20",
