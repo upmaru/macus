@@ -200,6 +200,18 @@ import os
     try Data(contentsOf: directory.appendingPathComponent("runtime/data.raw"))
       == Data("data-sentinel".utf8))
   #expect(server.requests().contains { $0.method == "POST" } == false)
+
+  // start prepares the local CLI credential once and never prints it.
+  let store = BearerTokenStore(stateDirectory: directory)
+  let credential = try String(contentsOf: store.localCredentialFile, encoding: .utf8)
+  let secret = String(credential.trimmingCharacters(in: .newlines).split(separator: ".")[2])
+  var info = stat()
+  #expect(lstat(store.localCredentialFile.path, &info) == 0 && info.st_mode & 0o777 == 0o600)
+  #expect(try store.list().map(\.principal) == [BearerTokenStore.localPrincipal])
+  #expect(!capture.output.contains(secret) && !capture.error.contains(secret))
+  // A later start keeps it: the store and token file are left unchanged.
+  #expect(try store.prepareLocalCredential() == false)
+  #expect(try String(contentsOf: store.localCredentialFile, encoding: .utf8) == credential)
   _ = incus
 }
 
@@ -267,10 +279,12 @@ import os
     runner: runner,
     streams: MacusStreams(writeOutput: { _ in }, writeError: { _ in }),
     environment: ["PATH": "/usr/bin:/bin", "MACUS_BREW_FALLBACK": "0"])
+  let state = try registrationState()
+  defer { try? FileManager.default.removeItem(at: state) }
   do {
     _ = try await service.register(
       remote: "macus", setDefault: false, incusOverride: "/usr/bin/true",
-      socketPath: "/private/tmp/probe.sock", timeout: 5,
+      endpoint: fixtureEndpoint, stateDirectory: state, timeout: 5,
       deadline: started.advanced(by: .seconds(2)))
     Issue.record("client registration reset the start deadline")
   } catch let error as RuntimeError {
@@ -284,7 +298,7 @@ import os
   let preserved = BudgetRunner(delayMilliseconds: 40, mode: .incus)
   let setup = try await serviceWith(preserved).register(
     remote: "macus", setDefault: false, incusOverride: "/usr/bin/true",
-    socketPath: "/private/tmp/probe.sock", timeout: 5, deadline: nil)
+    endpoint: fixtureEndpoint, stateDirectory: state, timeout: 5, deadline: nil)
   #expect(setup.connected)
   #expect(preserved.timeouts.count >= 3)
   #expect(preserved.timeouts.allSatisfy { $0 == 5 })
@@ -384,6 +398,18 @@ import os
   #expect(try Data(contentsOf: plist) == matching)
 }
 
+private let fixtureEndpoint = GatewayEndpoint(
+  url: URL(string: "https://127.0.0.1:8443")!, fingerprint: FixtureCertificate.server.fingerprint,
+  token: ScriptedGateway.token)
+
+/// An empty owner-private state directory for a registration to issue its token into.
+private func registrationState() throws -> URL {
+  let state = URL(fileURLWithPath: "/tmp/macus-reg-\(UUID().uuidString.prefix(8))")
+  try FileManager.default.createDirectory(
+    at: state, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+  return state
+}
+
 private func serviceWith(_ runner: BudgetRunner) -> IncusClientService {
   IncusClientService(
     runner: runner,
@@ -405,6 +431,7 @@ private func plistDependencies(
     runner: BudgetRunner(delayMilliseconds: 1, mode: .incus),
     downloader: UnusedProbeDownloader(),
     launchControl: launch,
+    server: FakeServerProbe(),
     capabilities: { HostCapabilities(supported: true, nestedVirtualization: false) },
     hasEntitlement: { true },
     executablePath: { "/usr/bin/true" },
@@ -420,7 +447,7 @@ private final class LockedPath: @unchecked Sendable {
   var value = ""
 }
 
-private struct StartTools {
+struct StartTools {
   let root: URL
   let incus: String
   let environment: [String: String]
@@ -432,44 +459,24 @@ private struct StartTools {
     let state = root.appendingPathComponent("incus.json")
     let initial: [String: Any] = ["default": "local", "remotes": remotes]
     try JSONSerialization.data(withJSONObject: initial).write(to: state)
-    let script = """
-      #!/usr/bin/python3
-      import json, os, sys
-      path = os.environ["MACUS_FIXTURE_STATE"]
-      state = json.load(open(path))
-      args = sys.argv[1:]
-      if args[:4] == ["remote", "list", "--format", "json"]:
-          print(json.dumps({name: {"Addrs": addrs} for name, addrs in state["remotes"].items()}))
-      elif args == ["remote", "get-default"]:
-          print(state["default"])
-      elif len(args) == 4 and args[:2] == ["remote", "add"]:
-          state["remotes"][args[2]] = [args[3]]
-      elif len(args) == 3 and args[:2] == ["remote", "switch"]:
-          state["default"] = args[2]
-      elif len(args) == 2 and args[0] == "list":
-          name = args[1][:-1]
-          if name not in state["remotes"]:
-              sys.exit(1)
-      else:
-          sys.exit(2)
-      json.dump(state, open(path, "w"))
-      """
-    try script.write(to: URL(fileURLWithPath: incus), atomically: true, encoding: .utf8)
-    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: incus)
+    try writeFakeIncus(to: incus)
     environment = [
       "PATH": "/usr/bin:/bin", "MACUS_BREW_FALLBACK": "0", "MACUS_FIXTURE_STATE": state.path,
       "INCUS_CONF": root.appendingPathComponent("conf").path,
-    ]
+    ].merging(try fakeIncusCertificates(in: root)) { $1 }
   }
   func overrides(
     downloader: any ApplianceDownloader, launchControl: (any LaunchControl)? = nil,
     agents: URL? = nil
   ) -> StartupOverrides {
-    StartupOverrides(
+    let gateway = FakeServerProbe(publishes: true)
+    return StartupOverrides(
       capabilities: { HostCapabilities(supported: true, nestedVirtualization: false) },
       hasEntitlement: { true },
       downloader: downloader,
       launchControl: launchControl ?? FakeLaunchControl(),
+      server: gateway,
+      gateway: gateway,
       executablePath: { "/usr/bin/true" },
       homeDirectory: root,
       launchAgentsDirectory: agents ?? root.appendingPathComponent("LaunchAgents"),
@@ -520,6 +527,13 @@ private final class BudgetRunner: LocalCommandRunner, @unchecked Sendable {
       text = "local\n"
     } else if arguments == ["remote", "list", "--format", "json"] {
       text = "{}\n"
+    } else if arguments == ["remote", "get-client-certificate"] {
+      text = FixtureCertificate.client.pem
+    } else if arguments.first == "query" {
+      let object: [String: Any] = [
+        "auth": "trusted", "environment": ["certificate": FixtureCertificate.server.pem],
+      ]
+      text = String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
     } else {
       text = ""
     }
@@ -555,7 +569,8 @@ private final class BudgetRunner: LocalCommandRunner, @unchecked Sendable {
   let task = Task {
     await MacusCLI.run(
       arguments: [
-        "--state-dir", directory.path, "--json", "--progress", "none", "--timeout", "5",
+        "--state-dir", directory.path, "--json", "--progress", "none", "--timeout",
+        successDeadline,
         "--incus", tools.incus, "start",
       ],
       environment: tools.environment, streams: capture.streams,
@@ -663,7 +678,8 @@ private final class BudgetRunner: LocalCommandRunner, @unchecked Sendable {
   let launch = SocketOnBootstrap(directory: directory)
   let status = await MacusCLI.run(
     arguments: [
-      "--state-dir", directory.path, "--json", "--progress", "none", "--timeout", "5",
+      "--state-dir", directory.path, "--json", "--progress", "none", "--timeout",
+      successDeadline,
       "--incus", tools.incus, "start",
     ],
     environment: tools.environment, streams: StartCapture().streams,
@@ -729,7 +745,9 @@ func registeredServiceWithTrailingSpaceStateIsMatched(state: String) async throw
   let launch = ProcessLaunchControl(runner: runner, environment: [:], uid: 501)
   let sentinel = try Data(contentsOf: fixture.paths.dataDisk)
   #expect(await fixture.start(launch: launch, timeout: 5) == 0)
-  var expectedCommands = [["print", "gui/501/\(fixture.label)"]]
+  var expectedCommands = [
+    ["print", "gui/501/\(fixture.serverLabel)"], ["print", "gui/501/\(fixture.label)"],
+  ]
   if state == "not running" { expectedCommands.append(["kickstart", "gui/501/\(fixture.label)"]) }
   #expect(runner.commands == expectedCommands)
   #expect(try Data(contentsOf: fixture.plist) == fixture.plistBytes)
@@ -750,7 +768,8 @@ func registeredServiceWithTrailingSpaceStateIsMatched(state: String) async throw
   #expect(status == 0)
   #expect(
     runner.commands == [
-      ["print", "gui/501/\(fixture.label)"], ["kickstart", "gui/501/\(fixture.label)"],
+      ["print", "gui/501/\(fixture.serverLabel)"], ["print", "gui/501/\(fixture.label)"],
+      ["kickstart", "gui/501/\(fixture.label)"],
     ])
   #expect(try Data(contentsOf: fixture.plist) == fixture.plistBytes)
   #expect(!runner.commands.contains { $0.first == "bootstrap" || $0.contains("-k") })
@@ -767,10 +786,13 @@ func registeredServiceWithTrailingSpaceStateIsMatched(state: String) async throw
   // Cold subprocess startup on CI can exceed 200 ms. Observe the print request
   // before asserting that no activation occurred while readiness is withheld.
   let deadline = ContinuousClock.now.advanced(by: .seconds(3))
-  while runner.commands.isEmpty && ContinuousClock.now < deadline {
+  while runner.commands.count < 2 && ContinuousClock.now < deadline {
     try await Task.sleep(for: .milliseconds(10))
   }
-  #expect(runner.commands == [["print", "gui/501/\(fixture.label)"]])
+  #expect(
+    runner.commands == [
+      ["print", "gui/501/\(fixture.serverLabel)"], ["print", "gui/501/\(fixture.label)"],
+    ])
   fixture.openEndpoint()
   #expect(await task.value == 0)
   #expect(!runner.commands.contains { $0.first == "kickstart" || $0.first == "bootstrap" })
@@ -789,7 +811,10 @@ func registeredServiceWithTrailingSpaceStateIsMatched(state: String) async throw
   let capture = StartCapture()
   let status = await fixture.start(launch: launch, timeout: 2, capture: capture)
   #expect(status == 1)
-  #expect(runner.commands == [["print", "gui/501/\(fixture.label)"]])
+  #expect(
+    runner.commands == [
+      ["print", "gui/501/\(fixture.serverLabel)"], ["print", "gui/501/\(fixture.label)"],
+    ])
   #expect(capture.error.contains("will not replace"))
   #expect(try Data(contentsOf: fixture.plist) == fixture.plistBytes)
   #expect(try Data(contentsOf: fixture.paths.dataDisk) == sentinel)
@@ -810,7 +835,10 @@ func launchctlProgramConflictRejectsMatchingArguments(state: String) async throw
   let launch = ProcessLaunchControl(runner: runner, environment: [:], uid: 501)
   #expect(await fixture.start(launch: launch, timeout: 5, capture: capture) == 1)
   #expect(capture.error.contains("will not replace"))
-  #expect(runner.commands == [["print", "gui/501/\(fixture.label)"]])
+  #expect(
+    runner.commands == [
+      ["print", "gui/501/\(fixture.serverLabel)"], ["print", "gui/501/\(fixture.label)"],
+    ])
   #expect(try Data(contentsOf: fixture.plist) == fixture.plistBytes)
   #expect(try Data(contentsOf: fixture.paths.dataDisk) == sentinel)
 }
@@ -835,7 +863,10 @@ func ambiguousLaunchctlProgramDoesNotActivate(kind: String) async throws {
   let launch = ProcessLaunchControl(runner: runner, environment: [:], uid: 501)
   #expect(await fixture.start(launch: launch, timeout: 5, capture: capture) == 1)
   #expect(capture.error.contains("unambiguous"))
-  #expect(runner.commands == [["print", "gui/501/\(fixture.label)"]])
+  #expect(
+    runner.commands == [
+      ["print", "gui/501/\(fixture.serverLabel)"], ["print", "gui/501/\(fixture.label)"],
+    ])
   #expect(try Data(contentsOf: fixture.plist) == fixture.plistBytes)
 }
 
@@ -849,7 +880,10 @@ func ambiguousLaunchctlProgramDoesNotActivate(kind: String) async throws {
   let status = await fixture.start(launch: launch, timeout: 2, capture: capture)
   #expect(status == 1)
   #expect(capture.error.contains("unambiguous"))
-  #expect(runner.commands == [["print", "gui/501/\(fixture.label)"]])
+  #expect(
+    runner.commands == [
+      ["print", "gui/501/\(fixture.serverLabel)"], ["print", "gui/501/\(fixture.label)"],
+    ])
   #expect(try Data(contentsOf: fixture.plist) == fixture.plistBytes)
 }
 
@@ -927,6 +961,7 @@ private final class ServiceFixture: @unchecked Sendable {
   let paths: RuntimePaths
   let tools: StartTools
   let label: String
+  let serverLabel: String
   let expected: [String]
   let plist: URL
   let plistBytes: Data
@@ -946,6 +981,7 @@ private final class ServiceFixture: @unchecked Sendable {
     try Data("data-sentinel".utf8).write(to: paths.dataDisk)
     try Data("{\"appliance_manifest_path\":\"/tmp/manifest.json\"}".utf8).write(to: paths.config)
     label = LaunchAgentPlan.label(stateDirectory: state, home: root)
+    serverLabel = LaunchAgentPlan.label(stateDirectory: state, home: root, role: .server)
     expected = LaunchAgentPlan.arguments(executable: "/usr/bin/true", stateDirectory: state)
     plist = try LaunchAgentPlan.write(
       stateDirectory: state, home: root, launchAgents: root.appendingPathComponent("agents"),
@@ -987,6 +1023,8 @@ private final class LaunchctlScript: LocalCommandRunner, @unchecked Sendable {
   private var recordedCommands: [[String]] = []
   var commands: [[String]] { commandLock.withLock { recordedCommands } }
   var printText = ""
+  /// launchctl output for the server job; nil reports it as not registered.
+  var serverPrintText: String?
   var printStatus: Int32 = 0
   var kickstartStatus: Int32 = 0
   var printDelay: Duration = .zero
@@ -999,6 +1037,13 @@ private final class LaunchctlScript: LocalCommandRunner, @unchecked Sendable {
     commandLock.withLock { recordedCommands.append(arguments) }
     if arguments.first == "print" {
       if printDelay > .zero { try await Task.sleep(for: printDelay) }
+      if arguments.last?.contains("/com.upmaru.macus.server") == true {
+        guard let serverPrintText else {
+          return LocalCommandResult(
+            status: 113, stdout: Data(), stderr: Data("Could not find service\n".utf8))
+        }
+        return LocalCommandResult(status: 0, stdout: Data(serverPrintText.utf8), stderr: Data())
+      }
       return LocalCommandResult(status: printStatus, stdout: Data(printText.utf8), stderr: Data())
     }
     if arguments.first == "kickstart" {
@@ -1021,7 +1066,7 @@ private final class LaunchctlScript: LocalCommandRunner, @unchecked Sendable {
   }
 }
 
-private func readyRuntime(method: String, path: String, directory: URL) -> Data {
+func readyRuntime(method: String, path: String, directory: URL) -> Data {
   if method == "POST" {
     return mustJSON(500, ["error": ["code": "io", "message": "unexpected mutation"]])
   }

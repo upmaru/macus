@@ -48,8 +48,8 @@ import Testing
 
 @Test func runtimeReportsRetainObservedStateAndSelectedCommands() async throws {
   for state in ["ready", "stopped", "starting", "failed", "absent"] {
-    let server = try ScriptedSocket(name: "runtime.sock") { _, _, _ in
-      var object = statusObject(state: state, incus: "/tmp/endpoint.sock")
+    let server = try ScriptedGateway { _, _, _ in
+      var object = publicStatus(state: state, url: "https://macus.example.test:8443")
       object["last_error"] = "useful failure"
       object["uptime_seconds"] = 72
       return mustJSON(200, object)
@@ -58,17 +58,19 @@ import Testing
     for command in ["status", "start", "stop", "restart"] {
       let capture = StartCapture()
       let code = await MacusCLI.run(
-        arguments: ["--state-dir", server.socket.directory.path, "runtime", command],
+        arguments: ["--state-dir", server.directory.path, "runtime", command],
         streams: capture.streams)
       #expect(code == 0)
       #expect(capture.output.contains("Macus runtime: " + state.capitalized))
-      #expect(capture.output.contains("/tmp/endpoint.sock"))
+      // The server the CLI reached, never a private socket.
+      #expect(capture.output.contains("https://macus.example.test:8443"))
+      #expect(!capture.output.contains(".sock"))
       #expect(capture.output.contains("1m 12s"))
       #expect(capture.output.contains("useful failure"))
       #expect(!capture.output.contains("uptime_seconds"))
       #expect(
         capture.output.contains(
-          runtimeCommands(state: state, directory: server.socket.directory)[0]))
+          runtimeCommands(state: state, directory: server.directory)[0]))
     }
   }
 }
@@ -106,10 +108,9 @@ import Testing
 
 @Test func doctorFixturesKeepHostAndWorkloadObservationsDistinct() async throws {
   for state in ["ready", "stopped", "failed", "unavailable", "incompatible"] {
-    let server = try ScriptedSocket(name: "runtime.sock") { _, path, _ in
-      if path == "/v1/runtime/status" {
-        var status = statusObject(
-          state: state == "incompatible" ? "ready" : state, incus: "/tmp/incus.sock")
+    let server = try ScriptedGateway { _, path, _ in
+      if path == "/runtime/status" {
+        var status = publicStatus(state: state == "incompatible" ? "ready" : state)
         if state == "incompatible" { status["api_version"] = 2 }
         status["last_error"] = "retained runtime diagnosis"
         return mustJSON(200, status)
@@ -117,7 +118,7 @@ import Testing
       if state == "unavailable" || state == "stopped" || state == "failed" {
         return mustJSON(503, errorObject(code: "unavailable", message: "not ready"))
       }
-      if path == "/v1/runtime/capabilities" {
+      if path == "/runtime/capabilities" {
         return mustJSON(
           200,
           [
@@ -138,7 +139,7 @@ import Testing
     defer { server.stop() }
     let capture = StartCapture()
     let code = await MacusCLI.run(
-      arguments: ["--state-dir", server.socket.directory.path, "doctor"], streams: capture.streams)
+      arguments: ["--state-dir", server.directory.path, "doctor"], streams: capture.streams)
     #expect(code == (state == "ready" ? 0 : 1))
     #expect(
       capture.output.contains(state == "ready" ? "Macus is healthy" : "Macus needs attention"))
@@ -151,7 +152,7 @@ import Testing
     if state == "stopped" {
       #expect(
         capture.output.contains(
-          "macus --state-dir " + server.socket.directory.path + " runtime start"))
+          "macus --state-dir " + server.directory.path + " runtime start"))
       #expect(capture.output.contains("Unavailable"))
     }
     if state == "ready" {
@@ -207,7 +208,8 @@ import Testing
   let runtime = StartCapture()
   HumanPresentation(streams: runtime.streams, environment: [:]).runtime(
     [
-      "state": "stopped", "uptime_seconds": 72, "incus_socket": "/tmp/macus-demo/incus.sock",
+      "state": "stopped", "uptime_seconds": 72,
+      "server_endpoint": ["url": "https://127.0.0.1:8443"],
     ], directory: directory)
   #expect(docs.contains(runtime.output.trimmingCharacters(in: .newlines)))
   let startup = StartCapture()
@@ -215,12 +217,13 @@ import Testing
     StartupResult(
       ready: true, connected: true, stateDirectory: directory.path, remote: "macus",
       incus: "/opt/homebrew/bin/incus", installed: false, serviceOwnership: "foreground",
-      nextCommands: ["incus list macus:"]))
+      serverOwnership: "launchd", serverLabel: "com.upmaru.macus.server",
+      serverEndpoint: "https://127.0.0.1:8443", nextCommands: ["incus list macus:"]))
   #expect(docs.contains(startup.output.trimmingCharacters(in: .newlines)))
   let client = StartCapture()
   HumanPresentation(streams: client.streams, environment: [:]).client(
     IncusSetupResult(
-      address: "unix:/tmp/macus-demo/incus.sock", connected: true, isDefault: false,
+      address: "https://127.0.0.1:8443", connected: true, isDefault: false,
       executable: "/opt/homebrew/bin/incus", installed: false, remote: "macus", onPath: true))
   #expect(docs.contains(client.output.trimmingCharacters(in: .newlines)))
   let temporary = "/tmp/macus-grammar-" + String(UUID().uuidString.prefix(8))

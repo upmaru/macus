@@ -6,7 +6,9 @@ Requires Apple Silicon, macOS 15+ and Swift 6.4. SwiftPM builds one library (`Ma
 
 **Development status:** Installation is currently from source. Local prebuilt Homebrew candidates are documented in [Homebrew packaging](Packaging/homebrew/README.md). There is no published Macus Homebrew formula. `macus start` downloads and verifies the pinned Alpine appliance; it does not upgrade an existing root image or install Homebrew. Hardware results and distribution limitations are recorded in [the acceptance record](docs/acceptance.md).
 
-The service exposes `runtime.sock` for outer VM lifecycle and `incus.sock` for transparent Incus traffic over vsock. Both are private Unix sockets in the selected state directory; the default is `~/.tama/incus-mac`. Normal use needs no GUI or SSH. Instance/image/profile/project/network/storage/migration operations belong to Incus.
+**Transition:** `macus start` runs the Swift runtime service and the Elixir Macus server together. `Packaging/install-local.sh` installs both from source: the Swift executable at `<prefix>/bin/macus` and the paired server release at `<prefix>/libexec/macus`. A source build needs Swift, the mise-pinned Elixir/Erlang and a signed-in GitHub CLI: the release build downloads the opsmaru_incus tama-dex cassette for the locked library version from its GitHub Release and verifies its `.sha256` sidecar and attestation before building ([details](docs/development.md#macus-command)). Homebrew candidates package the same release as a checksummed resource ([candidate documentation](Packaging/homebrew/README.md), including [artifact provenance](Packaging/homebrew/README.md#artifact-provenance)); publication of the shared tap formula remains open in the [add-homebrew-tap change](openspec/changes/add-homebrew-tap/tasks.md). An installation without a paired release makes `macus start` stop with `invalid_configuration` and reinstall guidance before it downloads, activates or boots anything.
+
+Macus runs two per-user services. The Swift runtime service owns the VM and serves two private Unix sockets in the selected state directory (default `~/.tama/incus-mac`): `runtime.sock` for outer VM lifecycle and `incus.sock` for transparent Incus traffic over vsock. The Macus server publishes the one client endpoint, a pinned TLS 1.3 HTTPS gateway on `127.0.0.1:8443` by default. It carries the runtime API at `/runtime`, native Incus at `/1.0` and MCP at `/mcp`, and it reaches the private sockets only after authenticating the caller. The `macus` CLI and the standard Incus client both use that endpoint. Normal use needs no GUI or SSH. Instance/image/profile/project/network/storage/migration operations belong to Incus. See [the Macus server](docs/server.md).
 
 ## Start Macus
 
@@ -16,22 +18,23 @@ On a supported Apple Silicon Mac with macOS 15+, install the entitled `macus` ex
 macus start
 ```
 
-Start checks virtualization support and the executable entitlement, downloads and verifies the pinned Alpine appliance, prepares its seed, activates a per-user background service, creates the runtime when it is absent, waits through the expected kernel restart, and registers the standard Incus client as remote `macus`. Progress shows the active stage. A download shows bytes, and a percentage only when the length is known. Other waits show elapsed time. Success means live Incus readiness and a working client, not merely that a process launched.
+Start checks virtualization support and the executable entitlement, downloads and verifies the pinned Alpine appliance, prepares its seed, and checks that the installed server release belongs to this executable. It then activates the two per-user launchd jobs (`com.upmaru.macus` for the runtime service, `com.upmaru.macus.server` for the server), creates the runtime when it is absent, and waits through the expected kernel restart. Finally it registers the standard Incus client as remote `macus` with the server's HTTPS endpoint and enrolls the client's certificate. Progress shows the active stage. A download shows bytes, and a percentage only when the length is known. Other waits show elapsed time. Success means live Incus readiness and a working client, not merely that a process launched.
 
-Homebrew must already be installed if `incus` is not on `PATH`. Start installs the official `incus` formula in that case and does not install Homebrew or use sudo. If the selected remote already points elsewhere, start fails without overwriting it; choose another `--remote`. Repeating start reuses an existing runtime, storage backend and client registration. It does not replace disks or change resource settings. If the client step fails after the runtime is ready, retry `macus start`; it will not reboot a ready guest to repeat client setup.
+Homebrew must already be installed if `incus` is not on `PATH`. Start installs the official `incus` formula in that case and does not install Homebrew or use sudo. If the selected remote already points elsewhere, start fails without overwriting it; choose another `--remote`. Repeating start reuses an existing runtime, storage backend and client registration. It does not replace disks or change resource settings. If the client step fails after the runtime is ready, retry `macus start`; it will not reboot a ready guest to repeat client setup. A failure after both services are serving names what start left running. Start never stops or unloads either job.
 
-`--json --progress none` writes one result object to stdout. Closing the terminal does not stop a launchd-owned service. If start reuses a foreground `macus serve`, it says so: closing that terminal still stops the daemon.
+`--json --progress none` writes one result object to stdout, including both services and the server endpoint. Closing the terminal does not stop a launchd-owned service. If start reuses a foreground `macus serve`, it says so: closing that terminal still stops the daemon.
 
 `serve`, `runtime`, `doctor` and `client setup` remain explicit lower-level commands. They do not download an appliance or activate a service.
 
 ## Test a fresh installation
 
-Use a clean supported Mac or a new macOS account to exercise first-use prerequisites. The walkthrough also works alongside an existing installation when it uses a separate prefix, state directory and Incus client configuration. Each new test starts with a new short test root. This is opt-in hardware acceptance: `macus start` boots a real Linux VM. Keep the test root and its logs on failure.
+Use a clean supported Mac or a new macOS account to exercise first-use prerequisites. The walkthrough also works alongside an existing installation when it uses a separate prefix, state directory and Incus client configuration. Each new test starts with a new short test root. This is opt-in hardware acceptance: `macus start` boots a real Linux VM. Keep the test root and its logs on failure. The installer needs the mise-pinned Elixir/Erlang (from `mise install`) and a signed-in GitHub CLI for the cassette download and attestation; run `brew install gh` and `gh auth login` first if `gh` is missing.
 
 ```sh
 export MACUS_TEST_ROOT="$(mktemp -d /private/tmp/macus-fresh.XXXXXX)"
 git clone --branch develop https://github.com/upmaru/macus.git "$MACUS_TEST_ROOT/src"
 cd "$MACUS_TEST_ROOT/src"
+mise trust && mise install
 Packaging/install-local.sh --prefix "$MACUS_TEST_ROOT/install"
 export PATH="$MACUS_TEST_ROOT/install/bin:$PATH"
 export MACUS_STATE_DIR="$MACUS_TEST_ROOT/state"
@@ -41,18 +44,18 @@ macus start --remote macus-fresh
 incus list macus-fresh:
 ```
 
-The installed binary does not need the checkout after installation. A nondefault `MACUS_STATE_DIR` uses a session-only service and does not replace the default LaunchAgent. Passing unit tests is not this hardware acceptance.
+The installed binary does not need the checkout after installation. A nondefault `MACUS_STATE_DIR` uses session-only runtime and server jobs and does not replace the default LaunchAgents. Passing unit tests is not this hardware acceptance.
 
 ## Advanced manual preparation
 
-The blocks below are the debug path. They are not required for `macus start`. Use them to inspect image verification, the control API or a foreground daemon. This path boots a real VM. Keep the test root on failure. The kernel-update retry is the one expected first-boot interruption when you drive `runtime start` yourself.
+The blocks below are the debug path. They are not required for `macus start`. Use them to inspect image verification, the control API or a foreground daemon. `macus runtime`, `doctor` and `client setup` talk only to the Macus server's HTTPS endpoint, so with `macus serve` alone they report `unavailable`. They need the server release running for the same state as well, either as the job `macus start` registers or in the foreground as [the service pair](docs/cli.md#service-pair) describes. The `curl --unix-socket` steps reach the Swift daemon's private socket directly and need no server. This path boots a real VM. Keep the test root on failure. The kernel-update retry is the one expected first-boot interruption when you drive `runtime start` yourself.
 
 ### 1. Check prerequisites and create an isolated checkout
 
 Install Xcode with Swift 6.4, select that toolchain, and install [Homebrew](https://brew.sh). Image preparation needs Python 3.11+ and GnuPG. Reserve 4 GiB RAM for the guest and disk space for the downloaded image, a writable root of at least 12 GiB, and a 32 GiB sparse data disk. Internet access is required for downloads, guest package installation and workload images.
 
 ```sh
-brew install python gnupg
+brew install python gnupg mise gh
 swift --version
 python3 -c 'import sys; assert sys.version_info >= (3, 11), "Python 3.11+ required"'
 gpg --version
@@ -72,6 +75,7 @@ GitHub access to the repository is required. The short test path avoids Darwin's
 ### 2. Install and inspect the actual installed command
 
 ```sh
+mise trust && mise install
 Packaging/install-local.sh --prefix "$MACUS_TEST_ROOT/install"
 command -v macus
 codesign --verify --strict "$MACUS_TEST_ROOT/install/bin/macus"
@@ -170,7 +174,7 @@ incus exec macus-fresh:smoke -- getent hosts deb.debian.org
 
 Setup reuses `incus` on PATH or installs the [official Homebrew Incus formula](https://formulae.brew.sh/formula/incus) if Homebrew is available. To exercise that installation branch, start with no Incus executable on PATH. It does not install Homebrew. If setup succeeds but `incus` is not on PATH, add `$(brew --prefix incus)/bin` to PATH before the remaining commands. `INCUS_CONF` keeps this test's remote registrations separate, and omitting `--set-default` preserves the default remote.
 
-Check that Incus reports a responding Linux server, the fresh default storage driver is `zfs`, and the default profile points its root disk at that pool. The container should run, report ARM64 architecture and resolve the Debian mirror. `exec` exercises the standard Incus WebSocket transport through the Unix/vsock relay.
+Check that Incus reports a responding Linux server, the fresh default storage driver is `zfs`, and the default profile points its root disk at that pool. The container should run, report ARM64 architecture and resolve the Debian mirror. `exec` exercises the standard Incus WebSocket transport through the server's HTTPS gateway and the Unix/vsock relay.
 
 ### 7. Verify persistence and stop cleanly
 
@@ -218,9 +222,12 @@ mise run spec:validate
 
 - [Prepare an appliance and run hardware acceptance](docs/development.md)
 - [Macus CLI](docs/cli.md)
+- [Macus server: HTTPS, trust and credentials](docs/server.md)
 - [Runtime API and tama-machine contract](docs/api.md)
+- [MCP: search and execute](docs/mcp.md) and the [operation manifest](docs/mcp-operations.md)
+- [The shared Incus client](docs/incus-client.md) and its [coverage](docs/incus-coverage.md)
 - [Architecture and scope](docs/architecture.md)
-- [Per-user launchd packaging](Packaging/README.md)
+- [Per-user launchd packaging](Packaging/README.md) and [artifact provenance](Packaging/homebrew/README.md#artifact-provenance)
 - [OpenSpec design and decisions](openspec/changes/archive/2026-10-04-native-incus-runtime/design.md)
 - [Implementation and acceptance checklist](openspec/changes/archive/2026-10-04-native-incus-runtime/tasks.md)
 - [Git Flow development workflow](docs/development.md#git-flow)

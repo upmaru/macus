@@ -1,6 +1,9 @@
 # Development and appliance preparation
 
-Requires Apple Silicon, macOS 15+, Xcode/Swift 6.4. `swift build`, `swift test`, release builds and `swift format` are the native development workflow; no Xcode project, SwiftLint, external web framework or VM runtime is required. Hardware acceptance is opt-in and separate from unit tests.
+Requires Apple Silicon, macOS 15+, Xcode/Swift 6.4 and the pinned Elixir/OTP
+toolchain for `server/`. SwiftPM and native `swift format` cover the VM service;
+Mix covers the headless Phoenix/Cowboy gateway. Hardware acceptance is opt-in
+and separate from unit tests.
 
 ## OpenSpec with mise
 
@@ -9,22 +12,28 @@ Install [mise](https://mise.jdx.dev/getting-started.html), then run these comman
 ```sh
 mise trust
 mise install node npm:@fission-ai/openspec
+mise install elixir erlang
 mise exec -- openspec --version
 mise run spec:validate
 ```
 
-`mise.toml` pins Node.js 26.10.0 and OpenSpec 1.14.0. OpenSpec is installed through mise's npm backend independently of any global npm installation. CI also pins OpenSpec 1.14.0.
+`mise.toml` pins Node.js 26.10.0, OpenSpec 1.14.0, Elixir 1.19.5 (OTP 27 build)
+and Erlang/OTP 27.3.4.16. OpenSpec is installed through mise's npm backend
+independently of any global npm installation. CI also pins OpenSpec 1.14.0.
+Go 1.25.14 is pinned solely for official Incus reference/inventory verification;
+it is not a Macus runtime component. Use `mise install go` for those checks.
 
 Use `mise exec -- openspec ...` for planning and implementation commands, including in agent sessions and shells without mise activation:
 
 ```sh
 mise exec -- openspec list
-mise exec -- openspec status --change rename-to-macus --json
-mise exec -- openspec instructions apply --change rename-to-macus --json
+mise exec -- openspec status --change add-elixir-server --json
+mise exec -- openspec instructions apply --change add-elixir-server --json
 mise exec -- openspec validate --all --strict --no-interactive
 ```
 
-The status and apply examples target the current `rename-to-macus` change; substitute the active change name for later work.
+The status and apply examples target `add-elixir-server`; substitute another
+active change name when needed.
 
 The canonical checks remain:
 
@@ -34,6 +43,141 @@ mise run spec:validate
 ```
 
 Swift and native swift-format come from the selected Xcode toolchain. Hardware acceptance remains explicit and opt-in, uses isolated state directories, and is recorded separately from these checks.
+
+## Headless Elixir server
+
+Run the server checks from its directory so Mix reads its independent project:
+
+```sh
+cd server
+mise exec -- mix deps.get
+mise exec -- mix format --check-formatted
+mise exec -- mix compile --warnings-as-errors
+mise exec -- mix test
+```
+
+`server/mix.lock` records released dependencies, including Phoenix 1.8.17,
+Plug.Cowboy 2.9.0, Cowboy 2.21.0, Mint 1.11.0, TamaMCP 0.2.1,
+`opsmaru_incus` 0.2.7 and `tama_dex` 0.1.0 (which brings the exqlite SQLite
+NIF). All dependencies are released Hex packages; Hex is the
+only distribution route for `opsmaru_incus`, so builds never use a Git revision
+or sibling path for it. Macus's own scaffold has no Ecto, HTML,
+assets, LiveView or generated nested AGENTS file. `opsmaru_incus` has no
+application callback and starts no process or listener. `_build/`, `deps/` and release outputs are
+ignored. Tests start the OTP tree in process without a listener or VM.
+
+The initial scaffold is passive: it resolves `MACUS_STATE_DIR`, then legacy
+`TIM_STATE_DIR`, then `~/.tama/incus-mac`, without creating that state. Generic
+`PHX_SERVER`/`PORT` variables do not enable a cleartext listener. The HTTPS
+state, authorization, routes and coordinated two-service startup have since
+shipped (change tasks 8.x); the private Unix endpoints remain only the
+server's backend and bootstrap mechanics. `Integration/scripts/check.sh` runs
+the Swift gates, source installation and packaging checks, then
+`Integration/scripts/check-server.sh` (the Hex guard and the Mix format,
+compile and test checks above, with the tools pinned in `mise.toml`). The
+embedded release smoke is opt-in through `MACUS_RELEASE_SMOKE_CASSETTE`, and
+CI runs it with the verified locked cassette (task 10.1).
+
+The [Cowboy transport trial](cowboy-transport-trial.md) exercises native
+SFTP/NBD HTTP upgrades with TLS/Unix fixtures and the pinned official client.
+Its handlers are test-only; passing that trial does not complete the proxy or
+hardware acceptance.
+
+`:opsmaru_incus` (Hex) owns safe library embedding, connection/context values,
+codecs, native Incus client coverage, gateway relay mechanics and the shared
+operation descriptors and runner. Durable tasks and connector work belong to
+later milestones. Macus owns its gateway authentication/policy, private Swift
+runtime adapter, runtime operations and the `/mcp` `search`/`execute` tools;
+the separate tama-dex index library backs `search`. Avoid a duplicate portable client, task
+engine, Opsmaru endpoint or third service. The Cowboy trial is consumer
+evidence, not proof that the dependency is implemented or integrated. The
+library's coverage is read from the locked package: after changing its lock,
+run `mise exec -- mix macus.incus.coverage --diff <previous inventory.json>`
+and regenerate `docs/incus-coverage.md` with `mise exec -- mix
+macus.incus.coverage` (see [the shared Incus client](incus-client.md)).
+
+The private Swift adapter can be checked independently from that library:
+
+```sh
+mise exec -- mix test test/macus/runtime/client_test.exs
+```
+
+`Macus.Runtime.Client.new/2` takes trusted `Macus.Configuration` and the
+verified host UID. It resolves `runtime.sock` without creating state. Each
+request validates private ownership/modes and ancestors, uses one monotonic
+deadline, limits request JSON to 1 MiB and responses to 16 MiB/16 KiB headers,
+and closes its connection. An uncertain mutation is never replayed. The
+public gateway/host adapter supplies that trusted configuration; request
+inputs must not select another path or UID. Ordinary read-only startup remains
+passive.
+
+The optional central `connect`, passive `connection status` and `disconnect`
+commands are later integration work. Normal installation/start must not enroll
+or require central login/connectivity. Their outbound workers will share the
+existing Elixir job and preserve local runtime/data on central outage.
+
+The combined delivery target is `<prefix>/bin/macus` plus a complete
+bundled-ERTS release at `<prefix>/libexec/macus`. Only source builders require
+Elixir/Erlang. Each component has its own foreground launchd job; restarting
+the gateway must preserve the VM. Both carry the same Macus identity: the
+Swift executable embeds `MacusVersion` and `MacusSourceRevision` in its
+Info.plist (link with `-Xlinker -sectcreate -Xlinker __TEXT -Xlinker
+__info_plist -Xlinker <plist>`), and the release's
+`Macus.Release.write_manifest/1` step writes `macus-build.json` (version,
+`MACUS_SOURCE_REVISION`, and the bundled `opsmaru_incus` version and
+checksum) at the release root. `macus start` refuses to launch a release
+whose record differs.
+
+The release is built on macOS ARM64 from `server/`:
+
+```sh
+cd server
+MIX_ENV=prod MACUS_SOURCE_REVISION="$(git rev-parse HEAD)" \
+  MACUS_CASSETTE_SHA256=<sha256 of the bundled cassette> \
+  mise exec -- mix release macus --overwrite --path /absolute/release
+```
+
+`Packaging/install-local.sh` is the supported way to build it: it obtains the
+opsmaru_incus cassette for the locked version (see below) and sets
+`MACUS_CASSETTE_SHA256` and `MACUS_CASSETTE_PATH` for you. To run `mix release`
+by hand, give it a cassette you have checked the same way. Before recording
+anything, `Macus.Release` checks the assembled release and fails the build unless
+all of the following hold:
+
+- it was built on `aarch64-apple-darwin`;
+- it bundles exactly one ERTS, with an ARM64 `beam.smp`;
+- `lib/` holds exactly the locked `opsmaru_incus` and `tama_dex`;
+- the cassette is alone in `priv/cassettes/` and matches the pin;
+- exqlite's `sqlite3_nif.so`, the SQLite NIF `tama_dex` uses, is ARM64;
+- `env.sh` turns distribution off.
+
+exqlite's precompiled NIF is verified by exqlite's own checksums, which the
+locked package checksum covers. The manifest then also records the cassette
+file and SHA-256, the `tama_dex` and `exqlite` lock entries with the NIF's
+SHA-256, the ERTS version and target, and `distribution: none`. It is mode
+0444. `rel/env.sh.eex` forces `RELEASE_DISTRIBUTION=none` whatever the
+environment says: the server is never an Erlang node, opens no EPMD or
+distribution port, and is stopped with SIGTERM, not `bin/macus stop`.
+
+`python3 Integration/scripts/release-smoke.py --release /absolute/release`
+copies a built release into a fresh prefix and starts it as launchd would,
+but with an empty environment (system PATH, new HOME and state, no host
+Elixir/Erlang). It checks:
+
+- every Mach-O links only system libraries;
+- the gateway serves TLS 1.3 with the published certificate and refuses
+  unauthenticated requests;
+- the pinned cassette and the runtime cassette are indexed;
+- the gateway port is the only listener, and no distribution flag or EPMD
+  contact appears;
+- SIGTERM stops the server alone with status 0, leaving a stand-in runtime
+  service, `runtime.sock`, the runtime files and the server identity in place.
+
+It boots no VM. The integrated Homebrew candidate workflow
+is the packaging baseline, with real measured hashes and passive installation;
+see [candidate documentation](../Packaging/homebrew/README.md). The source
+installer stages the release (below), and the Homebrew candidate installs the
+same release as a checksummed resource built at candidate preparation.
 
 ## Build and sign
 
@@ -54,17 +198,42 @@ VZ requires `com.apple.security.virtualization` on the daemon executable. Develo
 
 `macus` is the single command built by this SwiftPM package. `serve` runs the foreground daemon; runtime commands control the outer VM and client setup configures the standard Incus CLI. Workload commands belong to `incus`. Invocation and transport limits are in [the CLI reference](cli.md).
 
-Local source installation requires Swift. It builds the release executable, ad-hoc signs and verifies it, then installs it:
+Local source installation requires Swift and the mise-pinned Elixir/Erlang. It installs `<prefix>/bin/macus` and the paired server release at `<prefix>/libexec/macus`:
 
 ```sh
 Packaging/install-local.sh --prefix /absolute/isolated/prefix
 ```
 
-The unified executable receives the virtualization entitlement for serve mode. The command does not create runtime state or install a launch agent. Ad-hoc development signatures are not notarized production artifacts. A future release package or formula must include macus and real checksums; none is published here.
+Before building anything, it refuses:
+
+- a relative path, a symlinked or non-file/non-directory destination, or an existing `<prefix>/libexec/macus` that is not a Macus release (it holds no `macus-build.json`);
+- a checkout without a git revision;
+- a missing or unverified pinned dependency. The release build needs the cassette for the opsmaru_incus version `server/mix.lock` locks, and the GitHub CLI (`gh`, signed in) to get and check it:
+  - without `--cassette`, it downloads `opsmaru_incus-<version>.tama-cassette` and its `.sha256` from the upmaru/opsmaru-incus `v<version>` GitHub Release, and nothing else; a missing release or asset is refused;
+  - with `--cassette /absolute/opsmaru_incus-<version>.tama-cassette`, that file must be named for the locked version and have the release's `.sha256` beside it;
+  - either way the file must match its `.sha256`, and `gh attestation verify --repo upmaru/opsmaru-incus` must accept it, so only a cassette built by the opsmaru-incus release workflow is bundled.
+
+  The downloaded files stay in the installer's temporary directory. Only the build fetches the cassette: installed startup imports the bundled file at the pinned SHA-256 and never downloads one.
+
+Both components get one identity: the version in `server/mix.exs` and the checkout's `HEAD`. A checkout with uncommitted changes gets a warning, because both still record `HEAD`. The Swift build embeds that identity as `MacusVersion` and `MacusSourceRevision` in the executable's Info.plist. The release is built with `MIX_ENV=prod`, `MACUS_SOURCE_REVISION`, `MACUS_CASSETTE_SHA256` (from the `.sha256`) and `MACUS_CASSETTE_PATH`. Its `Macus.Release.bundle_cassette/1` step bundles that file as the only cassette, replacing anything `server/priv/cassettes` holds for other versions.
+
+`--release /absolute/release` installs an already assembled release instead of building one. Either way, the staged executable and release are verified before the prefix changes:
+
+- the executable carries the virtualization entitlement and embeds the identity;
+- the release's read-only `macus-build.json` records the same version and revision;
+- the release bundles exactly the locked `opsmaru_incus` and its cassette at the recorded SHA-256;
+- it has one ERTS, its `bin/macus` launcher, and distribution off.
+
+A release built from another revision, or one missing its library or cassette, is refused with nothing installed. The release then replaces any earlier one by a rename, the executable is replaced the same way, and both are verified again in place. `Integration/scripts/test-install.sh` (part of `check.sh`) exercises each refusal and a complete install in isolated prefixes, using a fixture cassette.
+
+The unified executable receives the virtualization entitlement for serve mode. The command does not create runtime state or register or activate a launch agent; `macus start` does that explicitly. Ad-hoc development signatures are not notarized production artifacts. A future release package or formula must include both components and real checksums; none is published here.
 
 ## Git Flow
 
-The long-lived branches are `main` for released history and `develop` for integration. The initial implementation lives on `feature/native-incus-runtime`; `main` and `develop` begin at the SwiftPM bootstrap commit. Publishing the feature branch does not finish the feature or mark hardware acceptance complete.
+The long-lived branches are `main` for released history and `develop` for
+integration. The server change uses `feature/elixir-server` from `develop`.
+Publishing a feature branch does not finish it or mark hardware acceptance
+complete.
 
 Create `feature/<name>` from `develop` and merge completed, validated features back into `develop`. Create `release/<version>` from `develop`; finish the validated release into both `main` and `develop` and tag it on `main`. Create urgent `hotfix/<name>` branches from `main` and finish them into both long-lived branches. Branch publication and finishing are separate actions; release readiness requires the acceptance evidence in OpenSpec.
 
@@ -129,6 +298,142 @@ Use a new appliance ID and a new state directory when changing the base image. E
 ## Start acceptance runner
 
 `Integration/scripts/start-acceptance.py` is opt-in and does not boot hardware unless `--hardware` is passed. Its `--report` path is validated before any directory creation or executable invocation. A report inside the state directory, installation prefix, ordinary Incus configuration, or a symlink is refused so runtime disks and configuration cannot be overwritten by the report. Put the report in a separate directory.
+
+It runs only the installed pair: `<prefix>/bin/macus` and the server release beside it at `<prefix>/libexec/macus`. `--macus` may only name that executable. Without `--opt-in` it refuses before it reads, creates or runs anything. With `--opt-in`, and before anything runs or any state is created, it checks the installed pair by reading it:
+
+- **Paired artifacts:** the identity embedded in the executable equals the release's `macus-build.json`.
+- **Pinned dependency:** the release bundles exactly the `opsmaru_incus` that `server/mix.lock` locks, plus only its recorded cassette.
+- **Service labels:** the state's runtime and server labels differ from each other and from the default `com.upmaru.macus` and `com.upmaru.macus.server`.
+
+Without `--hardware` it records those checks and stops, so `macus` never runs and VZ never starts. It also never touches the ordinary state or client configuration.
+
+With `--hardware` it also:
+
+1. Creates a fresh `INCUS_CONF`.
+2. Writes a gateway port of its own to an owner-private `<state>/server/gateway.json`. It keeps an existing file, and never uses the default port 8443.
+3. Removes `MACUS_STATE_DIR` and the fixture seams from the environment.
+4. Runs `macus start`.
+
+Success then requires all of the following:
+
+- the reported labels and endpoint port are this state's;
+- both plists are in `<state>/launchd` and name this state, the installed executable and the paired release revision;
+- `server/` holds owner-private credentials;
+- a repeated `macus start` is ready again with the same runtime and server processes and no guest reboot (runtime uptime keeps counting);
+- the standard `incus` client's remote in that `INCUS_CONF` names exactly the published endpoint, is `trusted`, and `incus list` works;
+- public runtime control over HTTPS, pinned to the published certificate: with a `runtime.read` token `GET /runtime/status` is ready; with a `runtime.write` token `POST /runtime/start` on the ready runtime returns it unchanged; a `runtime.read` token's `POST /runtime/stop` is refused with 403 and the runtime stays up. The tokens are issued with `macus server token issue` into a private temporary directory and revoked afterwards;
+- `:opsmaru_incus` adds no listener and no service: only this state's two labels exist, the server's process tree listens only on the gateway address, and `macus serve` has no network sockets;
+- the default jobs, their plists and the default endpoint are unchanged. The runner only reads these, with `launchctl print` and `stat`.
+
+The report keeps package evidence (the pair checks) and guest evidence (the hardware checks) in separate `evidence` sections. It leaves the isolated runtime running; stop it with `macus --state-dir STATE runtime stop`.
+
+```bash
+python3 Integration/scripts/start-acceptance.py --opt-in --hardware \
+  --state-dir /tmp/macus-accept --prefix "$(brew --prefix macus)" \
+  --report .integration/start-acceptance.json
+```
+
+A run that is refused, or that stops before `--hardware`, is not hardware acceptance.
+
+## Workload acceptance runner
+
+`Integration/scripts/workload-acceptance.py` (task 11.3) runs against a state that `start-acceptance.py` already started, with that run's installed pair and isolated `INCUS_CONF` (its report's `incus_conf`). It has the same opt-in steps. Without `--opt-in` it touches nothing. With `--opt-in` it checks the report path, refuses ordinary state, prefix and client configuration, and checks the installed pair. Without `--hardware` nothing reaches the guest. With `--hardware` it first requires the client's remote to name exactly this state's published endpoint; until then it changes nothing.
+
+```bash
+python3 Integration/scripts/workload-acceptance.py --opt-in --hardware \
+  --state-dir /tmp/macus-accept --prefix "$(brew --prefix macus)" \
+  --incus-conf "$(python3 -c 'import json;print(json.load(open(".integration/start-acceptance.json"))["incus_conf"])')" \
+  --incus "$(command -v incus)" --remote macus \
+  --report "$PWD/.integration/workload-acceptance.json"
+```
+
+Through the standard client and the gateway it checks the following:
+
+- **Workload:** it creates one system container (`--image`, default `images:alpine/3.22`), then reuses and keeps it.
+- **Exec:** native exec returns stdout, stderr, the exit status and stdin.
+- **Console:** an attached console receives what the instance writes to `/dev/console`, then detaches with Ctrl-A q.
+- **Events:** a lifecycle event arrives for a snapshot made while `incus monitor` runs.
+- **Binary transfers:** 8 MiB of random bytes are pushed, hashed in the guest, then pulled back unchanged.
+- **MCP:** `search` and `execute` work over the shared Incus and Macus runtime operations, each with only the scopes it needs.
+
+It also checks that these are refused without affecting the guest:
+
+- no bearer token, an unknown one, or a revoked one (401);
+- a token that lacks the scope (`not_found`, not dispatched);
+- a missing or empty confirmation (`confirmation_required`, not dispatched), or a wrong one (`operation_error`, nothing deleted);
+- a gateway-untrusted client certificate, or a bearer token, on native list, exec and delete routes (403).
+
+The guest's marker file, snapshots, instance status and runtime state must be identical before and after the run. Tokens are revoked afterwards.
+
+The runner never stops, restarts or force-stops the VM. The only thing it deletes is the snapshot it created itself, through the confirmed MCP delete.
+
+It creates the workload with `incus create` and `incus start` rather than `incus launch`. The client always sends `"start": true`, and it starts the instance a second time unless the server advertises `instance_create_start`. Before `opsmaru_incus` 0.2.7 the gateway didn't advertise it, so `incus launch` reported "already running" after the container had started ([opsmaru-incus#88](https://github.com/upmaru/opsmaru-incus/issues/88)). Macus now advertises it, but the runner keeps `create` and `start` so its evidence stays comparable with the 11.3 run, which used a pair built with 0.2.6.
+
+Every child process gets an empty stdin, because `incus snapshot create` and `incus create` read YAML from a stdin that is not a terminal. If a command stalls anyway, the report keeps its `--debug` log, a goroutine dump and a TLS probe of the gateway.
+
+## Restart acceptance runner
+
+`Integration/scripts/restart-acceptance.py` (task 11.4) restarts only the server job of a state that `start-acceptance.py` started and `workload-acceptance.py` gave a kept workload. It takes the same arguments as the workload runner (without `--image`) and has the same opt-in steps: nothing without `--opt-in`, the pair and path checks without `--hardware`, and no restart until the client's remote is proved to be this state's endpoint.
+
+```bash
+python3 Integration/scripts/restart-acceptance.py --opt-in --hardware \
+  --state-dir /tmp/macus-accept --prefix "$(brew --prefix macus)" \
+  --incus-conf "$(python3 -c 'import json;print(json.load(open(".integration/start-acceptance.json"))["incus_conf"])')" \
+  --incus "$(command -v incus)" --remote macus \
+  --report "$PWD/.integration/restart-acceptance.json"
+```
+
+It restarts the server job three ways:
+
+- **Crash:** `launchctl kill SIGKILL` while an MCP exec is running in the guest; launchd relaunches the job.
+- **Explicit restart:** `launchctl kickstart -k` of the server job.
+- **Missing job:** `launchctl bootout` of the server job. `macus runtime status` must then report `unavailable` and name `macus start`, because the client never falls back to the private runtime socket. `macus start` must register the job again.
+
+Around each restart only the server pid may change. The runtime job's pid, the guest kernel's boot id, the kept instance's volatile UUID and init pid, and its marker file must stay the same, and the runtime uptime must only grow. Native `incus list` and an MCP list, with tokens issued before the restart, must work afterwards.
+
+It also checks how interrupted calls are reported:
+
+- **Zero-wait mutation:** an unnamed snapshot with `wait_seconds: 0` must report its native operation as `running`, never `completed`. Polling that id through `incus_operation_get` must reach `Success`.
+- **Call in flight during the crash:** the client gets no reply, so the call claims no completion. The runner records the exec's native operation while it runs, then reads the same id through the relaunched server. The command's first effect must happen exactly once.
+- **No replay:** after all three restarts there is still exactly one new snapshot and one run of the interrupted command.
+
+The runtime job is never stopped, restarted or relaunched. If the missing-job check fails, `macus start` still registers the job again before the run goes on. Afterwards the runner deletes its snapshot (through the confirmed MCP delete) and its exec log, then requires the guest state to match what it was before. Tokens are revoked.
+
+## Remote acceptance runner
+
+`Integration/scripts/remote-acceptance.py` (task 11.5) proves access from a genuinely separate client. It runs against the same kind of state as the restart runner, and takes the same arguments plus:
+
+- `--bind-address`: this Mac's private or CGNAT address that the client can reach. Loopback, wildcard, multicast and public addresses are refused.
+- `--client-remote`: your own `incus` remote for another Incus server, which hosts the client. Unix sockets, loopback, image servers and this Macus are refused.
+- `--client-name` and `--client-image` (default `macus-remote-115` and `images:alpine/3.22`).
+- `--lock`: the `server/mix.lock` of the installed pair's own revision, when it differs from this checkout's.
+- `--remote-opt-in`: without it, nothing is rebound, launched or enrolled; only the pair, the paths, the bind address and this state's own remote are checked.
+
+```bash
+python3 Integration/scripts/remote-acceptance.py --opt-in --remote-opt-in \
+  --state-dir /tmp/macus-accept --prefix "$(brew --prefix macus)" \
+  --incus-conf "$(python3 -c 'import json;print(json.load(open(".integration/start-acceptance.json"))["incus_conf"])')" \
+  --incus "$(command -v incus)" --remote macus \
+  --bind-address 100.64.0.10 --client-remote otherhost \
+  --report "$PWD/.integration/remote-acceptance.json"
+```
+
+The client is a throwaway container the runner launches on `--client-remote` with your own incus client. It only creates a name that doesn't exist yet, installs the distribution's `incus-client` and Python, copies in `Integration/scripts/remote-client-probe.py`, and deletes the container at the end, but only if it is still the one it created. Nothing else on that server is touched; the runner compares its instance list before and after.
+
+With `--remote-opt-in` the runner:
+
+1. Rebinds the gateway to `--bind-address` with a throwaway P-384 certificate naming that address, and restarts only the server job. The server must then listen on that address alone.
+2. From the client, checks:
+   - **TLS identity:** a TLS 1.3 handshake pinned to that certificate, with its SHA-256 matching `endpoint.json`, and a refused handshake for another name. Anonymous `GET /1.0` must answer `untrusted` with no server environment.
+   - **Native enrollment:** `incus remote add` with a single-use token from `macus server trust token issue`. The remote must pin the gateway certificate and the token must record the client's certificate. A second client must fail to reuse the token.
+   - **Native access:** `incus list`, `incus exec` of the kept marker and `/1.0` reporting `trusted` with the gateway's address.
+   - **Combined scopes:** one bearer token with `incus.read` and `runtime.read` reads `/runtime/status`, searches and runs read operations in both cassettes over `/mcp`, and is refused `incus_instance_exec`, `macus_runtime_start`, `PUT /runtime/config` and native routes. Requests without a token get 401.
+   - **Revocation:** the bearer token stops working within seconds. Removing the enrolled certificate ends an open `incus exec` and leaves the client `untrusted`. A revoked enrollment token can't be redeemed.
+3. Always restores the original `gateway.json` and restarts the server job again. Loopback must answer and the client must no longer connect. Any client certificate or enrollment token left over from a failed check is removed.
+
+The VM, the runtime job and the kept workload are never stopped or restarted, and their identity must match before and after. The report keeps remote evidence under `evidence.remote`, with `loopback_evidence: false`.
+
+Gateway trust is read with a plain `GET /1.0/certificates?recursion=1` that presents the owner's client certificate. The standard `incus config trust list` sends an empty `filter=`, which servers older than this fix refuse, and `incus query` sends a JSON `null` body, which the shared certificate and discovery handlers refuse. The runner records what `incus config trust list` returns under `findings`.
 
 ## Integration acceptance
 

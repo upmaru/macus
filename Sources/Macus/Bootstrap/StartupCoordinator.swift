@@ -5,6 +5,12 @@ struct StartupDependencies: Sendable {
   var runner: any LocalCommandRunner
   var downloader: any ApplianceDownloader
   var launchControl: any LaunchControl
+  /// Recognizes a serving Macus server only through its authenticated, pinned gateway.
+  var server: any ServerProbe = GatewayServerProbe()
+  /// The public `/runtime` API every lifecycle, progress and health request uses.
+  var gateway: any GatewayTransport = HTTPSGatewayClient()
+  /// This executable's package version and source revision, paired with the server release.
+  var build: BuildIdentity = .current
   var capabilities: @Sendable () async -> HostCapabilities
   var hasEntitlement: @Sendable () -> Bool
   var executablePath: @Sendable () -> String
@@ -35,6 +41,15 @@ private final class StartContext: @unchecked Sendable {
   var operationID: String
   var serviceOwnership = "launchd"
   var serviceLabel: String?
+  var serverOwnership = "launchd"
+  var serverLabel: String?
+  /// What the preflight found for the server job: its validated registration, or whether a
+  /// server already serves this state outside launchd.
+  var serverRegistration: LaunchJob?
+  var serverForeground = false
+  /// Both jobs were serving and the public endpoint was read; failures after this leave them.
+  var servicesEstablished = false
+  var endpoint: GatewayEndpoint?
   var startDispatched = false
   var currentStage: StartupStage = .preflight
 
@@ -55,9 +70,15 @@ private final class StartContext: @unchecked Sendable {
       try paths.prepare()
       let lock = try BootstrapLock(directory: paths.directory)
       defer { lock.release() }
+      // The local CLI's own server credential, prepared once and never printed.
+      try BearerTokenStore(stateDirectory: paths.directory).prepareLocalCredential()
       serviceLabel = LaunchAgentPlan.label(
         stateDirectory: paths.directory, home: dependencies.homeDirectory)
+      serverLabel = LaunchAgentPlan.label(
+        stateDirectory: paths.directory, home: dependencies.homeDirectory, role: .server)
       try await rejectLegacy(paths)
+      // Before any download, job activation or guest request.
+      try await preflightServer(paths)
       let kind = try BootstrapStore.existingRuntime(paths.directory)
       let manifest: URL
       if kind == .absent {
@@ -82,6 +103,9 @@ private final class StartContext: @unchecked Sendable {
         ready: true, connected: true, stateDirectory: paths.directory.path, remote: request.remote,
         incus: client.executable, installed: client.installed,
         serviceOwnership: ownership.ownership, serviceLabel: ownership.label,
+        serverOwnership: serverOwnership,
+        serverLabel: serverOwnership == "launchd" ? serverLabel : nil,
+        serverEndpoint: endpoint?.url.absoluteString, serverFingerprint: endpoint?.fingerprint,
         capabilities: capabilities, nextCommands: client.commands, pathGuidance: client.guidance,
         observedState: "ready")
     } catch is CancellationError {
@@ -89,8 +113,12 @@ private final class StartContext: @unchecked Sendable {
     } catch let error as StartupInterrupted {
       throw error
     } catch {
-      let failed = error as? RuntimeError ?? RuntimeError(.io, error.localizedDescription)
+      var failed = error as? RuntimeError ?? RuntimeError(.io, error.localizedDescription)
       emit(currentStage, .failed, detail: failed.message, code: failed.code.rawValue)
+      // A partial start is a failure, but says truthfully what it established.
+      if let established = establishedServices() {
+        failed = RuntimeError(failed.code, "\(failed.message) \(established)")
+      }
       throw failed
     }
   }
@@ -122,15 +150,18 @@ private final class StartContext: @unchecked Sendable {
         "Incus CLI was not found on PATH and Homebrew is not installed. Install Homebrew from https://brew.sh, then rerun macus start. macus does not install Homebrew or use sudo."
       )
     case .executable(let path):
-      let socket = request.stateDirectory.appendingPathComponent("incus.sock").path
-      if try await client.conflictingRemote(
-        executable: path, remote: request.remote, socketPath: socket, timeout: request.timeout,
+      // The server publishes its endpoint only once it runs; until then its configured URL is
+      // the address the remote will name.
+      let url =
+        (try? GatewayEndpoint.discover(stateDirectory: request.stateDirectory).url.absoluteString)
+        ?? (try? GatewayConfigurationStore(stateDirectory: request.stateDirectory).show())?
+        .configuration.effectiveURL ?? GatewayConfiguration().effectiveURL
+      if let conflict = try await client.existingRemoteConflict(
+        executable: path, remote: request.remote, url: url, timeout: request.timeout,
         deadline: budget.deadline)
       {
         throw RuntimeError(
-          .conflict,
-          "Remote \(request.remote) already points at a different address. Choose another --remote. Existing remotes and runtime data were preserved."
-        )
+          .conflict, "\(conflict.message) Existing remotes and runtime data were preserved.")
       }
     case .homebrew:
       break
@@ -170,19 +201,42 @@ private final class StartContext: @unchecked Sendable {
     let label = LaunchAgentPlan.label(
       stateDirectory: paths.directory, home: dependencies.homeDirectory)
     serviceLabel = label
+    let server = LaunchAgentPlan.label(
+      stateDirectory: paths.directory, home: dependencies.homeDirectory, role: .server)
+    serverLabel = server
     try await rejectLegacy(paths)
     let executable = dependencies.executablePath()
     guard isAbsoluteExecutablePath(executable) else {
       throw RuntimeError(.invalidConfiguration, "Service executable path must be absolute")
     }
-    let expected = LaunchAgentPlan.arguments(
-      executable: executable, stateDirectory: paths.directory)
-    // A registered job is identified from launchctl before any start or bootstrap.
-    if let loaded = try await dependencies.launchControl.printJob(
+    let launcher = ServerRelease.launcher(forServiceExecutable: executable)
+    // The Swift registration is identified from launchctl before either job is started; the
+    // server's was identified and paired by the preflight.
+    let runtimeJob = try await dependencies.launchControl.printJob(
       label: label, timeout: try budget.remainingSeconds(at: dependencies.now()))
-    {
-      // Identity comes from launchctl, not the mutable on-disk plist.
-      try validateLoadedJob(loaded, label: label, arguments: expected)
+    if let runtimeJob {
+      try validateLoadedJob(
+        runtimeJob, label: label,
+        arguments: LaunchAgentPlan.arguments(
+          executable: executable, stateDirectory: paths.directory),
+        environment: nil)
+    }
+    let serverJob = serverRegistration
+    let ownership = try await ensureRuntimeJob(
+      paths, label: label, executable: executable, registered: runtimeJob)
+    try await ensureServerJob(paths, label: server, launcher: launcher, registered: serverJob)
+    endpoint = try GatewayEndpoint.discover(stateDirectory: paths.directory)
+    servicesEstablished = true
+    emit(.serviceActivation, .complete, detail: activationDetail)
+    return ownership
+  }
+
+  private var activationDetail: String?
+
+  private func ensureRuntimeJob(
+    _ paths: RuntimePaths, label: String, executable: String, registered: LaunchJob?
+  ) async throws -> (ownership: String, label: String?) {
+    if let loaded = registered {
       if !loaded.loaded {
         try Task.checkCancellation()
         try await dependencies.launchControl.kickstart(
@@ -194,31 +248,125 @@ private final class StartContext: @unchecked Sendable {
         throw RuntimeError(.timeout, "Startup deadline exceeded")
       }
       serviceOwnership = "launchd"
-      emit(.serviceActivation, .complete, detail: loaded.loaded ? "reused" : "kickstarted")
+      activationDetail = loaded.loaded ? "reused" : "kickstarted"
       return ("launchd", label)
     }
     if try await compatibleDaemon(paths) {
       serviceOwnership = "foreground"
-      emit(.serviceActivation, .complete, detail: "foreground")
+      activationDetail = "foreground"
       return ("foreground", nil)
     }
     let plist = try LaunchAgentPlan.write(
       stateDirectory: paths.directory, home: dependencies.homeDirectory,
       launchAgents: dependencies.launchAgentsDirectory, executable: executable)
-    if !LaunchAgentPlan.isDefault(paths.directory, home: dependencies.homeDirectory) {
-      let def = dependencies.launchAgentsDirectory.appendingPathComponent("com.upmaru.macus.plist")
-      if FileManager.default.fileExists(atPath: def.path),
-        try plistArguments(def)?.contains(paths.directory.path) != true
-      {
-        // Isolated registration must not replace the default agent. Leaving it untouched is required.
-      }
-    }
     try await dependencies.launchControl.bootstrap(
       plist: plist, timeout: try budget.remainingSeconds(at: dependencies.now()))
     try await waitForEndpoint(paths)
     serviceOwnership = "launchd"
-    emit(.serviceActivation, .complete)
+    activationDetail = nil
     return ("launchd", label)
+  }
+
+  /// The server job is recovered on its own: kickstarting or bootstrapping it never stops,
+  /// restarts or recreates the Swift job or the VM.
+  private func ensureServerJob(
+    _ paths: RuntimePaths, label: String, launcher: String, registered: LaunchJob?
+  ) async throws {
+    if let registered {
+      if !registered.loaded {
+        try Task.checkCancellation()
+        try await dependencies.launchControl.kickstart(
+          label: label, timeout: try budget.remainingSeconds(at: dependencies.now()))
+      }
+      try await waitForServer(paths)
+      serverOwnership = "launchd"
+      return
+    }
+    if serverForeground, try await serverServing(paths) {
+      // A server already serves this state's pinned endpoint outside launchd: reuse it.
+      serverOwnership = "foreground"
+      return
+    }
+    try ServerRelease.requirePaired(launcher: launcher, build: dependencies.build)
+    let plist = try LaunchAgentPlan.write(
+      stateDirectory: paths.directory, home: dependencies.homeDirectory,
+      launchAgents: dependencies.launchAgentsDirectory, executable: launcher, role: .server,
+      revision: dependencies.build.revision)
+    try Task.checkCancellation()
+    try await dependencies.launchControl.bootstrap(
+      plist: plist, timeout: try budget.remainingSeconds(at: dependencies.now()))
+    try await waitForServer(paths)
+    serverOwnership = "launchd"
+  }
+
+  /// The server half of the startup preflight, inside the bootstrap lock and the one budget:
+  /// the selected listener/TLS configuration, the registered server job's identity, and, unless
+  /// a server already serves this state outside launchd, the installed release paired with this
+  /// executable and its bundled `opsmaru_incus`. Reads only.
+  private func preflightServer(_ paths: RuntimePaths) async throws {
+    let store = GatewayConfigurationStore(stateDirectory: paths.directory)
+    try GatewayConfigurationStore.check(try store.show().configuration)
+    let executable = dependencies.executablePath()
+    guard isAbsoluteExecutablePath(executable) else {
+      throw RuntimeError(.invalidConfiguration, "Service executable path must be absolute")
+    }
+    let launcher = ServerRelease.launcher(forServiceExecutable: executable)
+    let label = LaunchAgentPlan.label(
+      stateDirectory: paths.directory, home: dependencies.homeDirectory, role: .server)
+    let registered = try await dependencies.launchControl.printJob(
+      label: label, timeout: try budget.remainingSeconds(at: dependencies.now()))
+    if let registered {
+      try validateServerJob(registered, label: label, launcher: launcher, paths: paths)
+    } else if try await serverServing(paths) {
+      serverForeground = true
+      return
+    }
+    try ServerRelease.requirePaired(launcher: launcher, build: dependencies.build)
+    serverRegistration = registered
+  }
+
+  private func validateServerJob(
+    _ job: LaunchJob, label: String, launcher: String, paths: RuntimePaths
+  ) throws {
+    let arguments = LaunchAgentPlan.arguments(
+      executable: launcher, stateDirectory: paths.directory, role: .server)
+    let revision = dependencies.build.revision
+    let expected = LaunchAgentPlan.environment(
+      stateDirectory: paths.directory, role: .server, revision: revision)
+    let recorded = job.environment["MACUS_EXPECTED_REVISION"]
+    if recorded != revision,
+      ServiceExecutable.matches(reported: job.executable, expected: launcher),
+      job.programArguments == arguments,
+      LaunchAgentPlan.environmentMatches(
+        job.environment,
+        expected: LaunchAgentPlan.environment(
+          stateDirectory: paths.directory, role: .server, revision: recorded))
+    {
+      // Our own job, registered by another package revision: an explicit transition.
+      throw RuntimeError(
+        .conflict,
+        "Service \(label) was registered for Macus revision \(recorded ?? "none"), but this macus is \(revision ?? "unrecorded"). Unload it with launchctl bootout gui/\(dependencies.uid)/\(label), remove its plist, and rerun macus start. The runtime and its data were preserved."
+      )
+    }
+    try validateLoadedJob(job, label: label, arguments: arguments, environment: expected)
+  }
+
+  private func serverServing(_ paths: RuntimePaths) async throws -> Bool {
+    let remaining = try budget.remainingSeconds(at: dependencies.now())
+    return try await dependencies.server.serving(
+      stateDirectory: paths.directory, timeout: min(remaining, 5))
+  }
+
+  private func waitForServer(_ paths: RuntimePaths) async throws {
+    while dependencies.now() < budget.deadline {
+      try Task.checkCancellation()
+      if try await serverServing(paths) { return }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+    throw RuntimeError(
+      .timeout,
+      "The Macus server did not answer on its published endpoint before the deadline. The runtime and its data were preserved."
+    )
   }
 
   private func createRuntime(_ paths: RuntimePaths, manifest: URL) async throws {
@@ -231,10 +379,8 @@ private final class StartContext: @unchecked Sendable {
     configuration.readinessTimeoutSeconds = 1_800
     configuration.shares = []
     let body = try JSON.encoder().encode(configuration)
-    let response = try await control("POST", "/v1/runtime/create", body, paths: paths)
-    guard (200...299).contains(response.status) else {
-      throw responseFailure(status: response.status, body: response.body)
-    }
+    _ = try requireGatewaySuccess(
+      try await gateway("POST", "/runtime/create", body, paths: paths))
     emit(.runtimeCreation, .complete)
   }
 
@@ -259,10 +405,23 @@ private final class StartContext: @unchecked Sendable {
     let body = try JSONSerialization.data(withJSONObject: ["remaining_seconds": remaining])
     let poll = Task { await pollProgress(paths) }
     defer { poll.cancel() }
-    let response = try await control("POST", "/v1/runtime/start", body, paths: paths)
-    guard (200...299).contains(response.status) else {
-      throw responseFailure(status: response.status, body: response.body)
+    let endpoint = try GatewayEndpoint.discover(stateDirectory: paths.directory)
+    let response: LocalHTTPResponse
+    do {
+      response = try await dependencies.gateway.request(
+        endpoint, method: "POST", path: "/runtime/start", body: body,
+        timeout: try budget.remainingSeconds(at: dependencies.now()))
+    } catch let error as RuntimeError where error.code == .unavailable || error.code == .io {
+      // The connection to the server was lost, so Swift may have accepted the boot. It is never
+      // sent again: the guest keeps booting (expected reboot included) and readiness is
+      // observed through the gateway once it answers again.
+      try await awaitReadyAfterLostStart(paths)
+      let capabilities = try await liveCapabilities(paths)
+      emit(.provisioning, .complete)
+      emit(.readiness, .complete)
+      return capabilities
     }
+    _ = try requireGatewaySuccess(response)
     let capabilities = try await liveCapabilities(paths)
     emit(.provisioning, .complete)
     emit(.readiness, .complete)
@@ -274,8 +433,7 @@ private final class StartContext: @unchecked Sendable {
   ) {
     emit(.clientSetup, .active)
     let status = try await statusObject(paths)
-    guard jsonString(status["state"]) == "ready", let socket = jsonString(status["incus_socket"])
-    else {
+    guard jsonString(status["state"]) == "ready" else {
       throw RuntimeError(
         .unavailable,
         "Runtime is not ready. Client setup was not started and runtime data was preserved."
@@ -290,10 +448,11 @@ private final class StartContext: @unchecked Sendable {
         }),
       environment: request.environment)
     do {
+      let endpoint = try GatewayEndpoint.discover(stateDirectory: paths.directory)
       let result = try await service.register(
         remote: request.remote, setDefault: request.setDefault,
-        incusOverride: request.incusOverride,
-        socketPath: socket, timeout: request.timeout, deadline: budget.deadline)
+        incusOverride: request.incusOverride, endpoint: endpoint,
+        stateDirectory: paths.directory, timeout: request.timeout, deadline: budget.deadline)
       let directory = URL(fileURLWithPath: result.executable).deletingLastPathComponent().path
       let guidance =
         result.onPath
@@ -319,7 +478,7 @@ private final class StartContext: @unchecked Sendable {
     guard FileManager.default.fileExists(atPath: paths.controlSocket.path) else { return false }
     let status: LocalHTTPResponse
     do {
-      status = try await control("GET", "/v1/runtime/status", Data(), paths: paths)
+      status = try await privateProbe("GET", "/v1/runtime/status", Data(), paths: paths)
     } catch let error as RuntimeError where error.code == .invalidConfiguration {
       throw RuntimeError(
         .invalidConfiguration,
@@ -329,7 +488,7 @@ private final class StartContext: @unchecked Sendable {
       return false
     }
     guard (200...299).contains(status.status) else { return false }
-    let progress = try await control("GET", "/v1/runtime/progress", Data(), paths: paths)
+    let progress = try await privateProbe("GET", "/v1/runtime/progress", Data(), paths: paths)
     if progress.status == 404 {
       throw RuntimeError(
         .invalidConfiguration,
@@ -343,7 +502,8 @@ private final class StartContext: @unchecked Sendable {
   }
 
   private func validateLoadedJob(
-    _ job: LaunchJob, label: String, arguments expected: [String]
+    _ job: LaunchJob, label: String, arguments expected: [String],
+    environment: [String: String]?
   ) throws {
     guard !job.programArguments.isEmpty else {
       throw RuntimeError(
@@ -353,7 +513,8 @@ private final class StartContext: @unchecked Sendable {
     }
     guard let executable = expected.first,
       ServiceExecutable.matches(reported: job.executable, expected: executable),
-      job.programArguments == expected
+      job.programArguments == expected,
+      LaunchAgentPlan.environmentMatches(job.environment, expected: environment)
     else {
       throw RuntimeError(
         .conflict,
@@ -372,6 +533,18 @@ private final class StartContext: @unchecked Sendable {
     try LaunchAgentPlan.refuseConflictingDestination(
       chosen, label: label,
       arguments: LaunchAgentPlan.arguments(executable: executable, stateDirectory: paths.directory))
+    let launcher = ServerRelease.launcher(forServiceExecutable: executable)
+    let serverLabel = LaunchAgentPlan.label(
+      stateDirectory: paths.directory, home: dependencies.homeDirectory, role: .server)
+    let serverExpected = LaunchAgentPlan.arguments(
+      executable: launcher, stateDirectory: paths.directory, role: .server)
+    let serverEnvironment = LaunchAgentPlan.environment(
+      stateDirectory: paths.directory, role: .server, revision: dependencies.build.revision)
+    try LaunchAgentPlan.refuseConflictingDestination(
+      LaunchAgentPlan.plistURL(
+        stateDirectory: paths.directory, home: dependencies.homeDirectory,
+        launchAgents: dependencies.launchAgentsDirectory, role: .server),
+      label: serverLabel, arguments: serverExpected, environment: serverEnvironment)
     let directories = [
       dependencies.launchAgentsDirectory,
       paths.directory.appendingPathComponent("launchd", isDirectory: true),
@@ -382,31 +555,43 @@ private final class StartContext: @unchecked Sendable {
       }
       for name in names where name.hasSuffix(".plist") {
         let url = directory.appendingPathComponent(name)
-        guard let arguments = try plistArguments(url) else { continue }
+        guard let object = try dependencies.launchControl.plist(at: url),
+          LaunchAgentPlan.targets(plist: object, stateDirectory: paths.directory)
+        else { continue }
+        let arguments = object["ProgramArguments"] as? [String] ?? []
+        let variables = object["EnvironmentVariables"] as? [String: String]
         let label = (name as NSString).deletingPathExtension
         let legacy = LegacyService.labels.contains(label) || label.hasPrefix("com.kritama.")
-        let ours = label == serviceLabel
-        if LaunchAgentPlan.targets(arguments, stateDirectory: paths.directory) {
-          if legacy {
-            throw RuntimeError(
-              .conflict,
-              "Legacy service \(label) targets this state. Unload it explicitly and remove its plist before macus start. Data was preserved and no second daemon was created."
-            )
-          }
-          if !ours && label != "com.upmaru.macus" && !label.hasPrefix("com.upmaru.macus.") {
-            throw RuntimeError(
-              .conflict,
-              "Service \(label) already targets this state. macus start will not replace it or start a second daemon."
-            )
-          }
-          let expected = LaunchAgentPlan.arguments(
-            executable: dependencies.executablePath(), stateDirectory: paths.directory)
-          if arguments != expected && ours {
-            throw RuntimeError(
-              .conflict,
-              "Service \(label) points at a different executable or state. macus start will not replace that plist."
-            )
-          }
+        if legacy {
+          throw RuntimeError(
+            .conflict,
+            "Legacy service \(label) targets this state. Unload it explicitly and remove its plist before macus start. Data was preserved and no second daemon was created."
+          )
+        }
+        // Only the two Macus jobs may target a state; anything else (an Opsmaru or other
+        // foreign job included) is a conflict, never a third service.
+        guard LaunchAgentPlan.isMacusLabel(label) else {
+          throw RuntimeError(
+            .conflict,
+            "Service \(label) already targets this state. macus start will not replace it or start a second daemon."
+          )
+        }
+        let matches: Bool
+        if label == serviceLabel {
+          matches =
+            arguments
+            == LaunchAgentPlan.arguments(
+              executable: executable, stateDirectory: paths.directory) && variables == nil
+        } else if label == serverLabel {
+          matches = arguments == serverExpected && variables == serverEnvironment
+        } else {
+          matches = true
+        }
+        if !matches {
+          throw RuntimeError(
+            .conflict,
+            "Service \(label) points at a different executable or state. macus start will not replace that plist."
+          )
         }
       }
     }
@@ -427,9 +612,48 @@ private final class StartContext: @unchecked Sendable {
       .timeout, "The background service did not open its control endpoint before the deadline")
   }
 
+  /// After the start request's connection was lost: waits, within the budget, for the gateway to
+  /// report the runtime ready. A gateway that is restarting or a Swift service it cannot reach yet
+  /// is waited for; a runtime that is no longer starting is reported, and the boot is not retried.
+  private func awaitReadyAfterLostStart(_ paths: RuntimePaths) async throws {
+    emit(.provisioning, .active, detail: "reconnecting to the Macus server")
+    while dependencies.now() < budget.deadline {
+      try Task.checkCancellation()
+      let response: LocalHTTPResponse
+      do {
+        response = try await gateway("GET", "/runtime/status", timeout: 5, paths: paths)
+      } catch let error as RuntimeError where error.code == .invalidConfiguration {
+        throw error
+      } catch is CancellationError {
+        throw CancellationError()
+      } catch {
+        try await Task.sleep(for: .milliseconds(250))
+        continue
+      }
+      if (200...299).contains(response.status), let object = try? jsonObject(response.body) {
+        switch jsonString(object["state"]) {
+        case "ready":
+          return
+        case "starting":
+          break
+        case let state:
+          throw RuntimeError(
+            .unavailable,
+            "The connection to the Macus server was lost while the runtime was starting, and the runtime is now \(state ?? "unknown"). The boot was not sent again; rerun macus start. Disks and logs were preserved."
+          )
+        }
+      }
+      try await Task.sleep(for: .milliseconds(250))
+    }
+    throw RuntimeError(
+      .timeout,
+      "The runtime did not become ready through the Macus server before the deadline. The guest was not force-stopped; disks and logs were preserved."
+    )
+  }
+
   private func pollProgress(_ paths: RuntimePaths) async {
     while !Task.isCancelled {
-      if let response = try? await control("GET", "/v1/runtime/progress", Data(), paths: paths),
+      if let response = try? await gateway("GET", "/runtime/progress", timeout: 5, paths: paths),
         (200...299).contains(response.status),
         let object = try? jsonObject(response.body)
       {
@@ -445,31 +669,41 @@ private final class StartContext: @unchecked Sendable {
   }
 
   private func liveCapabilities(_ paths: RuntimePaths) async throws -> RuntimeCapabilities {
-    let health = try await control("GET", "/v1/runtime/health", Data(), paths: paths)
-    guard (200...299).contains(health.status) else {
-      throw responseFailure(status: health.status, body: health.body)
-    }
+    let health = try requireGatewaySuccess(
+      try await gateway("GET", "/runtime/health", paths: paths))
     let decoded = try JSON.decoder().decode(GuestHealth.self, from: health.body)
     guard decoded.protocolVersion == 1 else {
       throw RuntimeError(
         .unavailable, "Guest health protocol is not live. Progress markers are not readiness.")
     }
-    let capabilities = try await control("GET", "/v1/runtime/capabilities", Data(), paths: paths)
-    guard (200...299).contains(capabilities.status) else {
-      throw responseFailure(status: capabilities.status, body: capabilities.body)
-    }
+    let capabilities = try requireGatewaySuccess(
+      try await gateway("GET", "/runtime/capabilities", paths: paths))
     return try JSON.decoder().decode(RuntimeCapabilities.self, from: capabilities.body)
   }
 
   private func statusObject(_ paths: RuntimePaths) async throws -> [String: Any] {
-    let response = try await control("GET", "/v1/runtime/status", Data(), paths: paths)
-    guard (200...299).contains(response.status) else {
-      throw responseFailure(status: response.status, body: response.body)
-    }
+    let response = try requireGatewaySuccess(
+      try await gateway("GET", "/runtime/status", paths: paths))
     return try jsonObject(response.body)
   }
 
-  private func control(_ method: String, _ path: String, _ body: Data, paths: RuntimePaths)
+  /// One public `/runtime` request within the remaining budget (at most `timeout` seconds). The
+  /// endpoint is discovered first, so missing or unsafe server files fail as themselves.
+  private func gateway(
+    _ method: String, _ path: String, _ body: Data = Data(), timeout: Int? = nil,
+    paths: RuntimePaths
+  ) async throws -> LocalHTTPResponse {
+    let endpoint = try GatewayEndpoint.discover(stateDirectory: paths.directory)
+    let remaining = try budget.remainingSeconds(at: dependencies.now())
+    return try await dependencies.gateway.request(
+      endpoint, method: method, path: path, body: body,
+      timeout: min(remaining, timeout ?? remaining))
+  }
+
+  /// Identifies the private Swift service while activating it (a compatible daemon already
+  /// serving this state, launchd-owned or foreground). This is bootstrap mechanics only: every
+  /// lifecycle, progress and health request goes through the public gateway.
+  private func privateProbe(_ method: String, _ path: String, _ body: Data, paths: RuntimePaths)
     async throws
     -> LocalHTTPResponse
   {
@@ -492,30 +726,38 @@ private final class StartContext: @unchecked Sendable {
     return URL(fileURLWithPath: path)
   }
 
-  private func plistArguments(_ url: URL) throws -> [String]? {
-    guard let object = try dependencies.launchControl.plist(at: url) else { return nil }
-    return object["ProgramArguments"] as? [String]
-  }
-
   private func interruptedMessage() async -> String {
     let paths = RuntimePaths(directory: request.stateDirectory)
     var observed: String?
-    if FileManager.default.fileExists(atPath: paths.controlSocket.path),
-      let response = try? await dependencies.transport.request(
-        socket: paths.controlSocket, method: "GET", path: "/v1/runtime/status", body: Data(),
-        timeout: 2),
+    if let endpoint = try? GatewayEndpoint.discover(stateDirectory: paths.directory),
+      let response = try? await dependencies.gateway.request(
+        endpoint, method: "GET", path: "/runtime/status", body: Data(), timeout: 2),
       (200...299).contains(response.status),
       let object = try? jsonObject(response.body)
     {
       observed = jsonString(object["state"])
     }
+    let established = establishedServices().map { " \($0)" } ?? ""
     if startDispatched {
       let state = observed ?? "unknown"
       return
-        "Start interrupted. Observed runtime state is \(state). The guest was not force-stopped; run macus runtime stop if you need to stop it. Disks and logs were preserved."
+        "Start interrupted. Observed runtime state is \(state). The guest was not force-stopped; run macus runtime stop if you need to stop it. Disks and logs were preserved.\(established)"
     }
     return
-      "Start interrupted before a daemon-owned boot was dispatched. No guest was force-stopped. Disks and logs were preserved."
+      "Start interrupted before a daemon-owned boot was dispatched. No guest was force-stopped. Disks and logs were preserved.\(established)"
+  }
+
+  /// What a failed or interrupted start leaves in place once both services were serving: the
+  /// established pair, which start never stops, and the public endpoint. Nil before then.
+  private func establishedServices() -> String? {
+    guard servicesEstablished else { return nil }
+    func service(_ ownership: String, _ label: String?) -> String {
+      if ownership == "launchd", let label { return "launchd job \(label)" }
+      return "foreground process"
+    }
+    let url = endpoint.map { " at \($0.url.absoluteString)" } ?? ""
+    return
+      "Start left both services in place: the runtime service (\(service(serviceOwnership, serviceLabel))) and the server (\(service(serverOwnership, serverLabel))\(url))."
   }
 
   private func emit(

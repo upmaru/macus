@@ -33,17 +33,19 @@ public enum MacusCLI {
     arguments: [String],
     environment: [String: String] = ProcessInfo.processInfo.environment,
     transport: any LocalHTTPTransport = UnixHTTPClient(),
+    gateway: any GatewayTransport = HTTPSGatewayClient(),
     streams: MacusStreams = .standard
   ) async -> Int32 {
     await run(
-      arguments: arguments, environment: environment, transport: transport, streams: streams,
-      overrides: StartupOverrides())
+      arguments: arguments, environment: environment, transport: transport, gateway: gateway,
+      streams: streams, overrides: StartupOverrides())
   }
 
   static func run(
     arguments: [String],
     environment: [String: String] = ProcessInfo.processInfo.environment,
     transport: any LocalHTTPTransport = UnixHTTPClient(),
+    gateway: any GatewayTransport = HTTPSGatewayClient(),
     streams: MacusStreams = .standard,
     overrides: StartupOverrides
   ) async -> Int32 {
@@ -67,8 +69,8 @@ public enum MacusCLI {
       let timeout = invocation.timeout ?? defaultTimeout(invocation.command)
       try await execute(
         invocation.command, directory: directory, timeout: timeout, json: invocation.json,
-        environment: environment, transport: transport, runner: ProcessCommandRunner(),
-        streams: streams, overrides: overrides)
+        environment: environment, transport: transport, gateway: gateway,
+        runner: ProcessCommandRunner(), streams: streams, overrides: overrides)
       return 0
     } catch let error as UsageError {
       emit(
@@ -139,6 +141,25 @@ public enum MacusCLI {
     Client:
       client setup [--remote NAME] [--set-default] [--incus ABSOLUTE_PATH]
 
+    Server administration (owner-local; never starts services or touches VM disks):
+      server config show              Show the gateway listener configuration.
+      server config set [--bind-address IP] [--port PORT] [--advertised-url URL]
+                        [--certificate-file ABSOLUTE_PATH --key-file ABSOLUTE_PATH]
+        Change STATE/server/gateway.json; the server reads it when it next starts.
+      server config reset             Return to loopback 127.0.0.1:8443 defaults.
+      server token issue --principal NAME --scope SCOPE [--scope SCOPE ...]
+                         [--expires-in DURATION] --output ABSOLUTE_PATH
+        Issue a scoped bearer token into a new 0600 file. The token is never printed.
+      server token list               List tokens without secrets or verifiers.
+      server token revoke ID          Refuse a token from the server's next request.
+      server trust token issue --name NAME --address HOST:PORT [--address HOST:PORT ...]
+                         --server-certificate ABSOLUTE_PATH [--expires-in DURATION]
+                         --output ABSOLUTE_PATH
+        Issue a single-use enrollment token for `incus remote add` into a new 0600 file.
+        It expires after 1 hour by default and at most 30 days. It is never printed.
+      server trust token list         List enrollment tokens and their redemption.
+      server trust token revoke ID    Refuse an unredeemed enrollment token.
+
     Common examples:
       macus start
       macus runtime status
@@ -146,6 +167,12 @@ public enum MacusCLI {
       macus capabilities --json
       macus --state-dir /tmp/macus-demo start --progress plain
       macus client setup --remote macus
+      macus server config set --bind-address 192.168.1.20 \\
+        --advertised-url https://macus.example.net:8443 \\
+        --certificate-file ~/certs/macus.pem --key-file ~/certs/macus.key
+      macus server token issue --principal laptop --scope incus.read --output ~/macus.token
+      macus server trust token issue --name laptop --address macus.example.net:8443 \\
+        --server-certificate ~/gateway.crt --output ~/laptop.trust-token
 
     Options:
       --json            Machine results on stdout, errors on stderr.
@@ -154,16 +181,17 @@ public enum MacusCLI {
       --timeout SECONDS           Set a bounded deadline.
 
     start is the high-level first-use command. It prepares the pinned appliance,
-    activates a per-user background service when needed, creates an absent runtime,
-    waits for live Incus readiness, and registers the standard incus client. It does
-    not install Homebrew or require sudo. serve, runtime, doctor and client setup remain
+    activates the per-user runtime and server jobs when needed, creates an absent
+    runtime, waits for live Incus readiness, and registers the standard incus client.
+    It does not install Homebrew or require sudo. serve, runtime, doctor and client setup remain
     explicit lower-level commands and do not download an appliance or activate a service.
 
     The outer runtime is the Apple VZ appliance. runtime commands and doctor use
-    the existing control API and never install software or boot implicitly.
+    the Macus server's pinned HTTPS endpoint and never install software or boot implicitly.
     Workload operations belong to the standard incus client. client setup registers
-    that client against the ready runtime socket. The default remote name is
-    \(defaultRemoteName). --set-default is required to change the selected default.
+    that client with the server's HTTPS endpoint and enrolls its certificate. The default
+    remote name is \(defaultRemoteName). Existing remotes are never changed, and
+    --set-default is required to change the selected default.
     If incus is not on PATH, setup installs the official Homebrew formula incus
     when Homebrew is already installed. It does not install Homebrew.
 
@@ -177,6 +205,16 @@ public enum MacusCLI {
     client setup (1...3600). macus start defaults to \(startTimeout) seconds, still within
     1...3600, and uses one deadline across download, boot, the expected kernel restart and
     client setup. A restart or Homebrew install may need a larger value.
+    Bearer scopes: incus.read, incus.write, incus.exec, incus.delete, runtime.read,
+    runtime.write and runtime.delete, plus incus.native.read, incus.native.write,
+    incus.native.delete and incus.native.admin for the native client operations, which no
+    other scope implies and which are granted only when named. DURATION is a
+    count with s, m, h or d (1 minute to 3650 days); without it a token does not expire.
+    Tokens live in STATE/server/bearer-tokens.json as SHA-256 verifiers. macus start
+    prepares the local CLI's own runtime token once in STATE/server/local-cli.token;
+    revoke its macus-local-cli record to rotate it at the next start. The gateway never
+    binds 0.0.0.0 or ::, and a non-loopback --bind-address needs --advertised-url and a
+    certificate naming that host.
     --progress auto animates only on an interactive terminal; plain and JSON avoid cursor
     escapes. --progress none suppresses progress. Exit status is 0 on success, 1 on
     operational failure, 2 on invalid arguments and 130 when start is interrupted.
@@ -200,6 +238,16 @@ private enum Command {
   case doctor
   case clientSetup(remote: String, setDefault: Bool, incus: String?)
   case start(remote: String, setDefault: Bool, incus: String?, progress: ProgressSelection)
+  case serverConfigShow
+  case serverConfigSet(GatewayConfigurationChange)
+  case serverConfigReset
+  case serverTokenIssue(principal: String, scopes: [String], expiresIn: Int?, output: String)
+  case serverTokenList
+  case serverTokenRevoke(id: String)
+  case serverTrustTokenIssue(
+    name: String, addresses: [String], serverCertificate: String, expiresIn: Int, output: String)
+  case serverTrustTokenList
+  case serverTrustTokenRevoke(id: String)
 }
 
 private struct Invocation {
@@ -215,7 +263,11 @@ private func requestsJSON(_ arguments: [String]) -> Bool {
     let token = arguments[index]
     if token == "--json" { return true }
     if token == "--timeout" || token == "--state-dir" || token == "--remote"
-      || token == "--incus" || token == "--progress"
+      || token == "--incus" || token == "--progress" || token == "--principal"
+      || token == "--scope" || token == "--expires-in" || token == "--output"
+      || token == "--name" || token == "--address" || token == "--server-certificate"
+      || token == "--bind-address" || token == "--port" || token == "--advertised-url"
+      || token == "--certificate-file" || token == "--key-file"
     {
       index += 2
       continue
@@ -233,7 +285,10 @@ private func defaultTimeout(_ command: Command) -> Int {
   switch command {
   case .runtimeStart, .runtimeStop, .runtimeRestart, .clientSetup: MacusCLI.lifecycleTimeout
   case .start: MacusCLI.startTimeout
-  case .capabilities, .runtimeStatus, .doctor: MacusCLI.readOnlyTimeout
+  case .capabilities, .runtimeStatus, .doctor, .serverConfigShow, .serverConfigSet,
+    .serverConfigReset, .serverTokenIssue, .serverTokenList, .serverTokenRevoke,
+    .serverTrustTokenIssue, .serverTrustTokenList, .serverTrustTokenRevoke:
+    MacusCLI.readOnlyTimeout
   }
 }
 
@@ -247,6 +302,14 @@ private func parse(_ arguments: [String]) throws -> Invocation {
   var remote: String?
   var incusOverride: String?
   var progress: String?
+  var principal: String?
+  var scopes: [String] = []
+  var expiresIn: Int?
+  var output: String?
+  var name: String?
+  var addresses: [String] = []
+  var serverCertificate: String?
+  var gateway = GatewayConfigurationChange()
   var positionals: [String] = []
   func value(for flag: String) throws -> String {
     guard index + 1 < arguments.count, !arguments[index + 1].hasPrefix("-") else {
@@ -300,6 +363,70 @@ private func parse(_ arguments: [String]) throws -> Invocation {
         throw UsageError(message: "--progress must be auto, plain or none")
       }
       progress = raw
+    case "--principal":
+      guard principal == nil else { throw UsageError(message: "Duplicate --principal") }
+      principal = try value(for: "--principal")
+    case "--scope":
+      scopes.append(try value(for: "--scope"))
+    case "--expires-in":
+      guard expiresIn == nil else { throw UsageError(message: "Duplicate --expires-in") }
+      guard let parsed = ServerAdministration.expiry(try value(for: "--expires-in")) else {
+        throw UsageError(
+          message: "--expires-in must be a count with s, m, h or d, from 1 minute to 3650 days")
+      }
+      expiresIn = parsed
+    case "--output":
+      guard output == nil else { throw UsageError(message: "Duplicate --output") }
+      let raw = try value(for: "--output")
+      guard isAbsolute(raw) else { throw UsageError(message: "--output requires an absolute path") }
+      output = raw
+    case "--name":
+      guard name == nil else { throw UsageError(message: "Duplicate --name") }
+      name = try value(for: "--name")
+    case "--address":
+      addresses.append(try value(for: "--address"))
+    case "--server-certificate":
+      guard serverCertificate == nil else {
+        throw UsageError(message: "Duplicate --server-certificate")
+      }
+      let raw = try value(for: "--server-certificate")
+      guard isAbsolute(raw) else {
+        throw UsageError(message: "--server-certificate requires an absolute path")
+      }
+      serverCertificate = raw
+    case "--bind-address":
+      guard gateway.bindAddress == nil else {
+        throw UsageError(message: "Duplicate --bind-address")
+      }
+      gateway.bindAddress = try value(for: "--bind-address")
+    case "--port":
+      guard gateway.port == nil else { throw UsageError(message: "Duplicate --port") }
+      let raw = try value(for: "--port")
+      guard raw.utf8.count <= 5, raw.utf8.allSatisfy({ (48...57).contains($0) }),
+        let parsed = Int(raw), (1...65_535).contains(parsed)
+      else { throw UsageError(message: "--port must be an integer from 1 to 65535") }
+      gateway.port = parsed
+    case "--advertised-url":
+      guard gateway.advertisedURL == nil else {
+        throw UsageError(message: "Duplicate --advertised-url")
+      }
+      gateway.advertisedURL = try value(for: "--advertised-url")
+    case "--certificate-file":
+      guard gateway.certificateFile == nil else {
+        throw UsageError(message: "Duplicate --certificate-file")
+      }
+      let raw = try value(for: "--certificate-file")
+      guard isAbsolute(raw) else {
+        throw UsageError(message: "--certificate-file requires an absolute path")
+      }
+      gateway.certificateFile = raw
+    case "--key-file":
+      guard gateway.keyFile == nil else { throw UsageError(message: "Duplicate --key-file") }
+      let raw = try value(for: "--key-file")
+      guard isAbsolute(raw) else {
+        throw UsageError(message: "--key-file requires an absolute path")
+      }
+      gateway.keyFile = raw
     default:
       if token.hasPrefix("-") { throw UsageError(message: "Unknown flag \(token)") }
       positionals.append(token)
@@ -329,6 +456,62 @@ private func parse(_ arguments: [String]) throws -> Invocation {
     command = .start(
       remote: remote ?? MacusCLI.defaultRemoteName, setDefault: setDefault, incus: incusOverride,
       progress: ProgressSelection(rawValue: progress ?? "auto") ?? .auto)
+  } else if positionals == ["server", "config", "show"] {
+    command = .serverConfigShow
+  } else if positionals == ["server", "config", "set"] {
+    guard !gateway.isEmpty else {
+      throw UsageError(
+        message:
+          "server config set requires --bind-address, --port, --advertised-url or --certificate-file with --key-file"
+      )
+    }
+    guard (gateway.certificateFile == nil) == (gateway.keyFile == nil) else {
+      throw UsageError(message: "--certificate-file and --key-file are given together")
+    }
+    command = .serverConfigSet(gateway)
+  } else if positionals == ["server", "config", "reset"] {
+    command = .serverConfigReset
+  } else if positionals == ["server", "token", "issue"] {
+    guard let principal else {
+      throw UsageError(message: "server token issue requires --principal")
+    }
+    guard let output else {
+      throw UsageError(
+        message: "server token issue requires --output, a new private file for the token")
+    }
+    guard !scopes.isEmpty else {
+      throw UsageError(message: "server token issue requires at least one --scope")
+    }
+    command = .serverTokenIssue(
+      principal: principal, scopes: scopes, expiresIn: expiresIn, output: output)
+  } else if positionals == ["server", "token", "list"] {
+    command = .serverTokenList
+  } else if positionals.count == 4, positionals.prefix(3) == ["server", "token", "revoke"] {
+    command = .serverTokenRevoke(id: positionals[3])
+  } else if positionals == ["server", "trust", "token", "issue"] {
+    guard let name else {
+      throw UsageError(message: "server trust token issue requires --name")
+    }
+    guard !addresses.isEmpty else {
+      throw UsageError(
+        message: "server trust token issue requires --address, a HOST:PORT the client can reach")
+    }
+    guard let serverCertificate else {
+      throw UsageError(
+        message: "server trust token issue requires --server-certificate, the gateway certificate")
+    }
+    guard let output else {
+      throw UsageError(
+        message: "server trust token issue requires --output, a new private file for the token")
+    }
+    command = .serverTrustTokenIssue(
+      name: name, addresses: addresses, serverCertificate: serverCertificate,
+      expiresIn: expiresIn ?? TrustTokenStore.defaultLifetime, output: output)
+  } else if positionals == ["server", "trust", "token", "list"] {
+    command = .serverTrustTokenList
+  } else if positionals.count == 5, positionals.prefix(4) == ["server", "trust", "token", "revoke"]
+  {
+    command = .serverTrustTokenRevoke(id: positionals[4])
   } else if positionals == ["list"] || positionals.first == "show" {
     throw UsageError(
       message:
@@ -358,14 +541,58 @@ private func parse(_ arguments: [String]) throws -> Invocation {
       throw UsageError(message: "--progress is only valid with start")
     }
   }
+  if principal != nil || !scopes.isEmpty {
+    if case .serverTokenIssue = command {
+    } else {
+      throw UsageError(message: "--principal and --scope are only valid with server token issue")
+    }
+  }
+  if name != nil || !addresses.isEmpty || serverCertificate != nil {
+    if case .serverTrustTokenIssue = command {
+    } else {
+      throw UsageError(
+        message:
+          "--name, --address and --server-certificate are only valid with server trust token issue"
+      )
+    }
+  }
+  if !gateway.isEmpty {
+    if case .serverConfigSet = command {
+    } else {
+      throw UsageError(
+        message:
+          "--bind-address, --port, --advertised-url, --certificate-file and --key-file are only valid with server config set"
+      )
+    }
+  }
+  if expiresIn != nil || output != nil {
+    switch command {
+    case .serverTokenIssue, .serverTrustTokenIssue: break
+    default:
+      throw UsageError(
+        message:
+          "--expires-in and --output are only valid with server token issue and server trust token issue"
+      )
+    }
+  }
+  switch command {
+  case .serverConfigShow, .serverConfigSet, .serverConfigReset, .serverTokenIssue,
+    .serverTokenList, .serverTokenRevoke, .serverTrustTokenIssue, .serverTrustTokenList,
+    .serverTrustTokenRevoke:
+    // Local administration has no request deadline to bound.
+    guard timeout == nil else {
+      throw UsageError(message: "server commands do not accept --timeout")
+    }
+  default: break
+  }
   return Invocation(
     stateDirectory: stateDirectory, json: json, timeout: timeout, command: command)
 }
 
 private func execute(
   _ command: Command, directory: URL, timeout: Int, json: Bool, environment: [String: String],
-  transport: any LocalHTTPTransport, runner: any LocalCommandRunner, streams: MacusStreams,
-  overrides: StartupOverrides
+  transport: any LocalHTTPTransport, gateway: any GatewayTransport,
+  runner: any LocalCommandRunner, streams: MacusStreams, overrides: StartupOverrides
 ) async throws {
   let presentation = HumanPresentation(streams: streams, environment: environment)
   switch command {
@@ -383,36 +610,35 @@ private func execute(
       presentation.capabilities(try jsonObject(data))
     }
   case .runtimeStatus:
-    let response = try await control(
-      "GET", "/v1/runtime/status", Data(), directory: directory, timeout: timeout,
-      transport: transport)
+    let response = try await gatewayRequest(
+      "GET", "/runtime/status", directory: directory, timeout: timeout, transport: gateway)
     if json {
       streams.writeOutput(try jsonText(jsonObject(response.body)))
     } else {
       presentation.runtime(try jsonObject(response.body), directory: directory)
     }
   case .runtimeStart:
-    let response = try await control(
-      "POST", "/v1/runtime/start", Data(), directory: directory, timeout: timeout,
-      transport: transport)
+    let response = try await gatewayRequest(
+      "POST", "/runtime/start", directory: directory, timeout: timeout, transport: gateway)
     if json {
       streams.writeOutput(try jsonText(jsonObject(response.body)))
     } else {
       presentation.runtime(try jsonObject(response.body), directory: directory)
     }
   case .runtimeStop(let force):
-    let response = try await control(
-      "POST", "/v1/runtime/stop", try jsonData(["force": force]), directory: directory,
-      timeout: timeout, transport: transport)
+    // The public API asks for an explicit confirmation of a forced stop.
+    let body: [String: Any] = force ? ["force": true, "confirm": "force-stop"] : ["force": false]
+    let response = try await gatewayRequest(
+      "POST", "/runtime/stop", try jsonData(body), directory: directory, timeout: timeout,
+      transport: gateway)
     if json {
       streams.writeOutput(try jsonText(jsonObject(response.body)))
     } else {
       presentation.runtime(try jsonObject(response.body), directory: directory)
     }
   case .runtimeRestart:
-    let response = try await control(
-      "POST", "/v1/runtime/restart", Data(), directory: directory, timeout: timeout,
-      transport: transport)
+    let response = try await gatewayRequest(
+      "POST", "/runtime/restart", directory: directory, timeout: timeout, transport: gateway)
     if json {
       streams.writeOutput(try jsonText(jsonObject(response.body)))
     } else {
@@ -423,28 +649,51 @@ private func execute(
       runner: overrides.runner ?? runner, streams: streams, environment: environment
     ).setup(
       remote: remote, setDefault: setDefault, incusOverride: incus, directory: directory,
-      timeout: timeout, transport: transport)
+      timeout: timeout, gateway: gateway)
     let object = clientResultObject(result)
     if json { streams.writeOutput(try jsonText(object)) } else { presentation.client(result) }
   case .doctor:
     try await doctor(
-      directory: directory, timeout: timeout, json: json, transport: transport, streams: streams,
+      directory: directory, timeout: timeout, json: json, gateway: gateway, streams: streams,
       presentation: presentation)
   case .start(let remote, let setDefault, let incus, let progress):
     try await runStart(
       directory: directory, remote: remote, setDefault: setDefault, incusOverride: incus,
       progress: progress, timeout: timeout, json: json, environment: environment,
-      transport: transport, runner: runner, streams: streams, overrides: overrides)
+      transport: transport, gateway: gateway, runner: runner, streams: streams,
+      overrides: overrides)
+  case .serverConfigShow:
+    try ServerAdministration.showConfiguration(
+      directory: directory, json: json, streams: streams, presentation: presentation)
+  case .serverConfigSet(let change):
+    try ServerAdministration.setConfiguration(
+      change, directory: directory, json: json, streams: streams, presentation: presentation)
+  case .serverConfigReset:
+    try ServerAdministration.resetConfiguration(
+      directory: directory, json: json, streams: streams, presentation: presentation)
+  case .serverTokenIssue(let principal, let scopes, let expiresIn, let output):
+    try ServerAdministration.issue(
+      principal: principal, scopes: scopes, expiresIn: expiresIn, output: output,
+      directory: directory, json: json, streams: streams, presentation: presentation)
+  case .serverTokenList:
+    try ServerAdministration.list(
+      directory: directory, json: json, streams: streams, presentation: presentation)
+  case .serverTokenRevoke(let id):
+    try ServerAdministration.revoke(
+      id: id, directory: directory, json: json, streams: streams, presentation: presentation)
+  case .serverTrustTokenIssue(
+    let name, let addresses, let serverCertificate, let expiresIn, let output):
+    try ServerAdministration.issueTrustToken(
+      name: name, addresses: addresses, serverCertificate: serverCertificate,
+      expiresIn: expiresIn, output: output, directory: directory, json: json, streams: streams,
+      presentation: presentation)
+  case .serverTrustTokenList:
+    try ServerAdministration.listTrustTokens(
+      directory: directory, json: json, streams: streams, presentation: presentation)
+  case .serverTrustTokenRevoke(let id):
+    try ServerAdministration.revokeTrustToken(
+      id: id, directory: directory, json: json, streams: streams, presentation: presentation)
   }
-}
-
-private func control(
-  _ method: String, _ path: String, _ body: Data, directory: URL, timeout: Int,
-  transport: any LocalHTTPTransport
-) async throws -> LocalHTTPResponse {
-  let socket = try socketURL(directory.appendingPathComponent("runtime.sock"))
-  return try await send(
-    socket: socket, method: method, path: path, body: body, timeout: timeout, transport: transport)
 }
 
 private func clientResultObject(_ result: IncusSetupResult) -> [String: Any] {
@@ -475,30 +724,26 @@ private func isRemoteByte(_ byte: UInt8) -> Bool {
 }
 
 private func doctor(
-  directory: URL, timeout: Int, json: Bool, transport: any LocalHTTPTransport,
+  directory: URL, timeout: Int, json: Bool, gateway: any GatewayTransport,
   streams: MacusStreams,
   presentation: HumanPresentation
 ) async throws {
-  let socket = try socketURL(directory.appendingPathComponent("runtime.sock"))
-  let statusResponse = try await send(
-    socket: socket, method: "GET", path: "/v1/runtime/status", body: Data(), timeout: timeout,
-    transport: transport)
+  let statusResponse = try await gatewayRequest(
+    "GET", "/runtime/status", directory: directory, timeout: timeout, transport: gateway)
   let status = try jsonObject(statusResponse.body)
   var capabilities: [String: Any]?
   var health: [String: Any]?
   var observations: [String: String] = [:]
   do {
-    let response = try await send(
-      socket: socket, method: "GET", path: "/v1/runtime/capabilities",
-      body: Data(), timeout: timeout, transport: transport)
+    let response = try await gatewayRequest(
+      "GET", "/runtime/capabilities", directory: directory, timeout: timeout, transport: gateway)
     capabilities = try jsonObject(response.body)
   } catch {
     observations["host"] = (error as? RuntimeError)?.message ?? error.localizedDescription
   }
   do {
-    let response = try await send(
-      socket: socket, method: "GET", path: "/v1/runtime/health",
-      body: Data(), timeout: timeout, transport: transport)
+    let response = try await gatewayRequest(
+      "GET", "/runtime/health", directory: directory, timeout: timeout, transport: gateway)
     health = try jsonObject(response.body)
   } catch {
     observations["guest"] = (error as? RuntimeError)?.message ?? error.localizedDescription
@@ -551,26 +796,6 @@ private func readinessError(
     )
   }
   return nil
-}
-
-private func send(
-  socket: URL, method: String, path: String, body: Data, timeout: Int,
-  transport: any LocalHTTPTransport
-) async throws -> LocalHTTPResponse {
-  let response = try await transport.request(
-    socket: socket, method: method, path: path, body: body, timeout: timeout)
-  guard (200...299).contains(response.status) else {
-    throw responseFailure(status: response.status, body: response.body)
-  }
-  return response
-}
-
-private func socketURL(_ url: URL) throws -> URL {
-  guard url.isFileURL, url.path.hasPrefix("/"), url.path.utf8.count < 104 else {
-    throw RuntimeError(
-      .invalidConfiguration, "Unix socket path exceeds 103 bytes; choose a shorter state directory")
-  }
-  return url
 }
 
 func responseFailure(status: Int, body: Data) -> RuntimeError {

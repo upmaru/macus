@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Signed CLI presentation acceptance. Fixture sockets only; never starts a VM."""
+"""Signed CLI presentation acceptance. Fixture sockets and a fixture HTTPS server only; never starts a VM."""
 import argparse
+import hashlib
 import errno
 import fcntl
 import json
@@ -12,6 +13,7 @@ import unicodedata
 import select
 import signal
 import socket
+import ssl
 import struct
 import subprocess
 import tempfile
@@ -133,20 +135,59 @@ class RuntimeFixture:
         self.incus = socket.socket(socket.AF_UNIX)
         self.incus.bind(str(root / 'incus.sock'))
         os.chmod(root / 'incus.sock', 0o600)
-        self.thread = threading.Thread(target=self.accept, daemon=True)
+        self.thread = threading.Thread(target=self.accept, args=(self.listener, None), daemon=True)
         self.thread.start()
+        self.publish_gateway()
 
-    def accept(self):
+    def publish_gateway(self):
+        """Stand in for the Macus server: TLS 1.3 on loopback, the public /runtime API behind the
+        local CLI credential, and the owner-private endpoint metadata the CLI pins."""
+        server = self.root / 'server'
+        server.mkdir(mode=0o700)
+        key, cert = server / 'fixture.key', server / 'fixture.crt'
+        subprocess.run(['/usr/bin/openssl', 'req', '-x509', '-newkey', 'rsa:2048',
+                        '-nodes', '-keyout', str(key), '-out', str(cert), '-days', '2', '-subj', '/CN=127.0.0.1',
+                        '-addext', 'subjectAltName=IP:127.0.0.1'], check=True, capture_output=True)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_3
+        context.load_cert_chain(cert, key)
+        self.tls = context
+        self.gateway = socket.socket(socket.AF_INET)
+        self.gateway.bind(('127.0.0.1', 0))
+        self.gateway.listen(16)
+        self.gateway.settimeout(0.1)
+        self.url = f'https://127.0.0.1:{self.gateway.getsockname()[1]}'
+        pem = cert.read_text()
+        self.fingerprint = hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem)).hexdigest()
+        metadata = {'schema_version': 1, 'url': self.url, 'addresses': ['127.0.0.1'], 'listen': '127.0.0.1',
+                    'certificate': pem, 'certificate_fingerprint': self.fingerprint, 'pid': str(os.getpid()),
+                    'started_at': '2026-11-19T00:00:00Z', 'build': {'version': 'fixture', 'revision': '0' * 40}}
+        for name, content in [('endpoint.json', json.dumps(metadata)),
+                              ('local-cli.token', 'macus.0123456789abcdef.' + 'A' * 43 + '\n')]:
+            descriptor = os.open(server / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, 'w') as handle:
+                handle.write(content)
+        self.gateway_thread = threading.Thread(target=self.accept, args=(self.gateway, context), daemon=True)
+        self.gateway_thread.start()
+
+    def accept(self, listener, tls):
         while not self.stop.is_set():
             try:
-                client, _ = self.listener.accept()
+                client, _ = listener.accept()
             except socket.timeout:
                 continue
             except OSError:
                 return
-            threading.Thread(target=self.respond, args=(client,), daemon=True).start()
+            threading.Thread(target=self.respond, args=(client, tls), daemon=True).start()
 
-    def respond(self, client):
+    def respond(self, client, tls=None):
+        if tls is not None:
+            try:
+                client.settimeout(3)
+                client = tls.wrap_socket(client, server_side=True)
+            except (ssl.SSLError, OSError):
+                client.close()
+                return
         with client:
             client.settimeout(3)
             data = b''
@@ -162,9 +203,19 @@ class RuntimeFixture:
             while len(body) < length:
                 body += client.recv(4096)
             self.calls.append([method, path])
+            public = tls is not None
+            if public:
+                # The public API: /runtime/* only, behind the credential macus start keeps.
+                token = (self.root / 'server' / 'local-cli.token').read_text().strip()
+                headers = {line.split(b':', 1)[0].strip().lower(): line.split(b':', 1)[1].strip()
+                           for line in head.split(b'\r\n')[1:] if b':' in line}
+                assert path.startswith('/runtime/'), (method, path)
+                if headers.get(b'authorization', b'').decode() != f'Bearer {token}':
+                    self.send(client, 401, {'error': {'code': 'unauthorized', 'message': 'invalid token'}})
+                    return
             status = 200
             if method == 'POST':
-                assert path == '/v1/runtime/start', (method, path)
+                assert path == ('/runtime/start' if public else '/v1/runtime/start'), (method, path)
                 self.dispatched.set()
                 mode = self.mode
                 if mode in ('timeout', 'cancellation'):
@@ -177,7 +228,7 @@ class RuntimeFixture:
                     status, obj = 504, {'error': {'code': 'timeout', 'message': 'Fixture runtime wait exceeded deadline'}}
                 else:
                     self.state = 'ready'
-                    obj = self.status()
+                    obj = self.status(public)
             elif path.endswith('/capabilities'):
                 obj = {'platform': 'darwin', 'architecture': 'arm64', 'virtualization': 'apple-vz',
                        'supported': True, 'incus': {'available': True, 'version': 'fixture'},
@@ -189,23 +240,35 @@ class RuntimeFixture:
                 obj = {'api_version': 1, 'state': self.state, 'ready': self.state == 'ready',
                        'phase': 'packages', 'expected_reboot': True, 'elapsed_seconds': 2}
             else:
-                obj = self.status()
-            payload = json.dumps(obj).encode()
-            reply = f'HTTP/1.1 {status} OK\r\nContent-Length: {len(payload)}\r\nConnection: close\r\n\r\n'.encode() + payload
-            try:
-                client.sendall(reply)
-            except (BrokenPipeError, ConnectionResetError):
-                pass
+                obj = self.status(public)
+            self.send(client, status, obj)
 
-    def status(self):
+    @staticmethod
+    def send(client, status, obj):
+        payload = json.dumps(obj).encode()
+        reply = f'HTTP/1.1 {status} OK\r\nContent-Length: {len(payload)}\r\nConnection: close\r\n\r\n'.encode() + payload
+        try:
+            client.sendall(reply)
+        except (BrokenPipeError, ConnectionResetError, ssl.SSLError):
+            pass
+
+    def status(self, public=False):
+        if public:
+            # As the server projects it: no private socket path.
+            endpoint = {'url': self.url, 'certificate_fingerprint': self.fingerprint}
+            return {'api_version': 1, 'state': self.state, 'uptime_seconds': 72, 'last_error': None,
+                    'server_endpoint': endpoint, 'incus_endpoint': endpoint, 'server_ready': True,
+                    'runtime_ready': self.state == 'ready'}
         return {'api_version': 1, 'state': self.state, 'incus_socket': str(self.root / 'incus.sock'),
                 'uptime_seconds': 72, 'last_error': None}
 
     def close(self):
         self.stop.set()
         self.listener.close()
+        self.gateway.close()
         self.incus.close()
         self.thread.join(2)
+        self.gateway_thread.join(2)
 
 
 def invoke(binary, arguments, env, interactive=False, interrupt=None, translate_newlines=True):
@@ -337,7 +400,20 @@ def main():
             (state / 'runtime' / name).write_text('disk-sentinel')
         (state / 'config.json').write_text(json.dumps({'appliance_manifest_path': str(root / 'manifest.json')}))
         client = root / 'incus fixture'
-        client.write_text('#!/bin/sh\ncase "$*" in\n"remote list --format json") echo "{}";;\n"remote get-default") echo local;;\n*) exit 0;;\nesac\n')
+        client_cert = root / 'client.crt'
+        subprocess.run(['/usr/bin/openssl', 'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1',
+                        '-nodes', '-keyout', str(root / 'client.key'), '-out', str(client_cert), '-days', '2',
+                        '-subj', '/CN=incus-fixture'], check=True, capture_output=True)
+        # The standard client's side of setup: its certificate, token enrollment, and a trusted /1.0
+        # presenting the fixture gateway's certificate.
+        server_info = ('import json, sys; print(json.dumps({"auth": "trusted", '
+                       '"environment": {"certificate": open(sys.argv[1]).read()}}))')
+        client.write_text('#!/bin/sh\ncase "$*" in\n'
+                          '"remote list --format json") echo "{}";;\n'
+                          '"remote get-default") echo local;;\n'
+                          f'"remote get-client-certificate") cat "{client_cert}";;\n'
+                          f'"query "*":/1.0") /usr/bin/python3 -c \'{server_info}\' "$MACUS_STATE_DIR/server/fixture.crt";;\n'
+                          '*) exit 0;;\nesac\n')
         client.chmod(0o700)
         config_before = (state / 'config.json').read_bytes()
         env = dict(os.environ, TERM='xterm-256color', NO_COLOR='', MACUS_STATE_DIR=str(state), MACUS_BREW_FALLBACK='0')

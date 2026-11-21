@@ -81,12 +81,12 @@ import Testing
   }
   let envResult = try await runMacus(
     ["--json", "--timeout", "2", "runtime", "status"],
-    environment: ["MACUS_STATE_DIR": fromEnv.socket.directory.path])
+    environment: ["MACUS_STATE_DIR": fromEnv.directory.path])
   let flagResult = try await runMacus(
     [
-      "--state-dir", fromFlag.socket.directory.path, "--json", "--timeout", "2", "runtime",
+      "--state-dir", fromFlag.directory.path, "--json", "--timeout", "2", "runtime",
       "status",
-    ], environment: ["MACUS_STATE_DIR": fromEnv.socket.directory.path])
+    ], environment: ["MACUS_STATE_DIR": fromEnv.directory.path])
   #expect(envResult.status == 0)
   #expect(flagResult.status == 0)
   #expect(try jsonValue(envResult.stdout)["state"] as? String == "from-env")
@@ -149,16 +149,15 @@ import Testing
 }
 
 @Test func runtimeJSONExitCodesForceConflictAndTimeout() async throws {
-  let server = try ScriptedSocket(name: "runtime.sock") { method, path, _ in
-    if method == "POST", path == "/v1/runtime/start" {
+  let server = try ScriptedGateway { method, path, _ in
+    if method == "POST", path == "/runtime/start" {
       return mustJSON(
         409, errorObject(code: "conflict", message: "A runtime mutation is already in progress"))
     }
-    return mustJSON(
-      200, statusObject(state: method == "POST" ? "stopped" : "ready", incus: "/tmp/incus.sock"))
+    return mustJSON(200, publicStatus(state: method == "POST" ? "stopped" : "ready"))
   }
   defer { server.stop() }
-  let directory = server.socket.directory.path
+  let directory = server.directory.path
   let status = try await runMacus([
     "--state-dir", directory, "--json", "--timeout", "2", "runtime", "status",
   ])
@@ -178,9 +177,10 @@ import Testing
     ["--state-dir", directory, "runtime", "stop", "--force", "--timeout", "2"])
   let plain = try await runMacus(["--state-dir", directory, "--timeout", "2", "runtime", "stop"])
   #expect(forced.status == 0 && plain.status == 0)
-  let bodies = server.requests().filter { $0.path == "/v1/runtime/stop" }.map(\.body)
-  #expect(bodies.contains(Data("{\"force\":true}".utf8)))
-  #expect(bodies.contains(Data("{\"force\":false}".utf8)))
+  let bodies = server.requests().filter { $0.path == "/runtime/stop" }.map(\.body)
+  // The public API needs the explicit forced-stop confirmation.
+  #expect(bodies.contains(Data(#"{"confirm":"force-stop","force":true}"#.utf8)))
+  #expect(bodies.contains(Data(#"{"force":false}"#.utf8)))
 
   server.delay = 3
   let started = ContinuousClock.now
@@ -194,18 +194,18 @@ import Testing
 }
 
 @Test func doctorDoesNotInstallOrBoot() async throws {
-  let stoppedRuntime = try ScriptedSocket(name: "runtime.sock") { _, path, _ in
-    if path == "/v1/runtime/status" {
-      return mustJSON(200, statusObject(state: "stopped", incus: "/tmp/unused.sock"))
+  let stoppedRuntime = try ScriptedGateway { _, path, _ in
+    if path == "/runtime/status" {
+      return mustJSON(200, publicStatus(state: "stopped"))
     }
-    if path == "/v1/runtime/capabilities" {
+    if path == "/runtime/capabilities" {
       return mustJSON(200, ["supported": true])
     }
     return mustJSON(503, errorObject(code: "unavailable", message: "Incus is not ready"))
   }
   // The first runtime socket was removed with its directory. Use a new state directory.
   defer { stoppedRuntime.stop() }
-  let stoppedDir = stoppedRuntime.socket.directory.path
+  let stoppedDir = stoppedRuntime.directory.path
   let doctor = try await runMacus(["--state-dir", stoppedDir, "--json", "--timeout", "2", "doctor"])
   #expect(doctor.status == 1)
   #expect(try jsonValue(doctor.stdout)["status"] != nil)
@@ -223,34 +223,39 @@ import Testing
 @Test func defaultTimeoutsAreAppliedWithoutWaitingForLifecycle() async throws {
   let transport = RecordingTransport()
   let output = OutputCapture()
+  let state = URL(fileURLWithPath: "/tmp/macusdt\(UUID().uuidString.prefix(8))")
+  try FileManager.default.createDirectory(
+    at: state, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+  defer { try? FileManager.default.removeItem(at: state) }
+  try writeGatewayState(
+    directory: state, url: "https://127.0.0.1:8443",
+    fingerprint: String(repeating: "0", count: 64))
   let status = await MacusCLI.run(
-    arguments: ["runtime", "status"], environment: ["MACUS_STATE_DIR": "/tmp/macus-defaults"],
-    transport: transport, streams: output.streams)
+    arguments: ["runtime", "status"], environment: ["MACUS_STATE_DIR": state.path],
+    gateway: transport, streams: output.streams)
   let start = await MacusCLI.run(
-    arguments: ["runtime", "start"], environment: ["MACUS_STATE_DIR": "/tmp/macus-defaults"],
-    transport: transport, streams: output.streams)
+    arguments: ["runtime", "start"], environment: ["MACUS_STATE_DIR": state.path],
+    gateway: transport, streams: output.streams)
   let override = await MacusCLI.run(
     arguments: ["--timeout", "3", "runtime", "restart"],
-    environment: ["MACUS_STATE_DIR": "/tmp/macus-defaults"], transport: transport,
+    environment: ["MACUS_STATE_DIR": state.path], gateway: transport,
     streams: output.streams)
   let setup = await MacusCLI.run(
     arguments: ["client", "setup"],
     environment: [
-      "MACUS_STATE_DIR": "/tmp/macus-defaults", "MACUS_BREW_FALLBACK": "0", "PATH": "/usr/bin:/bin",
-    ], transport: transport, streams: output.streams)
+      "MACUS_STATE_DIR": state.path, "MACUS_BREW_FALLBACK": "0", "PATH": "/usr/bin:/bin",
+    ], gateway: transport, streams: output.streams)
   #expect(status == 0 && start == 0 && override == 0 && setup == 1)
   #expect(
-    transport.timeouts(for: "/v1/runtime/status") == [
+    transport.timeouts(for: "/runtime/status") == [
       MacusCLI.readOnlyTimeout, MacusCLI.lifecycleTimeout,
     ])
-  #expect(transport.timeouts(for: "/v1/runtime/start") == [MacusCLI.lifecycleTimeout])
-  #expect(transport.timeouts(for: "/v1/runtime/restart") == [3])
+  #expect(transport.timeouts(for: "/runtime/start") == [MacusCLI.lifecycleTimeout])
+  #expect(transport.timeouts(for: "/runtime/restart") == [3])
 }
 
-private func scriptedRuntime(state: String) throws -> ScriptedSocket {
-  try ScriptedSocket(name: "runtime.sock") { _, _, _ in
-    mustJSON(200, statusObject(state: state, incus: "/tmp/incus.sock"))
-  }
+private func scriptedRuntime(state: String) throws -> ScriptedGateway {
+  try ScriptedGateway { _, _, _ in mustJSON(200, publicStatus(state: state)) }
 }
 
 private func jsonValue(_ text: String) throws -> [String: Any] {
@@ -261,17 +266,16 @@ private func jsonValue(_ text: String) throws -> [String: Any] {
   return object
 }
 
-private final class RecordingTransport: LocalHTTPTransport, @unchecked Sendable {
+private final class RecordingTransport: GatewayTransport, @unchecked Sendable {
   private let lock = NSLock()
   private var calls: [(String, Int)] = []
-  func request(socket: URL, method: String, path: String, body: Data, timeout: Int) async throws
-    -> LocalHTTPResponse
-  {
+  func request(
+    _ endpoint: GatewayEndpoint, method: String, path: String, body: Data, timeout: Int
+  ) async throws -> LocalHTTPResponse {
     record(path, timeout)
     return LocalHTTPResponse(
       status: 200,
-      body: try JSONSerialization.data(
-        withJSONObject: statusObject(state: "stopped", incus: "/tmp/incus.sock")))
+      body: try JSONSerialization.data(withJSONObject: publicStatus(state: "stopped")))
   }
   func timeouts(for path: String) -> [Int] {
     lock.lock()

@@ -16,11 +16,38 @@ runtime restart
 doctor
 client setup [--remote NAME] [--set-default] [--incus ABSOLUTE_PATH]
 start [--remote NAME] [--set-default] [--incus ABSOLUTE_PATH] [--progress auto|plain|none]
+server config show
+server config set [--bind-address IP] [--port PORT] [--advertised-url URL]
+                  [--certificate-file ABSOLUTE_PATH --key-file ABSOLUTE_PATH]
+server config reset
+server token issue --principal NAME --scope SCOPE [--scope SCOPE ...]
+                   [--expires-in DURATION] --output ABSOLUTE_PATH
+server token list
+server token revoke ID
+server trust token issue --name NAME --address HOST:PORT [--address HOST:PORT ...]
+                         --server-certificate ABSOLUTE_PATH [--expires-in DURATION]
+                         --output ABSOLUTE_PATH
+server trust token list
+server trust token revoke ID
 ```
+
+The `server` commands are owner-local administration of `<state-dir>/server/`: the gateway listener configuration, bearer tokens and certificate enrollment tokens. They require an existing state directory, never start or restart a service, contact the runtime or Incus, or touch VM disks, do not accept `--timeout`, and never print a token. `macus start` also prepares the local CLI's own runtime token once in `<state-dir>/server/local-cli.token`. See [the Macus server](server.md) for HTTPS configuration, gateway trust and credential rotation.
 
 `macus` and `macus --help` print this contract and exit 0. For client commands, global flags may appear around the command. `macus serve` runs the foreground daemon and accepts only its optional `--state-dir` after `serve`; `macus capabilities` reports host capabilities without contacting the daemon or booting a guest. Serve does not accept JSON/timeout flags. Capabilities accepts only `--json`, before or after the command; its default output is human-readable. Scripts that previously parsed unflagged capabilities must request `macus capabilities --json` or `macus --json capabilities` to retain the existing HostCapabilities object. `--force` is valid only on `runtime stop`. `--remote`, `--set-default` and `--incus` are valid on `start` and `client setup`. `--progress` is valid only on `start`. `list`, `show` and other workload commands fail before networking or installation. The default remote name is `macus`. `--incus` must be an absolute executable and skips PATH and Homebrew; it is the isolated-acceptance hook.
 
-`start` is the high-level first-use command. It validates the host, entitlement and Incus/Homebrew prerequisite, acquires the pinned Alpine appliance, prepares its seed, activates a per-user background service when no compatible daemon exists, creates an absent runtime, waits through the expected kernel restart, and registers the standard Incus client. `serve`, `runtime`, `doctor` and `client setup` stay explicit lower-level commands. They do not download an appliance or activate a service. `runtime start` still fails when the runtime has not been created and does not provision an absent installation.
+`start` is the high-level first-use command. It validates the host, entitlement and Incus/Homebrew prerequisite, acquires the pinned Alpine appliance, prepares its seed, activates the per-user background services when no compatible ones are serving, creates an absent runtime, waits through the expected kernel restart, and registers the standard Incus client. `serve`, `runtime`, `doctor` and `client setup` stay explicit lower-level commands. They do not download an appliance or activate a service. `runtime start` still fails when the runtime has not been created and does not provision an absent installation.
+
+### Service pair
+
+Each state has two per-user launchd jobs: `com.upmaru.macus` runs `<prefix>/bin/macus serve --state-dir STATE` (the Swift daemon that owns the VM), and `com.upmaru.macus.server` runs the bundled-ERTS release launcher `<prefix>/libexec/macus/bin/macus start` in the foreground with `MACUS_STATE_DIR=STATE`, `MACUS_SERVE=1`, `RELEASE_DISTRIBUTION=none` and `MACUS_EXPECTED_REVISION` (this executable's source revision, which the release's own build must equal before it serves) in its environment. A Homebrew installation registers both through the stable `opt/macus` link. The default state uses those labels with plists in `~/Library/LaunchAgents`. Any other state gets the same state-hash suffix on both labels (`com.upmaru.macus.<hash>`, `com.upmaru.macus.server.<hash>`), keeps both plists in `STATE/launchd/` so neither is loaded at login, and leaves the default jobs untouched. Logs are `STATE/logs/service.*.log` and `STATE/logs/server.*.log`.
+
+Before starting or creating either job, `start` reads both from `launchctl print`. Each job's actual program, full arguments and, for the server, its environment's selected state and serve flag must match; otherwise start fails with `conflict` and preserves the plist and runtime data. A plist that targets the state through its arguments or `MACUS_STATE_DIR`/`TIM_STATE_DIR`, but is a legacy job or outside the `com.upmaru.macus` namespace, is also a conflict. No third job (Opsmaru or other) is ever created. A matching running job is waited for, a matching stopped job is kickstarted alone, and an absent one is bootstrapped, Swift first. Recovering the server job never stops or restarts the Swift job or the VM. A foreground `macus serve` is reused as before. A server already answering an authenticated `/runtime/status` on the state's pinned published endpoint is reused outside launchd; a port that merely accepts connections is not. A server job registered by another package revision (only its `MACUS_EXPECTED_REVISION` differs) is a `conflict` that names the `launchctl bootout` and plist removal to perform; start never replaces it.
+
+No `macus` command stops or unloads the pair. Before changing the package, run `runtime stop`, unload the server job and then the Swift job with `launchctl bootout`, and remove the server job's plist (both plists for removal). [Upgrade, rollback and removal](../Packaging/homebrew/README.md#upgrade-rollback-and-removal) gives the exact sequence and what it keeps: runtime disks, server credentials and the Incus client configuration.
+
+Before any appliance download, job activation or guest request, start also checks the server side inside the bootstrap lock and the same deadline. The selected `server/gateway.json` (if any) must be valid and its certificate and key acceptable, as `macus server config` requires. Unless a server already serves the state outside launchd, the release that launchd would run must be paired with this executable: launcher, `releases/` and exactly one bundled `erts-*`; a `macus-build.json` at the release root (schema 1, not writable by others) whose `version` and `revision` equal this executable's embedded `MacusVersion` and `MacusSourceRevision`; and exactly one `lib/opsmaru_incus-<version>` at the version that record names, whose application resource declares it. A plain `swift build` records no identity and cannot be paired. Any mismatch fails with `invalid_configuration` and reinstall guidance; nothing is downloaded, no job is started or created and the guest is not contacted.
+
+Once both jobs serve, every lifecycle request `start` makes goes through the server's public `/runtime` API over the same pinned HTTPS endpoint and local credential as `runtime`: `POST /runtime/create` for an absent runtime, `GET /runtime/status`, `POST /runtime/start` with `{"remaining_seconds": N}` (the rest of the start deadline), `GET /runtime/progress` (including the expected kernel restart), and live readiness from `GET /runtime/health` and `GET /runtime/capabilities`. The private `runtime.sock` is only used to identify a Swift daemon that is already serving the state while the jobs are activated. If the connection to the server is lost while the boot request is outstanding, Swift may already have accepted it, so start never sends it again: it keeps reading the status through the server, within the same deadline, while the server restarts. A runtime that becomes ready completes the start. One that is no longer starting is reported as `unavailable`, so you can rerun `macus start`. An interrupt reports the runtime state the server last observed and leaves the guest running.
 
 State directory precedence is `--state-dir`, then `MACUS_STATE_DIR`, then legacy `TIM_STATE_DIR`, then `~/.tama/incus-mac`. Every selected path must be absolute. Selecting it does not create the directory. Status, doctor and lifecycle commands never run `brew` or change Incus client configuration.
 
@@ -28,13 +55,15 @@ Timeout is an integer from 1 to 3600 seconds and one monotonic deadline for each
 
 `--progress auto` animates on an interactive stderr terminal whose `TERM` is not `dumb`. Redirected stderr, `TERM=dumb`, `--progress plain` and `--json` use plain stage lines without cursor escapes. `--progress none` suppresses progress. `--json` writes one result object to stdout. Progress, when enabled, stays on stderr. Byte percentages appear only when a trustworthy total length is known. Exit 130 means start was interrupted; the command does not force-stop a daemon-owned guest.
 
+The `start --json` result keeps its fields: `ready`, `connected`, `remote`, `incus`, `installed`, `next_commands`, `state_directory`, `capabilities`, optional `path_guidance`, and `service_ownership` (`launchd` or `foreground`) with `service_label` under launchd, both describing the Swift runtime service. It adds the Elixir server's `server_ownership`, its `server_label` under launchd, and `server_endpoint` (`url` and `certificate_fingerprint`, the public endpoint the CLI pins). The human report adds a matching Server section. A start is successful only when the runtime is ready and the client is connected. Anything less exits 1 (or 130 when interrupted) with no result on stdout and the usual error object. Once both services were serving, the error message also says what start left in place: the runtime service and the server, each as its launchd label or a foreground process, and the server URL. Start never stops, unloads or replaces either job, and it activates nothing besides that pair. The failed progress row keeps the stage's own message.
+
 Exit status is 0 on success, 1 on operational failure and 2 on invalid arguments. `--json` writes the result to stdout. Operational and usage errors go to stderr as `{"error":{"code":"...","message":"..."}}` when `--json` is set. Setup installation progress also goes to stderr so the JSON result stays valid. Stable codes include `conflict`, `timeout`, `unavailable`, `invalid_configuration`, `invalid_request` and `io`.
 
 ## Outer runtime and the standard Incus CLI
 
-`runtime` commands and `doctor` describe the outer Apple VZ appliance through `/v1/runtime/*`. `runtime stop --force` sends `{"force":true}`. These commands do not list or mutate instances.
+`runtime` commands and `doctor` describe the outer Apple VZ appliance through the Macus server's public `/runtime/*` API (see [the API contract](api.md#public-runtime-api)). `runtime stop` sends `{"force":false}`; `runtime stop --force` sends `{"confirm":"force-stop","force":true}`. These commands do not list or mutate instances.
 
-`client setup` reads runtime status and continues only when API version is 1 and the outer runtime is ready. It does not boot a stopped appliance. It validates the returned `incus_socket` as a private owner-only socket, then registers `unix:<path>` with standard `incus remote` commands. It honors `INCUS_CONF`. Repeating setup for the same name and socket is idempotent. A name that already points elsewhere fails with `conflict` and is not overwritten. The default remote changes only with `--set-default`. Unrelated remotes, projects, aliases and certificates are left in place. Connectivity is `incus list <remote>:`, so instance listing stays an Incus operation.
+`client setup` reads `/runtime/status` from the Macus server and continues only when API version is 1, the outer runtime is ready and `runtime_ready` is not false. It does not boot a stopped appliance, and a stopped runtime leaves Incus client configuration, `INCUS_CONF` and gateway trust untouched. It then registers the server's public HTTPS endpoint from `server/endpoint.json` (for example `https://127.0.0.1:8443`), using only standard `incus` commands under the caller's `INCUS_CONF`; it never writes Incus configuration itself and never registers the private `incus.sock`. For a new remote it asks `incus remote get-client-certificate` for the certificate the client will present (incus creates one if there is none) and enrolls that certificate in gateway trust. Usually that means issuing an expiring (5-minute) single-use enrollment token, recorded in `server/trust-tokens.json` and bound to that certificate's SHA-256 fingerprint, and running `incus remote add NAME TOKEN`. The token names the gateway certificate, so incus checks the server before sending it. Because the token is on that command line, the server refuses it, without consuming it, from any other certificate, and setup revokes it if `incus remote add` fails. When the gateway already trusts the certificate (another remote name for the same client), setup runs `incus remote add NAME URL` and answers incus's certificate prompt with the pinned fingerprint instead of issuing a token. Either way `incus query NAME:/1.0` must then report the client trusted by a server presenting the endpoint's certificate, and `incus list NAME:` must succeed, so instance listing stays an Incus operation. Repeating setup for a remote that already names this endpoint issues nothing and only repeats those checks; if they fail (the client's trust was removed, or the remote stored an earlier server identity), setup reports it and leaves the remote alone. A name that points elsewhere fails with `conflict` and is not overwritten. A name holding a direct-socket `unix:` registration from an earlier macus is also a `conflict`: keep it and choose another `--remote`, or remove it yourself with `incus remote remove NAME` and rerun. The default remote changes only with `--set-default`. Unrelated remotes, projects, aliases and certificates are left in place.
 
 If `--incus` is omitted, setup uses an `incus` executable on `PATH`. Otherwise, when Homebrew is already installed (`PATH`, `/opt/homebrew/bin/brew` or `/usr/local/bin/brew`), it runs `brew install incus` for the official formula and discovers the binary through `brew --prefix` even if that bin directory is not on `PATH`. `HOMEBREW_NO_AUTO_UPDATE=1` is set when absent so setup does not update unrelated formulae. An existing Homebrew copy is reused without reinstalling. If Homebrew is missing, setup tells the operator to install it from https://brew.sh and does not install Homebrew, use a shell installer, sudo, another package manager or a custom tap. `MACUS_BREW_FALLBACK=0` disables the two standard Homebrew locations for tests; users should not set it.
 
@@ -42,11 +71,13 @@ Subprocesses use fixed argument arrays, preserve the relevant environment, drain
 
 ## Transport limits
 
-The client opens a new nonblocking Unix connection per control request. Headers are limited to 16 KiB and bodies to 16 MiB. It accepts content-length, chunked and connection-close bodies, and rejects ambiguous or truncated framing. Before connecting, it rejects unsafe symlink ancestry, a non-socket endpoint, and a socket or parent directory that is not mode-private and owned by the current user. The peer UID must match. These checks do not create or chmod state.
+`runtime`, `doctor` and the readiness check in `client setup` use only the published HTTPS server. The client reads `<state-dir>/server/endpoint.json` and its own credential `<state-dir>/server/local-cli.token`, both 0600 regular files owned by the current user in the 0700 `server` directory, opened without following links and with safe ancestry; it creates and repairs nothing. The endpoint must be schema version 1 with an `https` base URL (no user information, path, query or fragment) and a lowercase SHA-256 `certificate_fingerprint`. Each request sends `Authorization: Bearer` with that credential to a `/runtime/*` path only, requires TLS 1.3 and the exact leaf certificate the metadata records (checked before any request byte is sent), and uses no proxy, cache, cookies, stored credentials or redirects. A missing endpoint or credential, a refused connection or a rejected credential is `unavailable` and asks for `macus start`; the client never falls back to `runtime.sock`. Responses are limited to 16 MiB and the selected timeout is one deadline for the whole exchange.
+
+`macus start` still reaches the daemon directly, only to recognize one that is already serving, while it activates the services. It opens a new nonblocking Unix connection per control request. Headers are limited to 16 KiB and bodies to 16 MiB. It accepts content-length, chunked and connection-close bodies, and rejects ambiguous or truncated framing. Before connecting, it rejects unsafe symlink ancestry, a non-socket endpoint, and a socket or parent directory that is not mode-private and owned by the current user. The peer UID must match. These checks do not create or chmod state.
 
 ## Installation
 
-Local installation from source requires Swift and is documented in [development](development.md) and [packaging](../Packaging/README.md). It installs one release executable with the virtualization entitlement into the prefix and does not install the Incus CLI or a launch agent. `macus client setup` is the explicit later step for the standard Incus CLI. Production signed, notarized or Homebrew delivery of macus remains future work.
+Local installation from source requires Swift and Elixir/Erlang and is documented in [development](development.md) and [packaging](../Packaging/README.md). It installs the release executable with the virtualization entitlement at `<prefix>/bin/macus` and the paired Macus server release at `<prefix>/libexec/macus`, both recording one Macus version and source revision. It does not install the Incus CLI, register or activate a launch agent, or create runtime state. `macus client setup` is the explicit later step for the standard Incus CLI. On an installation without a paired release, `macus start` fails with `invalid_configuration` and reinstall guidance before any download, job activation or guest request. A server already serving the state outside launchd is the exception. The release bundles its own ERTS and the `:opsmaru_incus` library, which needs no separate install, job or activation. Production signed, notarized or Homebrew delivery of the release remains future work.
 
 `macus` replaces both legacy executable names. The existing state path and persisted formats are retained. New registrations use `macus`; pass `--remote tama-mac` to reuse the earlier default remote.
 
@@ -77,6 +108,11 @@ Service
   Ownership: Foreground
   Closing the owning terminal stops the daemon.
 
+Server
+  Ownership: Launchd
+  Label: com.upmaru.macus.server
+  Endpoint: https://127.0.0.1:8443
+
 Next steps
   incus list macus:
 ```
@@ -87,8 +123,7 @@ Macus runtime: Stopped
 Runtime
   Status: Stopped
   Uptime: 1m 12s
-  Control socket: /tmp/macus-demo/runtime.sock
-  Incus socket: /tmp/macus-demo/incus.sock
+  Server: https://127.0.0.1:8443
 
 Next steps
   macus --state-dir /tmp/macus-demo runtime start
@@ -100,7 +135,7 @@ Incus client is connected
 Client
   Connection: Connected
   Remote: macus
-  Endpoint: unix:/tmp/macus-demo/incus.sock
+  Endpoint: https://127.0.0.1:8443
   Executable: /opt/homebrew/bin/incus
   Installation: Reused existing client
   Default remote: Existing selection preserved

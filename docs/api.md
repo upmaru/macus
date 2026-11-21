@@ -1,8 +1,66 @@
 # Local API contract
 
-The bundled `macus` client calls the control socket and can register `incus.sock` with the standard Incus CLI. See [the CLI reference](cli.md). It does not add daemon routes or implement workload operations. The daemon serves two owner-only Unix sockets in its state directory, default `~/.tama/incus-mac`. `runtime.sock` controls the outer VM. `incus.sock` carries unmodified Incus HTTP, WebSockets, exec, events and streaming operations. Possession of either socket grants privileged control of the Linux appliance; run clients as the same macOS user. No TCP listener or SSH is used.
+The bundled `macus` client calls the [public runtime API](#public-runtime-api) over the Macus server's pinned HTTPS endpoint for `runtime`, `doctor`, setup readiness and every lifecycle, progress and health request of `macus start`, reads the control socket only to identify an already-serving daemon while `macus start` activates the services, and registers the standard Incus CLI with the server's HTTPS endpoint. See [the CLI reference](cli.md). It does not add daemon routes or implement workload operations. Behind the server, the Swift daemon serves two owner-only Unix sockets in its state directory, default `~/.tama/incus-mac`. `runtime.sock` controls the outer VM ([private runtime API](#private-runtime-api-v1)). `incus.sock` carries unmodified Incus HTTP, WebSockets, exec, events and streaming operations. They are the server's backend, not a client interface. Possession of either socket grants privileged control of the Linux appliance, so keep them owner-only. The daemon opens no TCP listener and no SSH is used; the server's HTTPS gateway, on loopback by default, is the only listener.
 
-## Runtime API v1
+## Public runtime API
+
+The Macus server (see [the Macus server](server.md)) publishes the runtime API over its authenticated HTTPS gateway at `/runtime`, with no version in the path. Each public route maps to one private route below and keeps its methods, errors, conflict rules and budget. Every request needs a Macus bearer token (`Authorization: Bearer macus.<id>.<secret>`) with the route's scope, checked before the body is read or the private socket is used. An unknown path is 404 and a known path with another method is 405 with an `Allow` header, also before any private request.
+
+| Method | Public path | Private route | Scope | Body |
+| --- | --- | --- | --- | --- |
+| GET | `/runtime/status` | `GET /v1/runtime/status` | `runtime.read` | None |
+| GET | `/runtime/capabilities` | `GET /v1/runtime/capabilities` | `runtime.read` | None |
+| GET | `/runtime/health` | `GET /v1/runtime/health` | `runtime.read` | None |
+| GET | `/runtime/config` | `GET /v1/runtime/config` | `runtime.read` | None |
+| GET | `/runtime/progress` | `GET /v1/runtime/progress` | `runtime.read` | None |
+| POST | `/runtime/create` | `POST /v1/runtime/create` | `runtime.write` | Complete configuration |
+| POST | `/runtime/start` | `POST /v1/runtime/start` | `runtime.write` | Empty, or `{"remaining_seconds":N}` |
+| POST | `/runtime/stop` | `POST /v1/runtime/stop` | `runtime.write` | Empty or `{"force":false}` |
+| POST | `/runtime/stop` | `POST /v1/runtime/stop` with `{"force":true}` | `runtime.delete` | `{"force":true,"confirm":"force-stop"}` |
+| POST | `/runtime/restart` | `POST /v1/runtime/restart` | `runtime.write` | None |
+| PUT | `/runtime/config` | `PUT /v1/runtime/config` | `runtime.write` | Complete configuration |
+| DELETE | `/runtime` | `DELETE /v1/runtime` with `{"confirm":true}` | `runtime.delete` | `{"confirm":"delete-runtime"}` |
+
+The gateway reads each body itself, at most 1 MiB (413 beyond that); no global parser runs on `/runtime`, `/1.0` or `/mcp`. `create` and `PUT config` need a complete schema 1 configuration object with exactly the fields below (`seed_path` optional, shares with `name`, `path` and optional `read_only`); a missing, unknown or mistyped field is a 400 `invalid_configuration` before dispatch, and the original bytes are forwarded so Swift applies its own range, path and state validation. A start budget is forwarded unchanged and the gateway's deadline covers it. Destructive requests need the confirm tokens shown; anything else is a 400 `confirmation_required` before dispatch.
+
+Swift's responses keep their status and JSON bytes, including the error envelope and 409 conflicts. The one change is that a runtime status object (from status and from mutations that answer with one) loses the private `incus_socket` path and gains the gateway's public endpoint and separate readiness:
+
+```json
+{
+  "api_version": 1,
+  "state": "ready",
+  "last_error": null,
+  "uptime_seconds": 42,
+  "server_ready": true,
+  "runtime_ready": true,
+  "server_endpoint": {
+    "url": "https://127.0.0.1:8443",
+    "certificate_fingerprint": "<sha-256 of the gateway certificate>"
+  },
+  "incus_endpoint": {
+    "url": "https://127.0.0.1:8443",
+    "certificate_fingerprint": "<sha-256 of the gateway certificate>"
+  }
+}
+```
+
+The gateway answers whether or not the guest is ready: status stays readable and start stays available while the runtime is absent, stopped, starting or failed, and workload requests at `/1.0` fail with the shared gateway's bounded 502 "Backend is unavailable" instead of claiming readiness. When the Swift service itself cannot be reached, status is a 503 `unavailable` error that still carries `"server_ready": true` and `"runtime_ready": false`. Transport failures are 503 `unavailable` or 504 `timeout` with an `outcome` of `not_dispatched`, `read_only` or `unknown`; a request that may have been accepted (`unknown`) is never resent. Revoking the bearer token ends an in-flight request within 5 seconds, but the Swift runtime keeps doing whatever that request started.
+
+```sh
+TOKEN="$(cat /Users/me/macus.token)"
+curl --cacert "$STATE/server/gateway.crt" -H "Authorization: Bearer $TOKEN" \
+  https://127.0.0.1:8443/runtime/status
+curl --cacert "$STATE/server/gateway.crt" -H "Authorization: Bearer $TOKEN" \
+  -X POST -d '{"remaining_seconds":600}' https://127.0.0.1:8443/runtime/start
+```
+
+### Host prerequisites
+
+Macus never changes the runtime implicitly. Directory shares, resources and timeouts are configuration, and `PUT /runtime/config` requires a stopped VM: while it runs, Swift answers 409 `conflict` ("Configuration requires a stopped VM") and the gateway passes that through without stopping, restarting or changing anything. To add a share, stop the runtime, replace the complete configuration with the new share, then start it. Share paths must be existing absolute directories on the host; the guest exposes them under `/mnt/tama-shares/<name>`, and workloads use them only through standard Incus disk devices. Host support (Apple virtualization, nested virtualization) and live Incus evidence are read from `GET /runtime/capabilities`; nothing is provisioned to satisfy them.
+
+## Private runtime API v1
+
+The Swift daemon serves these routes on `runtime.sock`. They are the private backend of the public API above. `macus start` reads `GET /v1/runtime/status` and `GET /v1/runtime/progress` here only to identify a compatible daemon while it activates the service; it creates, boots and checks the runtime through the public API.
 
 | Method | Path | Payload / response |
 | --- | --- | --- |
@@ -62,23 +120,29 @@ Error envelope: `{"error":{"code":"conflict","message":"A runtime mutation is al
 
 ## tama-machine integration
 
-On Linux, connect directly to native Incus. On macOS, start the service if necessary, read capabilities/status, create with the appliance configuration if absent, start, then connect to the returned `incus_socket` with a Unix HTTP transport. Existing Incus SDKs can use the socket unchanged. Do not create a second workload API.
+On Linux, connect directly to native Incus. On macOS, run `macus start` (or rely on its launchd jobs), then use the server's public endpoint from `server/endpoint.json` and pin its `certificate_fingerprint`. Read capabilities and status, create with the appliance configuration if absent and start, all through the [public runtime API](#public-runtime-api) with a bearer token of the right scopes. Then talk to `incus_endpoint` as an ordinary HTTPS Incus server with a client certificate the gateway trusts. Existing Incus SDKs work unchanged. Do not create a second workload API, and do not connect to the private sockets.
 
 ```sh
 STATE="$HOME/.tama/incus-mac"
-curl --unix-socket "$STATE/runtime.sock" http://localhost/v1/runtime/status
-curl --unix-socket "$STATE/runtime.sock" -H 'Content-Type: application/json' \
-  --data-binary @/absolute/appliance/config.json http://localhost/v1/runtime/create
-curl --unix-socket "$STATE/runtime.sock" -X POST http://localhost/v1/runtime/start
-curl --unix-socket "$STATE/incus.sock" http://localhost/1.0
+macus server token issue --principal tama --scope runtime.read --scope runtime.write \
+  --expires-in 30d --output /Users/me/tama.token
+TOKEN="$(cat /Users/me/tama.token)"
+curl --cacert "$STATE/server/gateway.crt" -H "Authorization: Bearer $TOKEN" \
+  https://127.0.0.1:8443/runtime/status
+curl --cacert "$STATE/server/gateway.crt" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data-binary @/absolute/appliance/config.json https://127.0.0.1:8443/runtime/create
+curl --cacert "$STATE/server/gateway.crt" -H "Authorization: Bearer $TOKEN" \
+  -X POST -d '{"remaining_seconds":600}' https://127.0.0.1:8443/runtime/start
 ```
 
-Configure a standard Unix remote for the macOS Incus CLI, which has no implicit local server. Use a dedicated `INCUS_CONF` directory for test clients:
+`--cacert` works for the generated default identity; with an operator certificate, verify the fingerprint from `server/endpoint.json` instead. Register the macOS Incus CLI, which has no implicit local server, with `macus client setup`. It adds an HTTPS remote for the endpoint, enrolls the client certificate with a bound single-use token and changes the default remote only with `--set-default`. Use a dedicated `INCUS_CONF` directory for test clients:
 
 ```sh
-incus remote add macus "unix:$STATE/incus.sock"
-incus remote switch macus
+macus client setup --remote macus --set-default
 incus list
 ```
+
+Another machine enrolls with a token from `macus server trust token issue` and plain `incus remote add` (see [the Macus server](server.md)). A remote that still points at `unix:$STATE/incus.sock` from before the server is reported as a conflict, not changed; remove it with `incus remote remove NAME` or choose another `--remote`.
 
 The runtime performs no instance/image/profile/project/network/storage/remote/transfer translations. Standard Incus artifacts remain portable to remote Incus hosts.
