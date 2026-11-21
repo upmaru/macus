@@ -107,7 +107,9 @@ enum ServerAdministration {
     let (configuration, stored) = try store.show()
     if json {
       var object = configuration.jsonObject
-      object["file"] = stored ? store.file.path : NSNull()
+      // A String/NSNull ternary is typed as an optional the JSON writer cannot encode.
+      let file: Any = stored ? store.file.path : NSNull()
+      object["file"] = file
       streams.writeOutput(try jsonText(["gateway": object]))
     } else {
       presentation.gatewayConfiguration(

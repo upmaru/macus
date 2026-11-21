@@ -84,6 +84,17 @@ private func mode(_ url: URL) -> mode_t {
   #expect(document["certificate_file"] as? String == certificate)
   #expect(document["key_file"] as? String == key)
 
+  // show reports a stored file as machine output too.
+  let stored = try await runMacus(["--json", "--state-dir", state, "server", "config", "show"])
+  #expect(stored.status == 0, "\(stored.stderr)")
+  let storedShown = try jsonObject(Data(stored.stdout.utf8))["gateway"] as! [String: Any]
+  #expect(storedShown["bind_address"] as? String == "192.168.1.20")
+  #expect(storedShown["url"] as? String == "https://macus.example.net:8443")
+  #expect(storedShown["certificate_file"] as? String == certificate)
+  #expect(storedShown["key_file"] as? String == key)
+  #expect(storedShown["default_identity"] as? Bool == false)
+  #expect(storedShown["file"] as? String == fixture.store.file.path)
+
   // set changes only the fields given.
   let port = try await runMacus([
     "--state-dir", state, "server", "config", "set", "--port", "9443",
