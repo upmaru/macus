@@ -192,8 +192,9 @@ class Acceptance:
         created = existing.returncode != 0
         if created:
             # Not `incus launch`: the client always sends "start": true and starts the instance
-            # again unless the server advertises instance_create_start, which the gateway does
-            # not yet, so launch reports "already running" after a successful start.
+            # again unless the server advertises instance_create_start, which pairs built before
+            # opsmaru_incus 0.2.7 do not (upmaru/opsmaru-incus#88), so launch would report
+            # "already running" after a successful start on them.
             self.ok("create", self.args.image, self.target, timeout=900)
             self.ok("start", self.target, timeout=300)
         deadline = time.monotonic() + 120

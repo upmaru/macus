@@ -30,13 +30,16 @@ config :macus, MacusWeb.Endpoint,
 # (images_push_relay) between them; the servers dial the gateway with
 # operation or image secrets, which `Macus.Proxy.Host` admits.
 # api_filtering and instance_get_full are query-parameter features the
-# standard client needs to list instances (upmaru/opsmaru-incus#85).
+# standard client needs to list instances (upmaru/opsmaru-incus#85), and
+# instance_create_start stops `incus launch` from starting the instance a
+# second time (upmaru/opsmaru-incus#88).
 config :macus, Macus.Proxy,
   api_extensions: [
     "certificate_update",
     "instances",
     "api_filtering",
     "instance_get_full",
+    "instance_create_start",
     "file_delete",
     "console",
     "instance_nbd",

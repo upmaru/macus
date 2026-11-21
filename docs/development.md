@@ -58,7 +58,7 @@ mise exec -- mix test
 
 `server/mix.lock` records released dependencies, including Phoenix 1.8.15,
 Plug.Cowboy 2.9.0, Cowboy 2.21.0, Mint 1.11.0, TamaMCP 0.2.1,
-`opsmaru_incus` 0.2.6 and `tama_dex` 0.1.0 (which brings the exqlite SQLite
+`opsmaru_incus` 0.2.7 and `tama_dex` 0.1.0 (which brings the exqlite SQLite
 NIF). All dependencies are released Hex packages; Hex is the
 only distribution route for `opsmaru_incus`, so builds never use a Git revision
 or sibling path for it. Macus's own scaffold has no Ecto, HTML,
@@ -367,7 +367,7 @@ The guest's marker file, snapshots, instance status and runtime state must be id
 
 The runner never stops, restarts or force-stops the VM. The only thing it deletes is the snapshot it created itself, through the confirmed MCP delete.
 
-It creates the workload with `incus create` and `incus start` rather than `incus launch`. The client always sends `"start": true`, and it starts the instance a second time unless the server advertises `instance_create_start`. The gateway doesn't advertise it yet ([opsmaru-incus#88](https://github.com/upmaru/opsmaru-incus/issues/88)), so `incus launch` reports "already running" after the container has started.
+It creates the workload with `incus create` and `incus start` rather than `incus launch`. The client always sends `"start": true`, and it starts the instance a second time unless the server advertises `instance_create_start`. Before `opsmaru_incus` 0.2.7 the gateway didn't advertise it, so `incus launch` reported "already running" after the container had started ([opsmaru-incus#88](https://github.com/upmaru/opsmaru-incus/issues/88)). Macus now advertises it, but the runner keeps `create` and `start` so its evidence stays comparable with the 11.3 run, which used a pair built with 0.2.6.
 
 Every child process gets an empty stdin, because `incus snapshot create` and `incus create` read YAML from a stdin that is not a terminal. If a command stalls anyway, the report keeps its `--debug` log, a goroutine dump and a TLS probe of the gateway.
 
