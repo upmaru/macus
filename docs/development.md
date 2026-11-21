@@ -56,7 +56,7 @@ mise exec -- mix compile --warnings-as-errors
 mise exec -- mix test
 ```
 
-`server/mix.lock` records released dependencies, including Phoenix 1.8.15,
+`server/mix.lock` records released dependencies, including Phoenix 1.8.17,
 Plug.Cowboy 2.9.0, Cowboy 2.21.0, Mint 1.11.0, TamaMCP 0.2.1,
 `opsmaru_incus` 0.2.7 and `tama_dex` 0.1.0 (which brings the exqlite SQLite
 NIF). All dependencies are released Hex packages; Hex is the
