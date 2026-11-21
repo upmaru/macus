@@ -34,7 +34,7 @@ paths, binary streaming and upgrades remain native, with only the documented
 gateway identity/trust exceptions. Typed-client parity has separate upstream
 inventory evidence; proxy breadth is not client-port evidence.
 
-`server/mix.lock` locks `:opsmaru_incus` 0.2.7 from Hex, which delivers the
+`server/mix.lock` locks `:opsmaru_incus` 0.2.8 from Hex, which delivers the
 client, gateway, composite/native operations and their release cassette. Its coverage still reports
 `complete_port=false`, so no complete-client claim is made
 ([coverage](incus-coverage.md)). Durable tasks and

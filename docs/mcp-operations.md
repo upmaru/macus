@@ -12,8 +12,8 @@ them.
 | Cassette | Source | Version | Operations |
 | --- | --- | --- | --- |
 | `macus` | `macus` | 1.0.0 | 12 |
-| `opsmaru_incus` | `opsmaru_incus` | 0.2.7 | 32 |
-| `opsmaru_incus` | `opsmaru_incus_native` | 0.2.7 | 274 |
+| `opsmaru_incus` | `opsmaru_incus` | 0.2.8 | 32 |
+| `opsmaru_incus` | `opsmaru_incus_native` | 0.2.8 | 274 |
 | | | Total | 318 |
 
 ## `macus` / `macus`

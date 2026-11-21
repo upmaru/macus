@@ -144,9 +144,9 @@ def pem_fingerprint(pem):
 def trust_entries(url, server_pem, conf):
     """Gateway trust as `GET /1.0/certificates?recursion=1` with an owner's client certificate.
 
-    The standard `incus config trust list` adds an empty `filter=`, which the gateway refuses,
-    and `incus query` sends a JSON `null` body the shared certificate handler refuses; this
-    plain native request has neither.
+    The standard `incus config trust list` adds an empty `filter=`, and `incus query` sends a
+    JSON body (`""`) that opsmaru_incus refused before 0.2.8 (upmaru/opsmaru-incus#91). This
+    plain native request has neither, so it also works against pairs built before those fixes.
     """
     parsed = urllib.parse.urlsplit(url)
     context = ssl.create_default_context(cadata=server_pem)
@@ -627,8 +627,8 @@ class Remote(restart.Restart):
                 session.kill()
                 session.wait(10)
         listed = self.client.incus("c1", "list", "macus-115:", "--format", "csv", "-c", "n")
-        # `incus query` sends a JSON null body that anonymous discovery refuses, so the client's
-        # standing is read with a plain `GET /1.0` presenting the same certificate.
+        # Before opsmaru_incus 0.2.8, anonymous discovery refused the JSON body `incus query`
+        # sends, so the client's standing is read with a plain `GET /1.0` and the same certificate.
         seen = self.client.probe("identity", self.url, "/root/gateway.crt", "/root/c1")
         trusted = self.owner.trusted()
         require(listed.returncode != 0 and seen.get("auth") == "untrusted"

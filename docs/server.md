@@ -197,7 +197,7 @@ alongside `api_filtering` and `instance_get_full`, which the standard
 client needs to list instances (0.2.6, upmaru/opsmaru-incus#85), and
 `instance_create_start`, without which `incus launch` starts the new
 instance a second time and fails with "already running" (0.2.7,
-upmaru/opsmaru-incus#88). `opsmaru_incus` 0.2.7 implements every one, so
+upmaru/opsmaru-incus#88). `opsmaru_incus` 0.2.8 implements every one, so
 clients see them all when the guest reports them.
 
 The `/mcp` operations never copy between servers. The library leaves out

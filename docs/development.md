@@ -58,7 +58,7 @@ mise exec -- mix test
 
 `server/mix.lock` records released dependencies, including Phoenix 1.8.17,
 Plug.Cowboy 2.9.0, Cowboy 2.21.0, Mint 1.11.0, TamaMCP 0.2.1,
-`opsmaru_incus` 0.2.7 and `tama_dex` 0.1.0 (which brings the exqlite SQLite
+`opsmaru_incus` 0.2.8 and `tama_dex` 0.1.0 (which brings the exqlite SQLite
 NIF). All dependencies are released Hex packages; Hex is the
 only distribution route for `opsmaru_incus`, so builds never use a Git revision
 or sibling path for it. Macus's own scaffold has no Ecto, HTML,
@@ -433,7 +433,7 @@ With `--remote-opt-in` the runner:
 
 The VM, the runtime job and the kept workload are never stopped or restarted, and their identity must match before and after. The report keeps remote evidence under `evidence.remote`, with `loopback_evidence: false`.
 
-Gateway trust is read with a plain `GET /1.0/certificates?recursion=1` that presents the owner's client certificate. The standard `incus config trust list` sends an empty `filter=`, which servers older than this fix refuse, and `incus query` sends a JSON `null` body, which the shared certificate and discovery handlers refuse. The runner records what `incus config trust list` returns under `findings`.
+Gateway trust is read with a plain `GET /1.0/certificates?recursion=1` that presents the owner's client certificate. The standard `incus config trust list` sends an empty `filter=`, which servers older than this fix refuse, and `incus query` sends a JSON body (`""` without `--data`), which the certificate and discovery handlers of `opsmaru_incus` before 0.2.8 refuse ([opsmaru-incus#91](https://github.com/upmaru/opsmaru-incus/issues/91)). The plain request works against either. The runner records what `incus config trust list` returns under `findings`.
 
 ## Integration acceptance
 

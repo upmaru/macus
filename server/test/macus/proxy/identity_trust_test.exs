@@ -169,6 +169,10 @@ defmodule Macus.Proxy.IdentityTrustTest do
                }
       end
 
+      # `incus query` sends a JSON body even on reads (`""` without `--data`).
+      assert {200, %{"metadata" => %{"auth" => "untrusted"}}, _} =
+               request(:get, "/1.0", body: "")
+
       refute_received {:backend, _, _}
     end
 
@@ -360,6 +364,10 @@ defmodule Macus.Proxy.IdentityTrustTest do
       # The standard `incus config trust list` always sends an empty filter.
       assert {200, %{"metadata" => [^object]}, _} =
                request(:get, "/1.0/certificates?filter=&recursion=1", as_admin)
+
+      # `incus query /1.0/certificates?recursion=1` sends `""` as a JSON body.
+      assert {200, %{"metadata" => [^object]}, _} =
+               request(:get, "/1.0/certificates?recursion=1", as_admin ++ [body: ""])
 
       # Create from base64 DER, as `incus config trust add-certificate` sends.
       {200, body, conn} =
