@@ -16,7 +16,7 @@ sh -n Integration/qualification/zfs-storage.sh
 sh -n Packaging/install-local.sh
 sh -n Integration/scripts/check-server.sh
 sh -n Integration/scripts/test-install.sh
-python3 -m py_compile Integration/guest/bridge.py Integration/scripts/prepare-appliance.py Integration/scripts/verify-appliance.py Integration/scripts/acceptance.py Integration/scripts/storage_contract.py Integration/scripts/relay-stress.py Integration/scripts/macus-acceptance.py Integration/scripts/start-acceptance.py Integration/scripts/workload-acceptance.py Integration/scripts/restart-acceptance.py Integration/scripts/sync-guest-payload.py Integration/scripts/check-catalog.py
+python3 -m py_compile Integration/guest/bridge.py Integration/scripts/prepare-appliance.py Integration/scripts/verify-appliance.py Integration/scripts/acceptance.py Integration/scripts/storage_contract.py Integration/scripts/relay-stress.py Integration/scripts/macus-acceptance.py Integration/scripts/start-acceptance.py Integration/scripts/workload-acceptance.py Integration/scripts/restart-acceptance.py Integration/scripts/remote-acceptance.py Integration/scripts/remote-client-probe.py Integration/scripts/sync-guest-payload.py Integration/scripts/check-catalog.py
 python3 Integration/scripts/sync-guest-payload.py --check
 python3 Integration/scripts/check-catalog.py
 python3 -m py_compile Packaging/homebrew/candidate.py

@@ -399,6 +399,42 @@ It also checks how interrupted calls are reported:
 
 The runtime job is never stopped, restarted or relaunched. If the missing-job check fails, `macus start` still registers the job again before the run goes on. Afterwards the runner deletes its snapshot (through the confirmed MCP delete) and its exec log, then requires the guest state to match what it was before. Tokens are revoked.
 
+## Remote acceptance runner
+
+`Integration/scripts/remote-acceptance.py` (task 11.5) proves access from a genuinely separate client. It runs against the same kind of state as the restart runner, and takes the same arguments plus:
+
+- `--bind-address`: this Mac's private or CGNAT address that the client can reach. Loopback, wildcard, multicast and public addresses are refused.
+- `--client-remote`: your own `incus` remote for another Incus server, which hosts the client. Unix sockets, loopback, image servers and this Macus are refused.
+- `--client-name` and `--client-image` (default `macus-remote-115` and `images:alpine/3.22`).
+- `--lock`: the `server/mix.lock` of the installed pair's own revision, when it differs from this checkout's.
+- `--remote-opt-in`: without it, nothing is rebound, launched or enrolled; only the pair, the paths, the bind address and this state's own remote are checked.
+
+```bash
+python3 Integration/scripts/remote-acceptance.py --opt-in --remote-opt-in \
+  --state-dir /tmp/macus-accept --prefix "$(brew --prefix macus)" \
+  --incus-conf "$(python3 -c 'import json;print(json.load(open(".integration/start-acceptance.json"))["incus_conf"])')" \
+  --incus "$(command -v incus)" --remote macus \
+  --bind-address 100.64.0.10 --client-remote otherhost \
+  --report "$PWD/.integration/remote-acceptance.json"
+```
+
+The client is a throwaway container the runner launches on `--client-remote` with your own incus client. It only creates a name that doesn't exist yet, installs the distribution's `incus-client` and Python, copies in `Integration/scripts/remote-client-probe.py`, and deletes the container at the end, but only if it is still the one it created. Nothing else on that server is touched; the runner compares its instance list before and after.
+
+With `--remote-opt-in` the runner:
+
+1. Rebinds the gateway to `--bind-address` with a throwaway P-384 certificate naming that address, and restarts only the server job. The server must then listen on that address alone.
+2. From the client, checks:
+   - **TLS identity:** a TLS 1.3 handshake pinned to that certificate, with its SHA-256 matching `endpoint.json`, and a refused handshake for another name. Anonymous `GET /1.0` must answer `untrusted` with no server environment.
+   - **Native enrollment:** `incus remote add` with a single-use token from `macus server trust token issue`. The remote must pin the gateway certificate and the token must record the client's certificate. A second client must fail to reuse the token.
+   - **Native access:** `incus list`, `incus exec` of the kept marker and `/1.0` reporting `trusted` with the gateway's address.
+   - **Combined scopes:** one bearer token with `incus.read` and `runtime.read` reads `/runtime/status`, searches and runs read operations in both cassettes over `/mcp`, and is refused `incus_instance_exec`, `macus_runtime_start`, `PUT /runtime/config` and native routes. Requests without a token get 401.
+   - **Revocation:** the bearer token stops working within seconds. Removing the enrolled certificate ends an open `incus exec` and leaves the client `untrusted`. A revoked enrollment token can't be redeemed.
+3. Always restores the original `gateway.json` and restarts the server job again. Loopback must answer and the client must no longer connect. Any client certificate or enrollment token left over from a failed check is removed.
+
+The VM, the runtime job and the kept workload are never stopped or restarted, and their identity must match before and after. The report keeps remote evidence under `evidence.remote`, with `loopback_evidence: false`.
+
+Gateway trust is read with a plain `GET /1.0/certificates?recursion=1` that presents the owner's client certificate. The standard `incus config trust list` sends an empty `filter=`, which servers older than this fix refuse, and `incus query` sends a JSON `null` body, which the shared certificate and discovery handlers refuse. The runner records what `incus config trust list` returns under `findings`.
+
 ## Integration acceptance
 
 Install a standard native Incus client separately, or point `--incus` at a verified local binary. The runtime has no client dependency. The runner configures a standard `unix:` remote in an isolated client directory, because macOS clients have no implicit local server. It creates uniquely named workloads/remotes and removes workloads on success; failures preserve instances and diagnostics.
