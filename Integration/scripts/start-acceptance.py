@@ -24,16 +24,20 @@ nothing is reset.
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import http.client
 import importlib.util
 import json
 import os
 from pathlib import Path
 import plistlib
 import re
+import shutil
 import socket
+import ssl
 import stat
 import subprocess
 import tempfile
+import urllib.parse
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LABELS = ("com.upmaru.macus", "com.upmaru.macus.server")
@@ -335,6 +339,167 @@ def private_credentials(state):
             raise PairFailure(f"server/{name} is not an owner-private file")
 
 
+PACKAGE_CHECKS = ("paired_artifacts", "pinned_dependency", "two_service_labels")
+GUEST_CHECKS = (
+    "ready", "connected", "isolated_labels_reported", "isolated_gateway_port",
+    "jobs_registered_for_state", "isolated_credentials", "repeated_start",
+    "native_https_registration", "public_runtime_control",
+    "dependency_adds_no_listener_or_service", "default_jobs_and_endpoint_unchanged",
+)
+
+
+class Run:
+    """Runs the installed macus (and incus) for this state, recording every command."""
+
+    def __init__(self, binary, state, env, report):
+        self.binary, self.state, self.env, self.report = binary, state, env, report
+
+    def command(self, arguments, timeout, tool):
+        result = subprocess.run(arguments, env=self.env, text=True, capture_output=True,
+                                timeout=timeout)
+        self.report.setdefault("commands", []).append({
+            "tool": tool, "arguments": arguments[1:], "exit_code": result.returncode,
+            "stdout": result.stdout[-4000:], "stderr": result.stderr[-4000:],
+        })
+        return result
+
+    def macus(self, arguments, timeout=120, json_output=False):
+        result = self.command([self.binary, "--state-dir", str(self.state), *arguments],
+                              timeout, "macus")
+        if result.returncode != 0:
+            raise PairFailure(f"macus {' '.join(arguments)} exited {result.returncode}")
+        return json.loads(result.stdout) if json_output else result.stdout
+
+
+class Tokens:
+    """Scoped bearer tokens for this run, kept in a private directory and revoked afterwards."""
+
+    def __init__(self, run, directory):
+        self.run, self.directory, self.ids = run, directory, []
+        os.chmod(directory, 0o700)
+
+    def issue(self, scope):
+        path = self.directory / f"{scope}.token"
+        self.run.macus(["server", "token", "issue", "--principal", "macus-acceptance",
+                        "--scope", scope, "--expires-in", "1h", "--output", str(path)])
+        token = path.read_text().strip()
+        self.ids.append(token.split(".")[1])
+        return token
+
+    def revoke_all(self, report):
+        revoked = []
+        for identifier in self.ids:
+            try:
+                self.run.macus(["server", "token", "revoke", identifier])
+                revoked.append(identifier)
+            except Exception:  # Recorded below; the run's own outcome stands.
+                pass
+        report["tokens_revoked"] = revoked == self.ids
+        for path in self.directory.iterdir():
+            path.unlink()
+        self.directory.rmdir()
+
+
+class Gateway:
+    """HTTPS to the published endpoint, pinned to its published certificate."""
+
+    def __init__(self, endpoint):
+        parsed = urllib.parse.urlsplit(endpoint["url"])
+        self.host, self.port = parsed.hostname, parsed.port
+        self.context = ssl.create_default_context(cadata=endpoint["certificate"])
+
+    def request(self, method, path, token, body=None):
+        connection = http.client.HTTPSConnection(
+            self.host, self.port, context=self.context, timeout=120)
+        try:
+            payload = None if body is None else json.dumps(body)
+            headers = {"Authorization": f"Bearer {token}"}
+            if payload is not None:
+                headers["Content-Type"] = "application/json"
+            connection.request(method, path, body=payload, headers=headers)
+            response = connection.getresponse()
+            data = response.read()
+            try:
+                decoded = json.loads(data) if data else {}
+            except ValueError:
+                decoded = {}
+            return response.status, decoded if isinstance(decoded, dict) else {}
+        finally:
+            connection.close()
+
+
+def job_pid(label, launchctl="/bin/launchctl"):
+    result = subprocess.run([launchctl, "print", f"gui/{os.getuid()}/{label}"],
+                            capture_output=True, text=True, timeout=30)
+    found = re.search(r"^\tpid = (\d+)$", result.stdout, re.MULTILINE)
+    return int(found.group(1)) if result.returncode == 0 and found else None
+
+
+def registration(run, incus, remote, endpoint, report):
+    """The standard client's remote points at the gateway and is trusted there."""
+    if incus is None:
+        report["registration"] = {"error": "no incus executable"}
+        return False
+    remotes = run.command([str(incus), "remote", "list", "--format", "json"], 60, "incus")
+    query = run.command([str(incus), "query", f"{remote}:/1.0"], 60, "incus")
+    listing = run.command([str(incus), "list", f"{remote}:", "--format", "json"], 120, "incus")
+    entry = json.loads(remotes.stdout).get(remote, {}) if remotes.returncode == 0 else {}
+    server = json.loads(query.stdout) if query.returncode == 0 else {}
+    details = {
+        # incus 7.5 lists `Addrs`; earlier clients a single `Addr`.
+        "addrs": entry.get("Addrs") or ([entry["Addr"]] if entry.get("Addr") else []),
+        "protocol": entry.get("Protocol"),
+        "auth": server.get("auth"),
+        "server_version": (server.get("environment") or {}).get("server_version"),
+        "listing_extensions": sorted({"api_filtering", "instance_get_full"}
+                                     & set(server.get("api_extensions") or [])),
+        "list_exit_code": listing.returncode,
+    }
+    report["registration"] = details
+    return (details["addrs"] == [endpoint["url"]] and details["protocol"] == "incus"
+            and details["auth"] == "trusted" and bool(details["server_version"])
+            and listing.returncode == 0)
+
+
+def listeners(pid):
+    result = subprocess.run(["/usr/sbin/lsof", "-nP", "-a", "-p", str(pid), "-iTCP",
+                             "-sTCP:LISTEN", "-Fn"], capture_output=True, text=True, timeout=30)
+    return sorted(line[1:] for line in result.stdout.splitlines() if line.startswith("n"))
+
+
+def network_sockets(pid):
+    result = subprocess.run(["/usr/sbin/lsof", "-nP", "-a", "-p", str(pid), "-i", "-Fn"],
+                            capture_output=True, text=True, timeout=30)
+    return sorted(line[1:] for line in result.stdout.splitlines() if line.startswith("n"))
+
+
+def descendants(pid):
+    found, queue = [], [pid]
+    while queue:
+        result = subprocess.run(["/usr/bin/pgrep", "-P", str(queue.pop())],
+                                capture_output=True, text=True, timeout=30)
+        children = [int(line) for line in result.stdout.split()]
+        found += children
+        queue += children
+    return found
+
+
+def service_footprint(labels, pids, port, launchctl="/bin/launchctl"):
+    """Jobs carrying this state's label suffix, and every listener of the two services."""
+    suffix = "." + labels[0].rsplit(".", 1)[1]
+    listing = subprocess.run([launchctl, "list"], capture_output=True, text=True, timeout=30)
+    jobs = sorted(line.split("\t")[-1] for line in listing.stdout.splitlines()[1:]
+                  if line.split("\t")[-1].endswith(suffix))
+    runtime_pid, server_pid = pids
+    server_tree = [server_pid, *descendants(server_pid)] if server_pid else []
+    return {
+        "labels": jobs,
+        "server_processes": len(server_tree),
+        "server_listeners": sorted({address for pid in server_tree for address in listeners(pid)}),
+        "runtime_network_sockets": network_sockets(runtime_pid) if runtime_pid else ["no pid"],
+    }
+
+
 def main():
     args = parse_args()
     if not args.opt_in:
@@ -395,47 +560,100 @@ def main():
     env = dict(os.environ, INCUS_CONF=str(client), MACUS_BREW_FALLBACK="0")
     for variable in ("MACUS_STATE_DIR", "MACUS_FIXTURE_GUEST_DIR", "MACUS_FIXTURE_LAUNCHCTL"):
         env.pop(variable, None)
-    command = [
-        pair["binary"], "--state-dir", str(state.resolve()), "--json", "--progress", "plain",
-        "--timeout", "1800", "start", "--remote", args.remote,
-    ]
-    if args.incus:
-        command[1:1] = ["--incus", str(args.incus.resolve(strict=True))]
+    incus = args.incus.resolve(strict=True) if args.incus else (
+        Path(shutil.which("incus")).resolve() if shutil.which("incus") else None)
+    run = Run(pair["binary"], state.resolve(), env, report)
+    start = ["--json", "--progress", "plain", "--timeout", "1800", "start", "--remote", args.remote]
+    if incus:
+        start[0:0] = ["--incus", str(incus)]
+    checks = report["checks"]
+    tokens = None
     # Nondefault state keeps both jobs under <state>/launchd, never ~/Library/LaunchAgents.
     try:
-        result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=1800)
-        report.setdefault("commands", []).append({
-            "tool": "macus", "arguments": command[1:], "exit_code": result.returncode,
-            "stdout": result.stdout[-4000:], "stderr": result.stderr[-4000:],
-        })
+        # First start: boots the guest, registers both jobs and the Incus remote.
         report["hardware_ran"] = True
-        if result.returncode == 0:
-            body = json.loads(result.stdout)
-            checks = report["checks"]
-            checks["ready"] = body.get("ready") is True
-            checks["connected"] = body.get("connected") is True
-            checks["isolated_labels_reported"] = (
-                body.get("service_label"), body.get("server_label")) == tuple(labels)
-            url = (body.get("server_endpoint") or {}).get("url", "")
-            checks["isolated_gateway_port"] = url.rstrip("/").endswith(f":{port}")
-            registered_jobs(state, labels, pair)
-            checks["jobs_registered_for_state"] = True
-            private_credentials(state)
-            checks["isolated_credentials"] = True
-            after = default_footprint()
-            report["default_footprint_after"] = after
-            checks["default_jobs_and_endpoint_unchanged"] = after == before
-            report["guest_verified"] = checks["ready"] and checks["connected"]
-            report["success"] = all(checks.get(name) for name in (
-                "ready", "connected", "isolated_labels_reported", "isolated_gateway_port",
-                "default_jobs_and_endpoint_unchanged"))
-        else:
-            report["success"] = False
-            report["note"] = "Start failed. State, logs and this report were preserved."
+        first = run.macus(start, timeout=1800, json_output=True)
+        checks["ready"] = first.get("ready") is True
+        checks["connected"] = first.get("connected") is True
+        checks["isolated_labels_reported"] = (
+            first.get("service_label"), first.get("server_label")) == tuple(labels)
+        url = (first.get("server_endpoint") or {}).get("url", "")
+        checks["isolated_gateway_port"] = url.rstrip("/").endswith(f":{port}")
+        registered_jobs(state, labels, pair)
+        checks["jobs_registered_for_state"] = True
+        private_credentials(state)
+        checks["isolated_credentials"] = True
+        endpoint = json.loads((state / "server" / "endpoint.json").read_text())
+        gateway = Gateway(endpoint)
+        tokens = Tokens(run, Path(tempfile.mkdtemp(prefix="macus-accept-tokens-")))
+        read_token = tokens.issue("runtime.read")
+        write_token = tokens.issue("runtime.write")
+        status_first = gateway.request("GET", "/runtime/status", read_token)
+        pids_first = (job_pid(labels[0]), job_pid(labels[1]))
+        report["first_start"] = {"runtime_pid": pids_first[0], "server_pid": pids_first[1],
+                                 "uptime_seconds": status_first[1].get("uptime_seconds")}
+
+        # Repeated start: ready again, with neither service relaunched nor the guest rebooted.
+        second = run.macus(start, timeout=600, json_output=True)
+        status_second = gateway.request("GET", "/runtime/status", read_token)
+        pids_second = (job_pid(labels[0]), job_pid(labels[1]))
+        report["repeated_start"] = {"runtime_pid": pids_second[0], "server_pid": pids_second[1],
+                                    "uptime_seconds": status_second[1].get("uptime_seconds")}
+        checks["repeated_start"] = (
+            second.get("ready") is True and second.get("connected") is True
+            and pids_second == pids_first and None not in pids_first
+            and status_second[1].get("uptime_seconds", -1)
+            >= status_first[1].get("uptime_seconds", 1 << 30))
+
+        # Native HTTPS Incus registration through the isolated INCUS_CONF.
+        checks["native_https_registration"] = registration(
+            run, incus, args.remote, endpoint, report)
+
+        # Public runtime control over the gateway, scope by scope.
+        control = {}
+        code, body = gateway.request("GET", "/runtime/status", read_token)
+        control["status"] = [code, body.get("state")]
+        # start on a ready runtime returns it unchanged; it takes an empty body.
+        code, body = gateway.request("POST", "/runtime/start", write_token)
+        control["start_when_ready"] = [code, body.get("state"), body.get("uptime_seconds")]
+        code, body = gateway.request("POST", "/runtime/stop", read_token)
+        control["stop_with_read_token"] = code
+        code, after = gateway.request("GET", "/runtime/status", read_token)
+        control["after"] = [code, after.get("state"), after.get("uptime_seconds")]
+        report["public_runtime_control"] = control
+        checks["public_runtime_control"] = (
+            control["status"] == [200, "ready"]
+            and control["start_when_ready"][:2] == [200, "ready"]
+            and control["stop_with_read_token"] == 403
+            and control["after"][:2] == [200, "ready"]
+            and after.get("uptime_seconds", -1) >= status_second[1].get("uptime_seconds", 1 << 30)
+            and job_pid(labels[0]) == pids_first[0])
+
+        # The dependency adds no listener and no third service.
+        footprint = service_footprint(labels, pids_first, port)
+        report["service_footprint"] = footprint
+        checks["dependency_adds_no_listener_or_service"] = (
+            footprint["labels"] == sorted(labels)
+            and footprint["server_listeners"] == [f"127.0.0.1:{port}"]
+            and footprint["runtime_network_sockets"] == [])
+
+        after_footprint = default_footprint()
+        report["default_footprint_after"] = after_footprint
+        checks["default_jobs_and_endpoint_unchanged"] = after_footprint == before
+        report["guest_verified"] = checks["ready"] and checks["connected"]
+        report["evidence"] = {
+            "package": {name: checks.get(name) for name in PACKAGE_CHECKS},
+            "guest": {name: checks.get(name) for name in GUEST_CHECKS},
+        }
+        report["success"] = all(checks.get(name) for name in GUEST_CHECKS)
+        if not report["success"]:
+            report["note"] = "A check failed. State, logs and this report were preserved."
     except Exception as error:
         report["success"] = False
         report["note"] = f"Acceptance failed and artifacts were preserved: {error}"
     finally:
+        if tokens:
+            tokens.revoke_all(report)
         report["finished_at"] = datetime.now(timezone.utc).isoformat()
         save()
     if not report.get("success"):

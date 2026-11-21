@@ -222,61 +222,79 @@ class StartAcceptanceTests(unittest.TestCase):
             self.assertEqual((state / "server/gateway.json").stat().st_mode & 0o777, 0o600)
             self.assertEqual((state / "server").stat().st_mode & 0o777, 0o700)
 
-    def test_hardware_success_requires_isolated_jobs_and_credentials(self):
+    def test_registered_jobs_and_credentials_must_be_this_states(self):
         with tempfile.TemporaryDirectory(prefix="msa", dir="/tmp") as folder:
             root = Path(folder)
             prefix = installed_pair(root / "prefix")
+            pair = start_acceptance.installed_pair(prefix)
             state = root / "state"
-            runtime, server = start_acceptance.service_labels(state.resolve())
-            binary, release = prefix / "bin/macus", prefix / "libexec/macus"
+            (state / "launchd").mkdir(parents=True)
+            labels = start_acceptance.service_labels(state.resolve())
+            runtime, server = labels
 
-            def job_script(server_revision):
+            def write(server_revision, runtime_state=state):
                 plists = {
                     runtime: {"Label": runtime, "ProgramArguments": [
-                        str(binary), "serve", "--state-dir", str(state.resolve())]},
+                        pair["binary"], "serve", "--state-dir", str(runtime_state.resolve())]},
                     server: {"Label": server, "ProgramArguments": [
-                        str(release / "bin/macus"), "start"], "EnvironmentVariables": {
-                        "MACUS_STATE_DIR": str(state.resolve()),
-                        "MACUS_EXPECTED_REVISION": server_revision}},
+                        pair["release"] + "/bin/macus", "start"], "EnvironmentVariables": {
+                            "MACUS_STATE_DIR": str(state.resolve()),
+                            "MACUS_EXPECTED_REVISION": server_revision}},
                 }
-                body = {"ready": True, "connected": True, "service_label": runtime,
-                        "server_label": server}
-                return (
-                    f"#!{sys.executable}\nimport json, os, pathlib, plistlib\n"
-                    f"state = pathlib.Path({str(state)!r})\n"
-                    "port = json.loads((state / 'server/gateway.json').read_text())['port']\n"
-                    "(state / 'launchd').mkdir(exist_ok=True)\n"
-                    f"for label, data in {plists!r}.items():\n"
-                    "    (state / 'launchd' / (label + '.plist')).write_bytes(plistlib.dumps(data))\n"
-                    "for name in ('gateway.crt', 'gateway.key', 'endpoint.json'):\n"
-                    "    path = state / 'server' / name\n"
-                    "    path.write_text('x')\n"
-                    "    path.chmod(0o600)\n"
-                    f"body = {body!r}\n"
-                    "body['server_endpoint'] = {'url': 'https://127.0.0.1:%d' % port}\n"
-                    "print(json.dumps(body))\n")
+                for label, data in plists.items():
+                    (state / "launchd" / f"{label}.plist").write_bytes(plistlib.dumps(data))
 
-            for revision, succeeds in ((REVISION, True), ("c" * 40, False)):
-                with self.subTest(revision=revision):
-                    script = root / "start.py"
-                    script.write_text(job_script(revision))
-                    script.chmod(0o755)
-                    report = root / f"report-{succeeds}.json"
-                    result = run_runner(
-                        "--opt-in", "--hardware", "--state-dir", str(state), "--prefix",
-                        str(prefix), "--report", str(report),
-                        env=dict(os.environ, MACUS_ACCEPTANCE_SCRIPT=str(script)))
-                    data = json.loads(report.read_text())
-                    self.assertEqual(result.returncode == 0, succeeds, result.stderr)
-                    self.assertEqual(data["success"], succeeds)
-                    self.assertTrue(data["hardware_ran"])
-                    if succeeds:
-                        for check in ("isolated_labels_reported", "isolated_gateway_port",
-                                      "jobs_registered_for_state", "isolated_credentials",
-                                      "default_jobs_and_endpoint_unchanged"):
-                            self.assertIs(data["checks"][check], True, check)
-                    else:
-                        self.assertIn("paired release", data["note"])
+            write(REVISION)
+            start_acceptance.registered_jobs(state, labels, pair)
+            write("c" * 40)
+            with self.assertRaisesRegex(start_acceptance.PairFailure, "paired release"):
+                start_acceptance.registered_jobs(state, labels, pair)
+            write(REVISION, runtime_state=root)
+            with self.assertRaisesRegex(start_acceptance.PairFailure, "installed macus"):
+                start_acceptance.registered_jobs(state, labels, pair)
+
+            server_dir = state / "server"
+            server_dir.mkdir(mode=0o700)
+            for name in ("gateway.crt", "gateway.key", "endpoint.json"):
+                (server_dir / name).write_text("x")
+                (server_dir / name).chmod(0o600)
+            start_acceptance.private_credentials(state)
+            (server_dir / "gateway.key").chmod(0o644)
+            with self.assertRaisesRegex(start_acceptance.PairFailure, "gateway.key"):
+                start_acceptance.private_credentials(state)
+
+    def test_registration_requires_a_trusted_remote_at_the_gateway(self):
+        with tempfile.TemporaryDirectory(prefix="msa", dir="/tmp") as folder:
+            root = Path(folder)
+            endpoint = {"url": "https://127.0.0.1:61000"}
+            for auth, addr, expected in (
+                    ("trusted", endpoint["url"], True),
+                    ("untrusted", endpoint["url"], False),
+                    ("trusted", "https://127.0.0.1:8443", False)):
+                with self.subTest(auth=auth, addr=addr):
+                    incus = root / "incus"
+                    remotes = json.dumps({"accept": {"Addrs": [addr], "Protocol": "incus"}})
+                    server = json.dumps({"auth": auth, "api_extensions": ["api_filtering"],
+                                         "environment": {"server_version": "7.0.1"}})
+                    incus.write_text(
+                        "#!/bin/sh\ncase \"$1\" in\n"
+                        f"  remote) echo '{remotes}' ;;\n"
+                        f"  query) echo '{server}' ;;\n"
+                        "  list) echo '[]' ;;\nesac\n")
+                    incus.chmod(0o755)
+                    report = {}
+                    run = start_acceptance.Run("/usr/bin/false", root, dict(os.environ), report)
+                    self.assertIs(start_acceptance.registration(
+                        run, incus, "accept", endpoint, report), expected)
+                    self.assertEqual(report["registration"]["listing_extensions"],
+                                     ["api_filtering"])
+                    self.assertEqual([c["tool"] for c in report["commands"]], ["incus"] * 3)
+
+    def test_guest_and_package_evidence_are_kept_apart(self):
+        self.assertFalse(set(start_acceptance.PACKAGE_CHECKS) & set(start_acceptance.GUEST_CHECKS))
+        for check in ("repeated_start", "native_https_registration", "public_runtime_control",
+                      "dependency_adds_no_listener_or_service"):
+            self.assertIn(check, start_acceptance.GUEST_CHECKS)
 
     def test_report_inside_runtime_does_not_destroy_data_or_run(self):
         sentinel = b"INCUS-DATA-SENTINEL\n"

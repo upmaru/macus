@@ -319,7 +319,13 @@ Success then requires all of the following:
 - the reported labels and endpoint port are this state's;
 - both plists are in `<state>/launchd` and name this state, the installed executable and the paired release revision;
 - `server/` holds owner-private credentials;
+- a repeated `macus start` is ready again with the same runtime and server processes and no guest reboot (runtime uptime keeps counting);
+- the standard `incus` client's remote in that `INCUS_CONF` names exactly the published endpoint, is `trusted`, and `incus list` works;
+- public runtime control over HTTPS, pinned to the published certificate: with a `runtime.read` token `GET /runtime/status` is ready; with a `runtime.write` token `POST /runtime/start` on the ready runtime returns it unchanged; a `runtime.read` token's `POST /runtime/stop` is refused with 403 and the runtime stays up. The tokens are issued with `macus server token issue` into a private temporary directory and revoked afterwards;
+- `:opsmaru_incus` adds no listener and no service: only this state's two labels exist, the server's process tree listens only on the gateway address, and `macus serve` has no network sockets;
 - the default jobs, their plists and the default endpoint are unchanged. The runner only reads these, with `launchctl print` and `stat`.
+
+The report keeps package evidence (the pair checks) and guest evidence (the hardware checks) in separate `evidence` sections. It leaves the isolated runtime running; stop it with `macus --state-dir STATE runtime stop`.
 
 ```bash
 python3 Integration/scripts/start-acceptance.py --opt-in --hardware \
