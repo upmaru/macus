@@ -367,9 +367,37 @@ The guest's marker file, snapshots, instance status and runtime state must be id
 
 The runner never stops, restarts or force-stops the VM. The only thing it deletes is the snapshot it created itself, through the confirmed MCP delete.
 
-It creates the workload with `incus create` and `incus start` rather than `incus launch`. The client always sends `"start": true`, and it starts the instance a second time unless the server advertises `instance_create_start`. The gateway doesn't advertise it yet, so `incus launch` reports "already running" after the container has started.
+It creates the workload with `incus create` and `incus start` rather than `incus launch`. The client always sends `"start": true`, and it starts the instance a second time unless the server advertises `instance_create_start`. The gateway doesn't advertise it yet ([opsmaru-incus#88](https://github.com/upmaru/opsmaru-incus/issues/88)), so `incus launch` reports "already running" after the container has started.
 
 Every child process gets an empty stdin, because `incus snapshot create` and `incus create` read YAML from a stdin that is not a terminal. If a command stalls anyway, the report keeps its `--debug` log, a goroutine dump and a TLS probe of the gateway.
+
+## Restart acceptance runner
+
+`Integration/scripts/restart-acceptance.py` (task 11.4) restarts only the server job of a state that `start-acceptance.py` started and `workload-acceptance.py` gave a kept workload. It takes the same arguments as the workload runner (without `--image`) and has the same opt-in steps: nothing without `--opt-in`, the pair and path checks without `--hardware`, and no restart until the client's remote is proved to be this state's endpoint.
+
+```bash
+python3 Integration/scripts/restart-acceptance.py --opt-in --hardware \
+  --state-dir /tmp/macus-accept --prefix "$(brew --prefix macus)" \
+  --incus-conf "$(python3 -c 'import json;print(json.load(open(".integration/start-acceptance.json"))["incus_conf"])')" \
+  --incus "$(command -v incus)" --remote macus \
+  --report "$PWD/.integration/restart-acceptance.json"
+```
+
+It restarts the server job three ways:
+
+- **Crash:** `launchctl kill SIGKILL` while an MCP exec is running in the guest; launchd relaunches the job.
+- **Explicit restart:** `launchctl kickstart -k` of the server job.
+- **Missing job:** `launchctl bootout` of the server job. `macus runtime status` must then report `unavailable` and name `macus start`, because the client never falls back to the private runtime socket. `macus start` must register the job again.
+
+Around each restart only the server pid may change. The runtime job's pid, the guest kernel's boot id, the kept instance's volatile UUID and init pid, and its marker file must stay the same, and the runtime uptime must only grow. Native `incus list` and an MCP list, with tokens issued before the restart, must work afterwards.
+
+It also checks how interrupted calls are reported:
+
+- **Zero-wait mutation:** an unnamed snapshot with `wait_seconds: 0` must report its native operation as `running`, never `completed`. Polling that id through `incus_operation_get` must reach `Success`.
+- **Call in flight during the crash:** the client gets no reply, so the call claims no completion. The runner records the exec's native operation while it runs, then reads the same id through the relaunched server. The command's first effect must happen exactly once.
+- **No replay:** after all three restarts there is still exactly one new snapshot and one run of the interrupted command.
+
+The runtime job is never stopped, restarted or relaunched. If the missing-job check fails, `macus start` still registers the job again before the run goes on. Afterwards the runner deletes its snapshot (through the confirmed MCP delete) and its exec log, then requires the guest state to match what it was before. Tokens are revoked.
 
 ## Integration acceptance
 
