@@ -10,7 +10,7 @@ and how to update the dependency.
 
 | | |
 | --- | --- |
-| Dependency | `opsmaru_incus` 0.2.4 |
+| Dependency | `opsmaru_incus` 0.2.6 |
 | Reference | `github.com/lxc/incus/v7` v7.0.1 (`13f3992766142d5087fff2e362cd2e1a75294fe8`) |
 | Inventory | 1280 declarations from 86 source files, SHA-256 `0aff3b4c5570fa8566fd955f6bc874a965163e01b76d31885aa6677bbd23a907` |
 | Dependency claims a complete port | no |

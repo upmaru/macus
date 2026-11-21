@@ -44,8 +44,6 @@ macus start --remote macus-fresh
 incus list macus-fresh:
 ```
 
-Until upmaru/opsmaru-incus#85 is released and adopted, the server's gateway does not advertise `api_filtering`, so the standard `incus list` (and the client setup at the end of `macus start`) fails against it; see the known limitation in [the server guide](docs/server.md#native-incus).
-
 The installed binary does not need the checkout after installation. A nondefault `MACUS_STATE_DIR` uses session-only runtime and server jobs and does not replace the default LaunchAgents. Passing unit tests is not this hardware acceptance.
 
 ## Advanced manual preparation
