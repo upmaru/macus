@@ -93,7 +93,7 @@ defmodule Macus.Incus.Evidence do
        {Opsmaru.Incus.Operations.Composite, :openapi, 0},
        {Opsmaru.Incus.Operations.Native, :openapi, 0}
      ]},
-    {"linked-evidence introspection (Macus.Incus.Evidence)", :operations,
+    {"linked-evidence introspection (Macus.Incus.Evidence, Macus.Incus.Coverage)", :operations,
      [
        {Opsmaru.Incus.Operations.Composite, :all, 0},
        {Opsmaru.Incus.Operations.Composite, :unavailable, 0},

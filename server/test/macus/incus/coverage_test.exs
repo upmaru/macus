@@ -199,6 +199,108 @@ defmodule Macus.Incus.CoverageTest do
     end
   end
 
+  describe "behavioural completeness (task 6.12)" do
+    setup do
+      %{records: Coverage.behavior_records(), operations: Coverage.operation_requirements()}
+    end
+
+    test "the locked dependency backs every exposed Incus operation behaviourally", context do
+      assert Coverage.behavior_errors(context.records, context.operations) == []
+      assert Coverage.behavior_complete?()
+
+      inv = context.records.endpoint_inventory
+      assert length(inv["entries"]) == 247
+      assert length(context.records.endpoint_evidence["entries"]) == 247
+      assert Enum.all?(inv["stream_contracts"], &(&1["status"] == "certified"))
+
+      # Every Incus operation in the MCP catalogue is checked; Macus's own
+      # runtime operations are not Incus operations.
+      sources = Enum.frequencies_by(context.operations, &elem(&1, 1))
+      assert sources == %{"opsmaru_incus" => 32, "opsmaru_incus_native" => 274}
+
+      incus = for op <- Macus.MCP.Manifest.operations(), op.source != "macus", do: op
+      assert length(context.operations) == length(incus)
+    end
+
+    test "behaviour and Go declaration parity are separate claims", context do
+      assert Coverage.behavior_errors(context.records, context.operations) == []
+      refute Coverage.complete_port?()
+    end
+
+    test "an incomplete endpoint classification or row fails", context do
+      inv = context.records.endpoint_inventory
+      [first | rest] = inv["entries"]
+
+      broken = %{
+        inv
+        | "classification_complete" => false,
+          "behavior_complete" => false,
+          "entries" => [Map.delete(first, "completion_record") | rest]
+      }
+
+      errors = Coverage.behavior_errors(%{context.records | endpoint_inventory: broken}, [])
+
+      assert {"endpoint-inventory.json", :classification_incomplete} in errors
+      assert {"endpoint-inventory.json", :behavior_incomplete} in errors
+      assert {first["pair"], :behavior_incomplete} in errors
+    end
+
+    test "an uncertified streaming contract fails", context do
+      inv = context.records.endpoint_inventory
+      [stream | rest] = inv["stream_contracts"]
+      broken = %{inv | "stream_contracts" => [%{stream | "status" => "partial"} | rest]}
+
+      assert Coverage.behavior_errors(%{context.records | endpoint_inventory: broken}, []) ==
+               [{"stream:" <> stream["id"], :stream_not_certified}]
+    end
+
+    test "selected evidence must cover every pair and be complete", context do
+      ev = context.records.endpoint_evidence
+      [_first, second | rest] = ev["entries"]
+      broken = %{ev | "entries" => [%{second | "status" => "partial"} | rest]}
+
+      errors = Coverage.behavior_errors(%{context.records | endpoint_evidence: broken}, [])
+
+      assert {"#{second["verb"]} #{second["path"]}", {:evidence_status, "partial"}} in errors
+
+      assert [{_pair, :no_selected_evidence}] =
+               for({_, :no_selected_evidence} = e <- errors, do: e)
+    end
+
+    test "a record pinning another Incus reference fails", context do
+      ev = %{
+        context.records.endpoint_evidence
+        | "reference_revision" => String.duplicate("0", 40)
+      }
+
+      assert Coverage.behavior_errors(%{context.records | endpoint_evidence: ev}, []) ==
+               [{"endpoint-evidence.json", {:reference, String.duplicate("0", 40)}}]
+    end
+
+    test "missing library support fails instead of falling back to Macus", context do
+      operations = [
+        {"incus_example_none", "opsmaru_incus", []},
+        {"incus_example_unknown", "opsmaru_incus_native", nil},
+        {"incus_example_missing", "opsmaru_incus_native", ["GetNothing"]},
+        {"incus_example_relay", "opsmaru_incus_native", ["GetRelayed"]},
+        {"incus_example_ok", "opsmaru_incus", ["GetInstance"]}
+      ]
+
+      lookup = fn
+        "GetNothing" -> {:error, :no_method_evidence}
+        "GetRelayed" -> {:ok, %{"go" => %{"evidence" => ["test/gateway_relay_test.exs"]}}}
+        requirement -> Opsmaru.Incus.Operations.Evidence.lookup(requirement)
+      end
+
+      assert Coverage.behavior_errors(context.records, operations, lookup) == [
+               {"incus_example_none", :no_requirements},
+               {"incus_example_unknown", :no_requirements},
+               {"incus_example_missing", {"GetNothing", :no_method_evidence}},
+               {"incus_example_relay", {"GetRelayed", :relay_or_consumer_evidence_only}}
+             ]
+    end
+  end
+
   describe "documentation" do
     test "docs/incus-coverage.md is current" do
       assert File.read!(Path.join(@docs, "incus-coverage.md")) == Coverage.markdown(),
@@ -211,7 +313,8 @@ defmodule Macus.Incus.CoverageTest do
       assert page =~
                "| Dependency | `opsmaru_incus` #{Macus.Build.identity().opsmaru_incus.version} |"
 
-      assert page =~ "| Complete port | no |"
+      assert page =~ "| Complete Go declaration port | no |"
+      assert page =~ "| Behaviourally complete | yes |"
     end
 
     test "the guide names the evidence owners, the kept fixtures and the update steps" do

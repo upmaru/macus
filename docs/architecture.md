@@ -35,9 +35,10 @@ gateway identity/trust exceptions. Typed-client parity has separate upstream
 inventory evidence; proxy breadth is not client-port evidence.
 
 `server/mix.lock` locks `:opsmaru_incus` 0.2.9 from Hex, which delivers the
-client, gateway, composite/native operations and their release cassette. Its coverage still reports
-`complete_port=false`, so no complete-client claim is made
-([coverage](incus-coverage.md)). Durable tasks and
+client, gateway, composite/native operations and their release cassette. Every Incus operation Macus
+exposes is backed by the library's behavioural evidence, while its Go
+declaration ledger still reports `complete_port=false`, so no complete Go
+port is claimed ([coverage](incus-coverage.md)). Durable tasks and
 central connectors are later milestones. No fallback client or duplicate task
 engine is implemented here. Macus binds the library to the owner's
 `incus.sock` with a readiness-gated host context and, with the serving

@@ -42,12 +42,23 @@ the locked package (`Macus.Incus.Coverage`) and publishes it as
 `mix macus.incus.coverage`. A test fails when the page no longer matches
 the locked package.
 
-The library is **not yet a complete port**: it says so itself, and many
-declarations are partial or missing. Macus makes no complete-client claim.
-`Macus.Incus.Coverage.complete_port?/0` is true only when the library claims
-a complete port **and** every inventory declaration is `complete` with an
-implementation and library evidence. A claim alone is not enough, and
-missing support is never filled by a Macus implementation.
+Two claims are kept apart, as the library keeps them:
+
+- **Behaviour** (task 6.12). `Macus.Incus.Coverage.behavior_errors/3` must
+  find nothing: every documented Incus endpoint pair behaviour-complete under
+  a reviewed completion record, every streaming contract certified, the
+  selected evidence complete for every pair, one Incus reference, and every
+  Incus operation in the MCP catalogue naming requirements that pass the
+  library's `Opsmaru.Incus.Operations.Evidence.lookup/1` with library (not
+  relay or Macus) evidence. This holds for the locked package.
+- **Go declaration parity.** The library is **not a complete port** of the
+  Go client: it says so itself, and every declaration is partial or missing.
+  `Macus.Incus.Coverage.complete_port?/0` is true only when the library claims
+  a complete port **and** every inventory declaration is `complete` with an
+  implementation and library evidence. A claim alone is not enough. Macus
+  makes no such claim and does not need one.
+
+Either way, missing support is never filled by a Macus implementation.
 
 Native gateway relay tests (the library's `test/gateway_*`) and Macus's own
 tests never count as typed-client evidence. Relaying a native request proves

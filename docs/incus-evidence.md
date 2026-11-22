@@ -54,7 +54,7 @@ Macus code calls, and a binding with no library evidence fails
 | MCP operation execute, composite (Macus.Dex.IncusExecutor) | `GetInstance` | `Opsmaru.Incus.Operations.Composite.run/3` |
 | MCP operation execute, native (Macus.Dex.NativeExecutor) | operation documents and the endpoint-inventory ledger | `Opsmaru.Incus.Operations.Native.run/3` |
 | MCP operation catalogue (Macus.MCP.Manifest) | operation documents and the endpoint-inventory ledger | `Opsmaru.Incus.Operations.Composite.openapi/0`, `Opsmaru.Incus.Operations.Native.openapi/0` |
-| linked-evidence introspection (Macus.Incus.Evidence) | operation documents and the endpoint-inventory ledger | `Opsmaru.Incus.Operations.Composite.all/0`, `Opsmaru.Incus.Operations.Composite.unavailable/0`, `Opsmaru.Incus.Operations.Evidence.lookup/1`, `Opsmaru.Incus.Operations.Native.unavailable/0` |
+| linked-evidence introspection (Macus.Incus.Evidence, Macus.Incus.Coverage) | operation documents and the endpoint-inventory ledger | `Opsmaru.Incus.Operations.Composite.all/0`, `Opsmaru.Incus.Operations.Composite.unavailable/0`, `Opsmaru.Incus.Operations.Evidence.lookup/1`, `Opsmaru.Incus.Operations.Native.unavailable/0` |
 | endpoint-inventory diff (Mix.Tasks.Macus.Incus.Coverage) | operation documents and the endpoint-inventory ledger | `Opsmaru.Incus.Inventory.diff/2` |
 | private gateway relay (Macus.Proxy, Macus.Proxy.Host, MacusWeb.Router) | relay class; the gateway-transfer record | `Opsmaru.Incus.Connection.project/2`, `Opsmaru.Incus.Gateway.Plug.init/0`, `Opsmaru.Incus.Gateway.new!/1`, `Opsmaru.Incus.raw_query/5` |
 | server information, readiness and extension checks (Opsmaru.Incus.has_extension?/2) | `helper:connect` | _consumer tests only_ |

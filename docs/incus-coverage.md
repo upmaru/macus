@@ -14,10 +14,35 @@ and how to update the dependency.
 | Reference | `github.com/lxc/incus/v7` v7.0.1 (`13f3992766142d5087fff2e362cd2e1a75294fe8`) |
 | Inventory | 1280 declarations from 86 source files, SHA-256 `0aff3b4c5570fa8566fd955f6bc874a965163e01b76d31885aa6677bbd23a907` |
 | Dependency claims a complete port | no |
-| Complete port | no |
-| Gaps | 1280 |
+| Complete Go declaration port | no |
+| Declaration gaps | 1280 |
+| Behaviourally complete | yes |
 
-## By declaration kind
+## Behavioural completeness
+
+Macus validates the shared client on behaviour (task 6.12), as the
+library does for its own client: every documented endpoint pair
+behaviour-complete under a reviewed completion record, every streaming
+contract certified, and every Incus operation in Macus's MCP catalogue
+backed only by library evidence for those rows. Go declaration parity,
+below, is a separate claim that this does not make.
+
+| | |
+| --- | --- |
+| Endpoint pairs behaviour-complete | 247 of 247 |
+| Endpoint classification complete | yes |
+| Streaming contracts certified | 12 of 12 |
+| Incus MCP operations backed by library evidence | 306 of 306 (32 composite, 274 native) |
+| Distinct library requirements | 277 |
+| Behaviourally complete | yes |
+
+### Problems
+
+None.
+
+## Go declaration parity
+
+### By declaration kind
 
 | Kind | Declarations | Complete | Partial | Missing |
 | --- | --- | --- | --- | --- |
@@ -28,7 +53,7 @@ and how to update the dependency.
 | type | 265 | 0 | 239 | 26 |
 | var | 2 | 0 | 1 | 1 |
 
-## Not implemented
+### Not implemented
 
 Declarations the dependency marks `missing`: no implementation and no
 evidence.
@@ -70,7 +95,7 @@ evidence.
 - `client/type/StorageVolumeNBDPost`
 - `client/var/ErrOIDCExpired`
 
-## Other gaps
+### Other gaps
 
 Declarations missing from the coverage record, coverage entries outside
 the inventory, and complete entries without an implementation or with

@@ -14,9 +14,18 @@ defmodule Macus.Incus.Coverage do
   from Macus's own tests is never typed-client evidence, so it cannot fill
   a gap.
 
+  Go declaration parity (`complete_port?/2`) and behavioural completeness
+  (`behavior_errors/3`) are separate claims, as they are in the library.
+  Task 6.12 is validated on behaviour: every documented endpoint pair is
+  behaviour-complete under a reviewed completion record, every streaming
+  contract is certified, and every Incus operation Macus's MCP catalogue
+  exposes rests only on library evidence for those rows.
+
   `docs/incus-coverage.md` is `markdown/0`; regenerate it with
   `mix macus.incus.coverage` after changing the locked dependency.
   """
+
+  alias Opsmaru.Incus.Operations.{Composite, Native}
 
   @type gap ::
           {String.t(),
@@ -46,6 +55,169 @@ defmodule Macus.Incus.Coverage do
 
   @doc "The record of fixtures transferred from Macus into the dependency."
   def transfer, do: read!("transfer.json")
+
+  @doc "The dependency's classification of every documented REST endpoint pair."
+  def endpoint_inventory, do: read!("endpoint-inventory.json")
+
+  @doc "The dependency's selected evidence for those endpoint pairs."
+  def endpoint_evidence, do: read!("endpoint-evidence.json")
+
+  @incus_sources ~w(opsmaru_incus opsmaru_incus_native)
+
+  @doc """
+  The records `behavior_errors/3` reads: the pinned reference and the
+  endpoint classification and evidence.
+  """
+  @spec behavior_records() :: map()
+  def behavior_records do
+    %{
+      reference: reference(),
+      endpoint_inventory: endpoint_inventory(),
+      endpoint_evidence: endpoint_evidence()
+    }
+  end
+
+  @doc """
+  Every Incus operation in Macus's MCP catalogue with the library
+  requirements it rests on: a native method (`"GetInstance"`), a helper
+  (`"helper:connect"`) or a streaming contract (`"stream:S01"`). Macus's own
+  runtime operations are not Incus operations and are left out.
+  """
+  @spec operation_requirements([map()]) :: [{String.t(), String.t(), [String.t()] | nil}]
+  def operation_requirements(operations \\ Macus.MCP.Manifest.operations()) do
+    native =
+      for {_path, %{"post" => post}} <- Native.openapi()["paths"],
+          into: %{},
+          do: {post["operationId"], post["x-opsmaru-requires"]}
+
+    for %{source: source, operation_id: id} <- operations, source in @incus_sources do
+      requires =
+        case source do
+          "opsmaru_incus" ->
+            case Composite.fetch(id) do
+              {:ok, descriptor} -> descriptor.requires
+              _ -> nil
+            end
+
+          "opsmaru_incus_native" ->
+            native[id]
+        end
+
+      {id, source, requires}
+    end
+  end
+
+  @doc """
+  Why the locked dependency does not yet back Macus's Incus operations
+  behaviourally, or `[]`. Each error is `{subject, reason}`:
+
+    * the endpoint classification is not complete, a documented pair (or
+      supplemental server row) is not behaviour-complete under a completion
+      record, or a streaming contract is not certified;
+    * the selected evidence does not cover every classified pair, or names a
+      pair that is not `complete`;
+    * a record pins a different Incus reference;
+    * an exposed Incus operation names no requirement, a requirement has no
+      library evidence (`lookup` is `Opsmaru.Incus.Operations.Evidence.lookup/1`),
+      or its only evidence is a relay or Macus test.
+
+  Missing library support is reported here; it is never filled by a Macus
+  implementation.
+  """
+  @spec behavior_errors(map(), list(), (String.t() -> {:ok, map()} | {:error, term()})) ::
+          [{String.t(), term()}]
+  def behavior_errors(
+        records \\ behavior_records(),
+        operations \\ operation_requirements(),
+        lookup \\ &library_lookup/1
+      ) do
+    endpoint_errors(records) ++ operation_errors(operations, lookup)
+  end
+
+  defp library_lookup(requirement), do: Opsmaru.Incus.Operations.Evidence.lookup(requirement)
+
+  @doc "True when `behavior_errors/3` finds nothing."
+  @spec behavior_complete?() :: boolean()
+  def behavior_complete?, do: behavior_errors() == []
+
+  defp endpoint_errors(%{reference: reference, endpoint_inventory: inv, endpoint_evidence: ev}) do
+    revision = reference["revision"]
+    rows = inv["entries"] ++ Map.get(inv, "supplemental_server_entries", [])
+
+    flags =
+      for {key, reason} <- [
+            {"classification_complete", :classification_incomplete},
+            {"behavior_complete", :behavior_incomplete}
+          ],
+          inv[key] != true,
+          do: {"endpoint-inventory.json", reason}
+
+    revisions =
+      for {name, record} <- [{"endpoint-inventory.json", inv}, {"endpoint-evidence.json", ev}],
+          record["reference_revision"] != revision,
+          do: {name, {:reference, record["reference_revision"]}}
+
+    incomplete =
+      for row <- rows,
+          row["behavior_complete"] != true or not is_binary(row["completion_record"]),
+          do: {row["pair"], :behavior_incomplete}
+
+    streams =
+      for stream <- Map.get(inv, "stream_contracts", []),
+          stream["status"] != "certified" or not is_binary(stream["completion_record"]),
+          do: {"stream:" <> to_string(stream["id"]), :stream_not_certified}
+
+    classified = MapSet.new(inv["entries"], & &1["pair"])
+
+    selected =
+      MapSet.new(ev["entries"], fn entry ->
+        entry["pair"] || "#{entry["verb"]} #{normalize(entry["path"])}"
+      end)
+
+    uncovered =
+      for pair <- Enum.sort(MapSet.to_list(MapSet.difference(classified, selected))),
+          do: {pair, :no_selected_evidence}
+
+    statuses =
+      for entry <- ev["entries"],
+          entry["status"] != "complete",
+          do: {"#{entry["verb"]} #{entry["path"]}", {:evidence_status, entry["status"]}}
+
+    flags ++ revisions ++ incomplete ++ streams ++ uncovered ++ statuses
+  end
+
+  # endpoint-evidence.json names path parameters (`{fingerprint}`); the
+  # classification's pair keys write them as `{}`.
+  defp normalize(path), do: String.replace(path, ~r/\{[^}]*\}/, "{}")
+
+  defp operation_errors(operations, lookup) do
+    Enum.flat_map(operations, fn
+      {id, _source, requires} when requires in [nil, []] ->
+        [{id, :no_requirements}]
+
+      {id, _source, requires} ->
+        for requirement <- requires,
+            reason = requirement_error(lookup.(requirement)),
+            reason != nil,
+            do: {id, {requirement, reason}}
+    end)
+  end
+
+  defp requirement_error({:error, reason}), do: reason
+
+  defp requirement_error({:ok, record}) do
+    files = library_files(record)
+    if files != [] and Enum.all?(files, &substitute?/1), do: :relay_or_consumer_evidence_only
+  end
+
+  defp requirement_error(other), do: {:unexpected, other}
+
+  defp library_files(%{"go" => %{"evidence" => files}}) when is_list(files), do: files
+
+  defp library_files(%{"evidence" => files}) when is_list(files),
+    do: Enum.filter(files, &is_binary/1)
+
+  defp library_files(_record), do: []
 
   @doc """
   Every inventory declaration that is not complete, with the first reason,
@@ -102,6 +274,9 @@ defmodule Macus.Incus.Coverage do
     inventory = inventory()
     coverage = coverage()
     gaps = gaps(coverage, inventory)
+    records = behavior_records()
+    operations = operation_requirements()
+    behavior = behavior_errors(records, operations)
     statuses = Map.new(coverage["entries"], &{&1["id"], &1["status"]})
     version = Macus.Build.identity().opsmaru_incus.version
 
@@ -140,10 +315,22 @@ defmodule Macus.Incus.Coverage do
       | Reference | `#{reference["module"]}` #{reference["tag"]} (`#{reference["revision"]}`) |
       | Inventory | #{length(inventory["entries"])} declarations from #{length(inventory["sources"])} source files, SHA-256 `#{sha256("inventory.json")}` |
       | Dependency claims a complete port | #{yes(coverage["complete_port"] == true)} |
-      | Complete port | #{yes(complete_port?(coverage, inventory))} |
-      | Gaps | #{length(gaps)} |
+      | Complete Go declaration port | #{yes(complete_port?(coverage, inventory))} |
+      | Declaration gaps | #{length(gaps)} |
+      | Behaviourally complete | #{yes(behavior == [])} |
 
-      ## By declaration kind
+      ## Behavioural completeness
+
+      Macus validates the shared client on behaviour (task 6.12), as the
+      library does for its own client: every documented endpoint pair
+      behaviour-complete under a reviewed completion record, every streaming
+      contract certified, and every Incus operation in Macus's MCP catalogue
+      backed only by library evidence for those rows. Go declaration parity,
+      below, is a separate claim that this does not make.
+
+      #{behavior_table(records, operations, behavior)}## Go declaration parity
+
+      ### By declaration kind
 
       | Kind | Declarations | Complete | Partial | Missing |
       | --- | --- | --- | --- | --- |
@@ -151,7 +338,7 @@ defmodule Macus.Incus.Coverage do
       by_kind,
       """
 
-      ## Not implemented
+      ### Not implemented
 
       Declarations the dependency marks `missing`: no implementation and no
       evidence.
@@ -160,7 +347,7 @@ defmodule Macus.Incus.Coverage do
       if(not_started == [], do: "None.\n", else: not_started),
       """
 
-      ## Other gaps
+      ### Other gaps
 
       Declarations missing from the coverage record, coverage entries outside
       the inventory, and complete entries without an implementation or with
@@ -170,6 +357,42 @@ defmodule Macus.Incus.Coverage do
       if(other == [], do: "None.\n", else: other)
     ]
     |> IO.iodata_to_binary()
+  end
+
+  defp behavior_table(records, operations, errors) do
+    inv = records.endpoint_inventory
+    rows = inv["entries"]
+    streams = Map.get(inv, "stream_contracts", [])
+    by_source = Enum.frequencies_by(operations, &elem(&1, 1))
+    requirements = operations |> Enum.flat_map(&(elem(&1, 2) || [])) |> Enum.uniq()
+    failing = errors |> Enum.map(&elem(&1, 0)) |> MapSet.new()
+
+    complete_rows =
+      Enum.count(rows, &(&1["behavior_complete"] == true and is_binary(&1["completion_record"])))
+
+    certified = Enum.count(streams, &(&1["status"] == "certified"))
+    backed = Enum.count(operations, &(elem(&1, 0) not in failing))
+
+    problems =
+      if errors == [],
+        do: "None.\n",
+        else:
+          Enum.map_join(errors, fn {subject, reason} -> "- `#{subject}`: #{inspect(reason)}\n" end)
+
+    """
+    | | |
+    | --- | --- |
+    | Endpoint pairs behaviour-complete | #{complete_rows} of #{length(rows)} |
+    | Endpoint classification complete | #{yes(inv["classification_complete"] == true)} |
+    | Streaming contracts certified | #{certified} of #{length(streams)} |
+    | Incus MCP operations backed by library evidence | #{backed} of #{length(operations)} (#{by_source["opsmaru_incus"] || 0} composite, #{by_source["opsmaru_incus_native"] || 0} native) |
+    | Distinct library requirements | #{length(requirements)} |
+    | Behaviourally complete | #{yes(errors == [])} |
+
+    ### Problems
+
+    #{problems}
+    """
   end
 
   defp sha256(name),
