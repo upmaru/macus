@@ -80,6 +80,7 @@ def main():
         ('/usr/local/libexec/tama-bridge.py', (source / 'bridge.py').read_text()),
         ('/usr/local/libexec/tama-bootstrap.sh', bootstrap),
         ('/usr/local/libexec/tama-storage.sh', (Path(__file__).parent / 'zfs-storage.sh').read_text()),
+        ('/usr/local/libexec/tama-incus-guard.sh', (source / 'incus-guard.sh').read_text()),
         ('/etc/init.d/tama-storage', storage_init),
         ('/etc/init.d/tama-bridge', (source / 'tama-bridge.initd').read_text()),
         ('/etc/init.d/tama-qualification', init),

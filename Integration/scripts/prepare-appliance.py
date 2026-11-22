@@ -45,6 +45,7 @@ seed.mkdir(exist_ok=True)
 (seed / 'network-config').write_text('version: 1\nconfig:\n  - type: physical\n    name: eth0\n    subnets:\n      - type: dhcp\n')
 entries = [('bridge.py', '/usr/local/libexec/tama-bridge.py', '0755'),
            ('storage.sh', '/usr/local/libexec/tama-storage.sh', '0755'),
+           ('incus-guard.sh', '/usr/local/libexec/tama-incus-guard.sh', '0755'),
            ('bootstrap.sh', '/usr/local/libexec/tama-bootstrap.sh', '0755'),
            ('tama-storage.initd', '/etc/init.d/tama-storage', '0755'),
            ('tama-bridge.initd', '/etc/init.d/tama-bridge', '0755'),
