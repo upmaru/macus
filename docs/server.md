@@ -197,8 +197,17 @@ alongside `api_filtering` and `instance_get_full`, which the standard
 client needs to list instances (0.2.6, upmaru/opsmaru-incus#85), and
 `instance_create_start`, without which `incus launch` starts the new
 instance a second time and fails with "already running" (0.2.7,
-upmaru/opsmaru-incus#88). `opsmaru_incus` 0.2.8 implements every one, so
-clients see them all when the guest reports them.
+upmaru/opsmaru-incus#88). Since 0.2.9 it also lists the extensions of every
+other route the gateway relays (projects, storage, networks, all-projects
+listings, backups, and instance, file, copy and image options), because the
+standard client refuses a command whose extension the server does not
+advertise (upmaru/opsmaru-incus#94). The list matches
+`Opsmaru.Incus.Gateway.Identity.supported_extensions/0` exactly, and
+`gateway_test.exs` pins it, so a library release that implements more shows
+up as a failing test rather than a silent change. Clients see each one when
+the guest reports it. Clustering, `certificate_token`, `metrics`,
+`project_access`, `instance_access` and `console_vga_type` stay hidden.
+Backup uploads and exports are bounded by the gateway's 1 GiB stream limit.
 
 The `/mcp` operations never copy between servers. The library leaves out
 every client method that names another server and carries its certificate

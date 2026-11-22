@@ -2,12 +2,12 @@
 
 ## Why
 
-Macus needs an authenticated public gateway for its Swift runtime, canonical Incus access and agent tools. The first milestone is a standalone Macus. It uses the pure `:opsmaru_incus` library (`upmaru/opsmaru-incus`, on Hex; Macus locks 0.2.8) for the Incus client, native gateway mechanics and shared Incus operation descriptors, the same definitions central Opsmaru uses, without depending on the `:opsmaru` central service. Registering a Mac with central Opsmaru is a later change (`add-central-registration`).
+Macus needs an authenticated public gateway for its Swift runtime, canonical Incus access and agent tools. The first milestone is a standalone Macus. It uses the pure `:opsmaru_incus` library (`upmaru/opsmaru-incus`, on Hex; Macus locks 0.2.9) for the Incus client, native gateway mechanics and shared Incus operation descriptors, the same definitions central Opsmaru uses, without depending on the `:opsmaru` central service. Registering a Mac with central Opsmaru is a later change (`add-central-registration`).
 
 ## What Changes
 
 - Keep one headless Phoenix/Cowboy Mix project in `server/`, OTP application `:macus` with `Macus`/`MacusWeb` namespaces, as Macus's public gateway.
-- Depend on the pure `:opsmaru_incus` library from Hex (`~> 0.2.8`, locked in `server/mix.lock`). It has no application callback, so it starts no endpoint, listener or process inside the Macus BEAM; no other service is installed.
+- Depend on the pure `:opsmaru_incus` library from Hex (`~> 0.2.9`, locked in `server/mix.lock`). It has no application callback, so it starts no endpoint, listener or process inside the Macus BEAM; no other service is installed.
 - Expose authenticated HTTPS for local and explicitly configured LAN/remote access. Retain gateway-owned certificate trust for standard Incus clients and scoped bearer credentials for `/runtime` and `/mcp` before private backend access.
 - Expose `/runtime/*` mapped to Swift's private `/v1/runtime/*`; preserve `/` and native `/1.0/*` paths, HTTP/streaming/native upgrades and gateway identity mediation without `/incus` aliases or an upstream client patch.
 - **BREAKING**: make the Macus gateway the normal connection boundary for Swift CLI and standard Incus clients. Keep `runtime.sock` and `incus.sock` internal and preserve existing remote conflict rules.

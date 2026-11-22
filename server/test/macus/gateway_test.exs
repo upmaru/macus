@@ -660,18 +660,40 @@ defmodule Macus.GatewayTest do
       assert copy -- configured == []
 
       # The standard client's `incus list` needs both (upmaru/opsmaru-incus#85),
-      # and `incus launch` needs instance_create_start (upmaru/opsmaru-incus#88).
-      assert ~w(api_filtering instance_get_full instance_create_start) -- configured == []
+      # `incus launch` needs instance_create_start (upmaru/opsmaru-incus#88)
+      # and `--project`, `incus storage` and `incus network` need these
+      # (upmaru/opsmaru-incus#94).
+      assert ~w(api_filtering instance_get_full instance_create_start projects storage
+                network) -- configured == []
 
       {:ok, socket} = tls(gateway.config.port, gateway.certificate.der)
       [_, body] = socket |> get("/1.0") |> String.split("\r\n\r\n", parts: 2)
       advertised = Jason.decode!(body)["metadata"]["api_extensions"]
 
       # The shared gateway serves only the configured extensions it
-      # implements; opsmaru_incus 0.2.8 implements every configured one.
+      # implements; opsmaru_incus 0.2.9 implements every configured one.
       supported = Opsmaru.Incus.Gateway.Identity.supported_extensions()
       assert configured -- supported == []
       assert advertised == configured
+    end
+
+    test "Macus advertises exactly the extensions the gateway implements" do
+      configured = Application.get_env(:macus, Macus.Proxy)[:api_extensions]
+      supported = Opsmaru.Incus.Gateway.Identity.supported_extensions()
+
+      # A library upgrade that implements a new extension shows up here, so
+      # adding it to `config :macus, Macus.Proxy, api_extensions` is a
+      # reviewed decision rather than a silent change to what clients see.
+      assert Enum.uniq(configured) == configured
+      assert Enum.sort(configured) == Enum.sort(supported)
+      assert length(configured) == 95
+
+      # Hidden by the gateway whatever the host asks for (upmaru/opsmaru-incus#94).
+      hidden = ~w(clustering clustering_join certificate_token metrics project_access
+                  instance_access console_vga_type)
+
+      assert hidden -- configured == hidden
+      assert hidden -- supported == hidden
     end
 
     test "native request bodies reach incus.sock byte for byte, unparsed", context do

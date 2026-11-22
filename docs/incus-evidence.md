@@ -12,9 +12,9 @@ much of the reference the library covers.
 
 | | |
 | --- | --- |
-| Dependency | `opsmaru_incus` 0.2.8 |
-| Hex outer checksum (`server/mix.lock`) | `14d54406c71296b77f016fd3ff7450162b5304e0c9b4af56183e4312f3eb62a5` |
-| Package version (loaded) | 0.2.8 |
+| Dependency | `opsmaru_incus` 0.2.9 |
+| Hex outer checksum (`server/mix.lock`) | `10eef7015038da99532ced4e8d2b31228df29842ddc557780a0810312d5ca705` |
+| Package version (loaded) | 0.2.9 |
 | Package source | https://github.com/upmaru/opsmaru-incus |
 | Reference | `github.com/lxc/incus/v7` v7.0.1 (`13f3992766142d5087fff2e362cd2e1a75294fe8`) |
 | Evidence records | 12 files under the package's `priv/incus`; every one that pins the Incus reference agrees with `reference.json` |

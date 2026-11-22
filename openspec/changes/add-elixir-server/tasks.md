@@ -1,6 +1,6 @@
 # Tasks
 
-First milestone: a standalone Macus. Checked tasks record earlier scaffold/reference/transport/runtime evidence. Macus depends on the pure `:opsmaru_incus` library (`upmaru/opsmaru-incus`) for the Incus client (`add-embedded-incus-foundation`), native gateway mechanics (`add-embeddable-incus-gateway`) and shared Incus operation descriptors (`add-incus-operations`), released on Hex (Macus took 0.2.0 on 2026-11-17 and now locks `:opsmaru_incus` 0.2.8); it does not depend on the `:opsmaru` central service. Durable MCP tasks are deferred. Central registration moved to `add-central-registration` on 2026-10-13. Dependent work is gated on the released Hex package locked in `server/mix.lock`, never a placeholder package; `tama_dex` 0.1.0 and `tama_mcp` 0.2.1 are locked alongside it.
+First milestone: a standalone Macus. Checked tasks record earlier scaffold/reference/transport/runtime evidence. Macus depends on the pure `:opsmaru_incus` library (`upmaru/opsmaru-incus`) for the Incus client (`add-embedded-incus-foundation`), native gateway mechanics (`add-embeddable-incus-gateway`) and shared Incus operation descriptors (`add-incus-operations`), released on Hex (Macus took 0.2.0 on 2026-11-17 and now locks `:opsmaru_incus` 0.2.9); it does not depend on the `:opsmaru` central service. Durable MCP tasks are deferred. Central registration moved to `add-central-registration` on 2026-10-13. Dependent work is gated on the released Hex package locked in `server/mix.lock`, never a placeholder package; `tama_dex` 0.1.0 and `tama_mcp` 0.2.1 are locked alongside it.
 
 ## 1. Headless project and library dependency integration
 
@@ -129,6 +129,7 @@ Relay mechanics come from `Opsmaru.Incus.Gateway` (`add-embeddable-incus-gateway
   - Rechecked 2026-11-21 against the locked opsmaru_incus 0.2.6: `coverage.json` still reports `complete_port: false` (1244 partial, 36 missing, unchanged since 0.2.4), so this stays open. `docs/incus-coverage.md`, `docs/incus-evidence.md` and `docs/mcp-operations.md` are regenerated for 0.2.6.
   - Rechecked 2026-11-21 against opsmaru_incus 0.2.7: still `complete_port: false` (1244 partial, 36 missing), so this stays open; the three generated pages are regenerated for 0.2.7.
   - Rechecked 2026-11-22 against opsmaru_incus 0.2.8: the inventory is unchanged and coverage is still `complete_port: false` (1244 partial, 36 missing), so this stays open; the three generated pages are regenerated for 0.2.8.
+  - Rechecked 2026-11-22 against opsmaru_incus 0.2.9: `mix macus.incus.coverage --diff` against 0.2.8's `inventory.json` reports nothing added, removed or changed, so coverage is still `complete_port: false` and this stays open; the three generated pages are regenerated for 0.2.9.
 
 ## 7. MCP transport, authorization and search/execute tools
 
