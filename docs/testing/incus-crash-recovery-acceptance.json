@@ -2,7 +2,7 @@
   "schema_version": 1,
   "change": "recover-incus-boot-crash",
   "status": "passed",
-  "recorded_at": "2026-11-22T16:50:00+00:00",
+  "recorded_at": "2026-11-22T17:10:00+00:00",
   "macus_source_commit": "fdcb1025fd82a58b919a641fd36530347e40752a",
   "macus_build": "release, Packaging/install-local.sh into an isolated prefix, ad hoc virtualization signing",
   "macus_binary_sha256": "f150e228ed931a831504538bc46da1e433bed5c0198d6f27b353f0fc682d5aeb",
@@ -31,7 +31,7 @@
     "incus": "7.0.1",
     "pool": "zfs",
     "provisioned_payload_revision": "ba33d62b8d178ca116a37bd6b5b1524973210d95fb9136ae670f3d45906d78e4",
-    "final_payload_revision": "c1ffcae01f805f643655fe51108394a27b5034a3fca341721d8eec63776af814"
+    "final_payload_revision": "9d040105f13c87aefd6d6448c41eca807c414519bd0a1a534b2aa936d3bf3835"
   },
   "crash_injection": "Test-only start_post() appended to the guest /etc/conf.d/incusd through a privileged Incus container with the guest root mounted. Each incusd launch consumed one count from /var/lib/tama-acceptance/crashes and sent SIGABRT 1 s after start, so the Go runtime dumped goroutines to stderr and exited. The hook, counter file and container were removed afterwards and conf.d was restored byte-for-byte from its backup.",
   "runs": [
@@ -78,7 +78,10 @@
     },
     {
       "name": "manual_recovery",
-      "commands": ["macus runtime stop --force", "macus start"],
+      "commands": [
+        "macus runtime stop --force",
+        "macus start"
+      ],
       "result": "ready",
       "seconds": 37,
       "checks": {
@@ -98,21 +101,43 @@
       "finding": "OpenRC rc.log showed the recovery shutdown was graceful but logged 'incusd failed to stop' and then 'tama-storage failed to stop', so the ZFS pool was not exported. The guard now zaps a crashed incusd when it gives up; on the repeat run incusd no longer blocked shutdown, but zpool export still failed with \"cannot unmount '/var/lib/incus': pool or dataset is busy\". The pool imported cleanly on every following boot."
     },
     {
+      "name": "storage_stop_after_crash",
+      "crashes_injected": 3,
+      "result": "ready",
+      "seconds": 93,
+      "diagnosis": "A test-only stop_pre in /etc/conf.d/tama-storage dumped state at storage stop. Clean shutdown: only tama-data/metadata mounted at /var/lib/incus. After a crash: tmpfs /var/lib/incus/devices, shmounts and guestapi still mounted, and an orphaned dnsmasq (parent 1) holding /var/lib/incus/networks/incusbr0/dnsmasq.leases.",
+      "fix": "storage.sh stop releases a dead incusd's leftovers (TERM/KILL holders under the metadata mount, unmount tmpfs there) after a failed first export, then retries once; never while incusd's daemon is alive and never datasets.",
+      "checks": {
+        "first_export_busy_then_released": true,
+        "holder_terminated_without_kill": "dnsmasq",
+        "tmpfs_unmounted": [
+          "/var/lib/incus/shmounts",
+          "/var/lib/incus/guestapi",
+          "/var/lib/incus/devices"
+        ],
+        "export_ok_on_recovery_shutdown": true,
+        "openrc_stop_errors": 0,
+        "normal_graceful_stop_released_nothing": true,
+        "guest_storage_script_matches_repository_sha256": "97007391d00ff296f4d9ef55eba4fbe14c1d61497c7ae5e2928257eb730df191"
+      }
+    },
+    {
       "name": "clean_boot_after_cleanup",
       "result": "ready",
       "seconds": 37,
       "checks": {
         "no_crash_markers": true,
         "conf_d_restored": true,
-        "guest_guard_matches_repository_sha256": "c990de8bc8df1bdcd70f7f913dfd0cc295d603df2528e3c1dcd3c33f7fd195f0"
+        "guest_guard_matches_repository_sha256": "c990de8bc8df1bdcd70f7f913dfd0cc295d603df2528e3c1dcd3c33f7fd195f0",
+        "conf_d_tama_storage_hook_removed": true
       }
     }
   ],
   "deviations": [
-    "The appliance was provisioned with payload revision ba33d62b. The guard was then replaced inside the guest with each later revision by sha256-verified copy, not by provisioning a second fresh state. The host binary was not rebuilt; later commits change only guest scripts and the embedded payload.",
+    "The appliance was provisioned with payload revision ba33d62b. The guard and later storage.sh were then replaced inside the guest by sha256-verified copy, not by provisioning a second fresh state. The host binary was not rebuilt; later commits change only guest scripts and the embedded payload.",
     "Crashes were injected with SIGABRT from a test hook, not reproduced from the original unexplained crash."
   ],
   "open_findings": [
-    "After an incusd crash, tama-storage stop cannot export the pool because /var/lib/incus stays busy (likely mounts or child processes left by the dead incusd). Data is preserved and the next boot imports the pool; cleaning up after a dead incusd belongs to a storage change."
+    "A crash while instances run was not exercised; instance processes holding datasets would make the retried export fail as before, and the next boot imports the pool."
   ]
 }

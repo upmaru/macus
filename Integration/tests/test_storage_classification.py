@@ -45,8 +45,17 @@ if [ "$1" = import ]; then
   if [ "${{TAMA_ZPOOL_IMPORT_OK:-}}" = 1 ]; then exit 0; fi
   exit 1
 fi
+if [ "$1" = export ] && [ -n "${{TAMA_EXPORT_FAILS_FILE:-}}" ]; then
+  left=$(cat "$TAMA_EXPORT_FAILS_FILE")
+  if [ "$left" -gt 0 ]; then
+    echo $((left - 1)) > "$TAMA_EXPORT_FAILS_FILE"
+    echo "cannot unmount '/var/lib/incus': pool or dataset is busy" >&2
+    exit 1
+  fi
+fi
 exit 0
 ''')
+        write_stub(bin_dir, 'rc-service', f'printf "rc-service %s\\n" "$*" >> "{calls}"\nexit "${{TAMA_INCUSD_STATUS:-3}}"\n')
         write_stub(bin_dir, 'zfs', f'''
 printf "zfs %s\\n" "$*" >> "{calls}"
 if [ "$1" = get ]; then

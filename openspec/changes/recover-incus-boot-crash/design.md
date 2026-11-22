@@ -98,6 +98,19 @@ A second `incus_crashed` in the same operation fails with a message saying one a
 
 **Why the count is not persisted like `RebootAllowanceStore`:** the reboot allowance is a once-per-appliance-lifetime contract that must survive daemon restarts. This bound is per start operation. A daemon restart ends that operation, and a new operation is a new user request, so an in-memory flag in `startLocked` gives the bound with nothing on disk to manage, reset or harden. Each start can cost at most two boots plus one bounded shutdown.
 
+### 5. Storage stop after an Incus crash
+
+Hardware acceptance found that, after an incusd crash, the shutdown never exported the pool. First, OpenRC ran Alpine's `stop()` on the crashed service, failed, and refused to stop `tama-storage`. The guard's zap on give-up (decision 2) fixes that. Then `zpool export` failed with `cannot unmount '/var/lib/incus': pool or dataset is busy`. A diagnostic `stop_pre` hook compared shutdowns. After a clean stop, only `tama-data/metadata` is mounted at `/var/lib/incus`. After a crash, incusd's tmpfs mounts `devices`, `shmounts` and `guestapi` were still there, and an orphaned `dnsmasq` for `incusbr0` (parent PID 1) held `networks/incusbr0/dnsmasq.leases` open. A clean `incusd shutdown` removes both kinds.
+
+`storage.sh stop` keeps its first attempt unchanged. Only if `zpool export` (or the ext4 `umount`) fails does it call `release_dead_incus`:
+
+1. It does nothing and fails if incusd is alive: `rc-service incusd status` is 0, or the pidfile names a live `/usr/sbin/incusd`. A zapped or crashed service reports stopped, so the pidfile check is needed.
+2. Processes, other than PID 1 and itself, whose cwd, root, executable or open files are under the metadata mount get TERM, then KILL after up to 10 s. Each one is logged with its command line.
+3. tmpfs mounts under the metadata mount are unmounted, deepest first. ZFS datasets are left for `zpool export`, which unmounts them itself.
+4. It retries the export once. If that still fails, it logs the remaining holders and fails, as before.
+
+This lives in `tama-storage` because that is where the export fails, and because it applies whichever way incusd died. It is not a workload operation. It stops the leftovers of a daemon that is already gone, during a shutdown that would kill them anyway.
+
 ## Risks / Trade-offs
 
 - [A deterministic crash (for example memory overcommit) restarts three times per boot and twice per start] → Bounded at 3 launches per boot and 2 boots per start. Each crash leaves evidence, and the final error names the code.
@@ -105,7 +118,7 @@ A second `incus_crashed` in the same operation fails with a message saying one a
 - [Log files grow across boots] → incusd's default level is warnings and errors. Panics are rare. Rotation can be added later without a protocol change.
 - [Copied log tails reach `serial.log`] → `serial.log` is already private (0600) in the owned state directory. Lines are bounded, prefixed and never parsed as observations. Incus logs do not contain client credentials.
 - [OpenRC status exit codes] → The guard treats only 0 as running and only 32 or 3 as crashed or stopped, and waits on the transitional codes. Hardware acceptance confirms the crashed code on Alpine 3.24.
-- [The pool is not exported after an incusd crash] → Hardware acceptance showed that, even with incusd zapped, `zpool export` finds `/var/lib/incus` busy, probably from mounts or child processes the dead incusd left behind. The data is kept and the next boot imports the pool. Cleaning up after a dead incusd is left to a storage change.
+- [Releasing a dead incusd's leftovers at stop] → Bounded by decision 5: it only runs after a failed first export, only when the main daemon is gone, only touches processes holding paths under the metadata mount and tmpfs mounts there, and never datasets. Instance processes left by a crash while workloads ran were not exercised on hardware; if they still pin a dataset, the export fails as before and the next boot imports the pool.
 - [Existing appliances do not receive the guard] → Stated in the proposal. Their recovery stays manual, and the host still fails fast on the failure observations they already emit.
 
 ## Hardware acceptance

@@ -39,3 +39,22 @@ Guest boot SHALL restart a crashed or exited incusd at most a fixed number of ti
 
 - **WHEN** incusd is running and ready but the storage readiness check fails
 - **THEN** the guard reports that failure without restarting incusd
+
+### Requirement: Storage stop after an Incus crash
+
+When the appliance-owned pool or metadata mount cannot be released at stop and incusd's own daemon is no longer running, storage stop SHALL release only what the dead daemon left under the metadata mount and then retry the release once: processes holding paths there are asked to terminate, killed after a bounded wait, and tmpfs mounts under it are unmounted. It MUST NOT destroy, unmount individually or otherwise manage Incus datasets, MUST NOT release anything while incusd is running, and a normal stop that releases on the first attempt SHALL be unchanged. A release that still fails SHALL log the remaining holders and fail without touching data.
+
+#### Scenario: Orphaned helper after a crash
+
+- **WHEN** incusd crashed and its dnsmasq child and tmpfs mounts keep the metadata mount busy at shutdown
+- **THEN** storage stop terminates that child, unmounts the tmpfs mounts and exports the pool
+
+#### Scenario: Live daemon
+
+- **WHEN** the first export fails while incusd is still running
+- **THEN** nothing is terminated or unmounted and stop reports the failure
+
+#### Scenario: Normal shutdown
+
+- **WHEN** incusd stopped cleanly and the pool exports on the first attempt
+- **THEN** storage stop releases nothing
