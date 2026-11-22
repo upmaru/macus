@@ -144,6 +144,25 @@ class IncusGuardTests(unittest.TestCase):
         self.assertTrue(all(len(line) <= 410 for line in console.splitlines()))
         self.assertIn('TAMA_INCUSD_CRASHED', (self.root / 'var/log/tama-incus-guard.log').read_text())
 
+    def test_long_crash_dump_keeps_its_header(self):
+        self.given('crashed', ['ok'])
+        older = 'panic: older crash\n' + 'old frame\n' * 5
+        dump = 'SIGABRT: abort\nPC=0x1 m=0 sigcode=0\n\ngoroutine 1 gp=0x1 m=0 [running]:\n'
+        dump += ''.join(f'frame {i}\n' for i in range(200)) + 'pc      0x2\n'
+        (self.root / 'var/log/incus/incusd.err').write_text(older + dump)
+        result = self.run_guard()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        console = self.console()
+        self.assertIn('(last crash, first 30 lines) ---', console)
+        self.assertIn('incusd| SIGABRT: abort', console)
+        self.assertIn('incusd| goroutine 1 gp=0x1 m=0 [running]:', console)
+        self.assertNotIn('older crash', console)
+        # The tail still ends the block.
+        self.assertIn('incusd| pc      0x2', console)
+        self.assertLess(console.index('SIGABRT: abort'), console.index('incusd| pc      0x2'))
+        self.assertTrue(all(not line.strip().startswith(OBSERVATION) or 'stage=incus' in line
+                            for line in console.splitlines()))
+
     def test_persistent_crash_is_bounded_and_reported(self):
         self.given('crashed', ['crash', 'crash', 'crash'])
         result = self.run_guard('ready')
@@ -154,6 +173,11 @@ class IncusGuardTests(unittest.TestCase):
         self.assertEqual(self.console().count('TAMA_INCUSD_CRASHED'), 3)
         self.assertIn('restart=exhausted/2', self.console())
         self.assertTrue((self.root / 'run/tama-incus-guard/failed').exists())
+        # The dead daemon is left stopped so shutdown can stop and export storage.
+        self.assertEqual(self.calls().count('rc-service incusd zap'), 3)
+        self.assertEqual([c for c in self.calls() if c.startswith('rc-service')][-1],
+                         'rc-service incusd zap')
+        self.assertEqual((self.root / 'svc').read_text().strip(), 'stopped')
         # A later step on the same boot does not restart again.
         again = self.run_guard('ready')
         self.assertEqual(again.returncode, 1)

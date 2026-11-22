@@ -12,7 +12,8 @@ console=${TAMA_CONSOLE:-/dev/hvc0}
 max_restarts=${TAMA_INCUS_MAX_RESTARTS:-2}
 ready_timeout=${TAMA_INCUS_READY_TIMEOUT:-120}
 log_lines=${TAMA_INCUS_LOG_LINES:-40}
-err_lines=${TAMA_INCUS_ERR_LINES:-60}
+err_lines=${TAMA_INCUS_ERR_LINES:-40}
+head_lines=${TAMA_INCUS_HEAD_LINES:-30}
 state_dir=$boot/run/tama-incus-guard
 guard_log=$boot/var/log/tama-incus-guard.log
 incus_log=$boot/var/log/incus/incusd.log
@@ -62,9 +63,23 @@ tail_file() {
     fi
 }
 
+crash_head() {
+    # A Go crash dump starts with its reason and the crashing goroutine, which
+    # a plain tail of a long dump cuts off. Copy the start of the last one.
+    start=$(grep -n -E '^(panic: |fatal error: |SIG[A-Z]+: |unexpected fault address)' "$incus_err" 2>/dev/null |
+        tail -n 1 | cut -d: -f1)
+    [ -n "$start" ] || return 0
+    say "incusd| --- ${incus_err#"$boot"} (last crash, first $head_lines lines) ---"
+    sed -n "${start},$((start + head_lines - 1))p" "$incus_err" 2>/dev/null | cut -c 1-400 |
+        sed 's/^/incusd| /' | while IFS= read -r line; do
+            say "$line"
+        done
+}
+
 evidence() {
     # $1 observed state, $2 restart label
     say "TAMA_INCUSD_CRASHED state=$1 restart=$2"
+    crash_head
     tail_file "$incus_log" "$log_lines"
     tail_file "$incus_err" "$err_lines"
     say 'TAMA_INCUSD_EVIDENCE_END'
@@ -124,6 +139,11 @@ ensure() {
         count=$(restarts)
         if [ "$count" -ge "$max_restarts" ]; then
             evidence "$state" "exhausted/$max_restarts"
+            # A crashed incusd makes OpenRC's shutdown fail to stop incusd, so
+            # tama-storage is never asked to stop. Its process is gone; mark it
+            # stopped so shutdown reaches the storage stop. (The export can still
+            # find /var/lib/incus busy after a crash; the next boot imports it.)
+            [ "$state" != crashed ] || rc-service incusd zap >/dev/null 2>&1 || true
             fail incus_crashed "incusd exited during boot after $count restarts"
         fi
         count=$((count + 1))

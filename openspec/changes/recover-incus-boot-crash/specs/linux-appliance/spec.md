@@ -4,12 +4,12 @@
 
 ### Requirement: Incus crash evidence
 
-The appliance SHALL keep incusd's log and its stdout/stderr, including Go runtime panics, in persistent guest log files without changing Alpine's `incusd` init script. When incusd is found crashed or stopped during boot, the guest SHALL copy a bounded tail of those files to the serial console, prefixed so that no copied line is parsed as a provisioning observation. A boot that recovers from such a crash SHALL also record that it recovered.
+The appliance SHALL keep incusd's log and its stdout/stderr, including Go runtime panics, in persistent guest log files without changing Alpine's `incusd` init script. When incusd is found crashed or stopped during boot, the guest SHALL copy a bounded tail of those files, and the start of the last crash dump, to the serial console, prefixed so that no copied line is parsed as a provisioning observation. A boot that recovers from such a crash SHALL also record that it recovered.
 
 #### Scenario: incusd panics during boot
 
 - **WHEN** incusd exits during boot after writing a panic to stderr
-- **THEN** the panic stays in the guest stderr log and its bounded tail appears on the serial console before any restart or failure observation
+- **THEN** the panic stays in the guest stderr log, and its first lines and a bounded tail appear on the serial console before any restart or failure observation
 
 #### Scenario: Copied log looks like an observation
 
@@ -18,7 +18,7 @@ The appliance SHALL keep incusd's log and its stdout/stderr, including Go runtim
 
 ### Requirement: Bounded Incus boot recovery
 
-Guest boot SHALL restart a crashed or exited incusd at most a fixed number of times per boot, shared by bootstrap and the bridge start, without adding a supervisor to incusd or changing its stop behaviour. A running but not yet ready incusd MUST NOT be restarted. When restarts are exhausted, the guest SHALL emit `MACUS_OBSERVATION v1 stage=failed code=incus_crashed` on that boot, whether or not it is a provisioning boot, and withhold bridge readiness. When a running incusd stays unready past the readiness bound, it SHALL emit `stage=failed code=incus_not_ready`. Normal boots SHALL also emit the Incus stage observation.
+Guest boot SHALL restart a crashed or exited incusd at most a fixed number of times per boot, shared by bootstrap and the bridge start, without adding a supervisor to incusd or changing its stop behaviour. A running but not yet ready incusd MUST NOT be restarted. When restarts are exhausted, the guest SHALL leave the dead daemon marked stopped so shutdown can proceed to storage, and SHALL emit `MACUS_OBSERVATION v1 stage=failed code=incus_crashed` on that boot, whether or not it is a provisioning boot, and withhold bridge readiness. When a running incusd stays unready past the readiness bound, it SHALL emit `stage=failed code=incus_not_ready`. Normal boots SHALL also emit the Incus stage observation.
 
 #### Scenario: Transient crash
 

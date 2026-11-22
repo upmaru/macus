@@ -45,14 +45,17 @@ When the guard (decision 2) finds incusd crashed or stopped, it writes a block t
 
 ```
 TAMA_INCUSD_CRASHED state=crashed restart=1/2
+incusd| --- /var/log/incus/incusd.err (last crash, first 30 lines) ---
+incusd| SIGABRT: abort
+incusd| ...
 incusd| --- /var/log/incus/incusd.log (last 40 lines) ---
 incusd| ...
-incusd| --- /var/log/incus/incusd.err (last 60 lines) ---
+incusd| --- /var/log/incus/incusd.err (last 40 lines) ---
 incusd| ...
 TAMA_INCUSD_EVIDENCE_END
 ```
 
-Each copied line is cut to 400 bytes and prefixed with `incusd| `, so no copied log line can parse as a `MACUS_OBSERVATION` or the legacy reboot marker. 60 stderr lines hold a panic message and the top of the crashing goroutine. The console is `/dev/hvc0`, written directly rather than through stdout, because the guard runs both under cloud-init (stdout is teed to hvc0) and under OpenRC (stdout goes to the OpenRC console). If the console is not writable, the guard writes to stderr instead.
+Each copied line is cut to 400 bytes and prefixed with `incusd| `, so no copied log line can parse as a `MACUS_OBSERVATION` or the legacy reboot marker. A Go crash dump is hundreds of lines long, and its reason and crashing goroutine come first, so a tail alone loses them (seen in hardware acceptance). The guard therefore also copies the first 30 lines from the last line that starts a crash (`panic: `, `fatal error: `, `SIG…: `, `unexpected fault address`). incusd writes its log to stderr as well as `--logfile`, so `incusd.err` repeats the regular log. The console is `/dev/hvc0`, written directly rather than through stdout, because the guard runs both under cloud-init (stdout is teed to hvc0) and under OpenRC (stdout goes to the OpenRC console). If the console is not writable, the guard writes to stderr instead.
 
 ### 2. Guest recovery: a tama-owned guard, not `supervise-daemon`
 
@@ -65,7 +68,7 @@ Each copied line is cut to 400 bytes and prefixed with `incusd| `, so no copied 
 3. Reads `rc-service incusd status`. OpenRC exits 0 for started, 32 for crashed (started, but the recorded daemon is gone), 3 for stopped, 4 or 8 while stopping or starting, and 16 for inactive.
 4. Stopped or inactive before the guard has launched anything: `rc-service incusd start` once, without counting it as a restart.
 5. Started: polls `incusd waitready --timeout 5`. When ready, runs the readiness command if one was given and exits with success. If the readiness command fails, it checks the status again. A crashed or stopped incusd is a crash (step 6). A running incusd means the readiness command failed on its own, and the guard returns that failure as before.
-6. Crashed, or stopped after a launch: writes the evidence block. If the per-boot restart count (`/run/tama-incus-guard/restarts`) has reached the limit, marks `failed`, emits `MACUS_OBSERVATION v1 stage=failed code=incus_crashed` and exits 1. Otherwise it increments the count, emits `stage=incus state=restarting`, runs `rc-service incusd zap` (when crashed) and `rc-service incusd start`, waits 1 s and loops.
+6. Crashed, or stopped after a launch: writes the evidence block. If the per-boot restart count (`/run/tama-incus-guard/restarts`) has reached the limit, zaps a crashed incusd, marks `failed`, emits `MACUS_OBSERVATION v1 stage=failed code=incus_crashed` and exits 1. The zap matters for shutdown. OpenRC runs Alpine's `stop()` on a crashed service, `incusd shutdown` fails, and OpenRC then refuses to stop `tama-storage` (seen in hardware acceptance). Otherwise it increments the count, emits `stage=incus state=restarting`, runs `rc-service incusd zap` (when crashed) and `rc-service incusd start`, waits 1 s and loops.
 7. Started but still not ready after 120 s: writes the evidence block, emits `stage=failed code=incus_not_ready` and exits 1. A live but slow incusd may be running database or storage work, so the guard does not restart it, which matches today's single `waitready --timeout 120`.
 
 On success after any restart, the guard writes `TAMA_INCUSD_RECOVERED restarts=N`, so a recovered boot still leaves evidence.
@@ -102,6 +105,7 @@ A second `incus_crashed` in the same operation fails with a message saying one a
 - [Log files grow across boots] → incusd's default level is warnings and errors. Panics are rare. Rotation can be added later without a protocol change.
 - [Copied log tails reach `serial.log`] → `serial.log` is already private (0600) in the owned state directory. Lines are bounded, prefixed and never parsed as observations. Incus logs do not contain client credentials.
 - [OpenRC status exit codes] → The guard treats only 0 as running and only 32 or 3 as crashed or stopped, and waits on the transitional codes. Hardware acceptance confirms the crashed code on Alpine 3.24.
+- [The pool is not exported after an incusd crash] → Hardware acceptance showed that, even with incusd zapped, `zpool export` finds `/var/lib/incus` busy, probably from mounts or child processes the dead incusd left behind. The data is kept and the next boot imports the pool. Cleaning up after a dead incusd is left to a storage change.
 - [Existing appliances do not receive the guard] → Stated in the proposal. Their recovery stays manual, and the host still fails fast on the failure observations they already emit.
 
 ## Hardware acceptance

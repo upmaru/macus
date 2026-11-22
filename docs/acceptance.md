@@ -172,3 +172,14 @@ The flow-controlled Incus relay passed [opt-in hardware acceptance](testing/flow
 **Follow-up:** after this run, review found a guest close race. The guest sent END before recording it, so a host that had already ended could close in between and make the guest abort with host bytes still queued for Incus. The guest now records END before sending it. Payload revision `11acf521…` contains the fix, which is covered by a deterministic bridge unit test. The hardware run above used the earlier payload and has not been repeated with this revision.
 
 On 2026-11-09, the same appliance also served the opsmaru-incus real-Incus gateway gate. That run passed all twelve relay/pull/push copies and all six instance moves through the vsock relay. It is opsmaru-incus evidence, not Macus hardware qualification.
+
+## Incus boot crash recovery — 2026-11-22 UTC
+
+The `recover-incus-boot-crash` change passed [opt-in hardware acceptance](testing/incus-crash-recovery-acceptance.json) on a fresh isolated appliance (`/tmp/macus-icr1`, LTS image, ZFS) started by a release build of Macus. Crashes were injected by a test-only `start_post()` in the guest `/etc/conf.d/incusd` that sent SIGABRT to incusd 1 s after each launch, for a set number of launches.
+
+- **Fresh start:** ready in 126 s. Both incusd log files exist, and the guard ran from bootstrap and `tama-bridge` without restarts.
+- **One crash:** the guard restarted incusd once, the serial log held the evidence block and `TAMA_INCUSD_RECOVERED restarts=1`, and `macus start` was ready in 41 s with no user action.
+- **Persistent crash (6 launches):** two boots of three launches each, six evidence blocks with the `SIGABRT: abort` header, one automatic host restart, then `macus start` failed with `incus_crashed` after 109 s instead of waiting 1800 s. `macus runtime stop --force` and `macus start` then reached ready in 37 s with the workload container intact.
+- **Crash recovered by the host restart (3 launches):** ready in 94 s, twice.
+
+Two fixes came out of the run and were verified on the same appliance: the evidence now copies the start of the last Go crash dump, which a plain tail cut off, and a guard that gives up zaps the dead incusd so OpenRC's shutdown no longer fails at incusd. **Open finding:** after an incusd crash, `tama-storage stop` still cannot export the pool (`/var/lib/incus` is busy); the data is kept and the next boot imports it. **Deviation:** later guard revisions were copied into the provisioned guest by sha256 rather than provisioned on a second fresh state. The hook, its counter and the helper container were removed, `conf.d` was restored, a clean boot was ready in 37 s, and the isolated agent was unloaded.

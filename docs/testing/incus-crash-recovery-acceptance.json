@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "change": "recover-incus-boot-crash",
+  "status": "passed",
+  "recorded_at": "2026-11-22T16:50:00+00:00",
+  "macus_source_commit": "fdcb1025fd82a58b919a641fd36530347e40752a",
+  "macus_build": "release, Packaging/install-local.sh into an isolated prefix, ad hoc virtualization signing",
+  "macus_binary_sha256": "f150e228ed931a831504538bc46da1e433bed5c0198d6f27b353f0fc682d5aeb",
+  "host": {
+    "model": "Mac16,5",
+    "chip": "Apple M4 Max",
+    "memory_gib": 64,
+    "architecture": "arm64",
+    "macos": "27.0.1 (26A434)",
+    "virtualization": "Apple Virtualization.framework",
+    "incus_client": "7.5.1"
+  },
+  "isolation": {
+    "state_dir": "/tmp/macus-icr1",
+    "prefix": "/tmp/mcx-icr1",
+    "incus_conf": "temporary directory created by Integration/scripts/start-acceptance.py",
+    "service_label": "com.upmaru.macus.835eaf909279",
+    "default_jobs_and_client_config_touched": false,
+    "other_acceptance_state_touched": false,
+    "service_unloaded_after_run": true,
+    "state_dir_retained": true
+  },
+  "appliance": {
+    "image_id": "alpine-3.24.2-lts-1",
+    "kernel": "6.18.62-0-lts",
+    "incus": "7.0.1",
+    "pool": "zfs",
+    "provisioned_payload_revision": "ba33d62b8d178ca116a37bd6b5b1524973210d95fb9136ae670f3d45906d78e4",
+    "final_payload_revision": "c1ffcae01f805f643655fe51108394a27b5034a3fca341721d8eec63776af814"
+  },
+  "crash_injection": "Test-only start_post() appended to the guest /etc/conf.d/incusd through a privileged Incus container with the guest root mounted. Each incusd launch consumed one count from /var/lib/tama-acceptance/crashes and sent SIGABRT 1 s after start, so the Go runtime dumped goroutines to stderr and exited. The hook, counter file and container were removed afterwards and conf.d was restored byte-for-byte from its backup.",
+  "runs": [
+    {
+      "name": "fresh_start",
+      "result": "ready",
+      "seconds": 126,
+      "checks": {
+        "conf_d_has_logfile_and_output_error_log": true,
+        "incusd_log_and_err_files_exist": true,
+        "guard_ran_from_bootstrap_and_bridge_without_restarts": true
+      },
+      "note": "incusd writes its log both to --logfile and to stderr, so incusd.err also carries the regular log."
+    },
+    {
+      "name": "single_crash_recovered_in_guest",
+      "crashes_injected": 1,
+      "result": "ready",
+      "seconds": 41,
+      "checks": {
+        "evidence_block_on_serial": true,
+        "restart_label": "1/2",
+        "recovered_marker": "TAMA_INCUSD_RECOVERED restarts=1",
+        "copied_lines_prefixed": true
+      },
+      "finding": "A 60-line stderr tail of the Go dump held only the last goroutine and registers. The guard now also copies the first 30 lines of the last crash (SIGABRT: abort, crashing goroutine). The updated guard was copied into the guest by sha256 before the next run."
+    },
+    {
+      "name": "persistent_crash_fails_fast_after_one_host_restart",
+      "crashes_injected": 6,
+      "result": "failed as designed",
+      "seconds": 109,
+      "error_code": "unavailable",
+      "error_message": "Incus crashed during guest boot and the guest's bounded restarts were exhausted (code incus_crashed). One automatic guest restart was already tried. The incusd log tail is in serial.log. Disks and Incus data were kept. Inspect serial.log, then run macus runtime stop --force and macus start.",
+      "checks": {
+        "boots": 2,
+        "launches_per_boot": 3,
+        "evidence_blocks": 6,
+        "evidence_blocks_with_sigabrt_header": 6,
+        "failure_observations": 2,
+        "progress_phase_incus_recovery_shown": true,
+        "guest_left_running_in_failed_state": true
+      }
+    },
+    {
+      "name": "manual_recovery",
+      "commands": ["macus runtime stop --force", "macus start"],
+      "result": "ready",
+      "seconds": 37,
+      "checks": {
+        "workload_container_retained": true,
+        "guard_restarts": 0
+      }
+    },
+    {
+      "name": "crash_recovered_by_host_restart",
+      "crashes_injected": 3,
+      "result": "ready",
+      "seconds": 94,
+      "repeats": 2,
+      "checks": {
+        "guest_failure_then_one_host_restart_then_ready": true
+      },
+      "finding": "OpenRC rc.log showed the recovery shutdown was graceful but logged 'incusd failed to stop' and then 'tama-storage failed to stop', so the ZFS pool was not exported. The guard now zaps a crashed incusd when it gives up; on the repeat run incusd no longer blocked shutdown, but zpool export still failed with \"cannot unmount '/var/lib/incus': pool or dataset is busy\". The pool imported cleanly on every following boot."
+    },
+    {
+      "name": "clean_boot_after_cleanup",
+      "result": "ready",
+      "seconds": 37,
+      "checks": {
+        "no_crash_markers": true,
+        "conf_d_restored": true,
+        "guest_guard_matches_repository_sha256": "c990de8bc8df1bdcd70f7f913dfd0cc295d603df2528e3c1dcd3c33f7fd195f0"
+      }
+    }
+  ],
+  "deviations": [
+    "The appliance was provisioned with payload revision ba33d62b. The guard was then replaced inside the guest with each later revision by sha256-verified copy, not by provisioning a second fresh state. The host binary was not rebuilt; later commits change only guest scripts and the embedded payload.",
+    "Crashes were injected with SIGABRT from a test hook, not reproduced from the original unexplained crash."
+  ],
+  "open_findings": [
+    "After an incusd crash, tama-storage stop cannot export the pool because /var/lib/incus stays busy (likely mounts or child processes left by the dead incusd). Data is preserved and the next boot imports the pool; cleaning up after a dead incusd belongs to a storage change."
+  ]
+}

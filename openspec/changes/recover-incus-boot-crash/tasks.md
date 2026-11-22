@@ -16,4 +16,4 @@
 
 - [x] 3.1 Document the guest log files, console evidence, failure codes and recovery bounds in `docs/development.md` and `docs/api.md` where boot failures and progress phases are described.
 - [x] 3.2 Run `Integration/scripts/check.sh` and `mise exec -- openspec validate --all --strict --no-interactive`.
-- [ ] 3.3 With explicit opt-in and a fresh isolated state, run the hardware acceptance in the design (normal boot logs, forced single crash recovered, forced persistent crash failing fast after one host restart). Leave this unchecked until it passes on hardware.
+- [x] 3.3 With explicit opt-in and a fresh isolated state, run the hardware acceptance in the design (normal boot logs, forced single crash recovered, forced persistent crash failing fast after one host restart). Leave this unchecked until it passes on hardware. Passed 2026-11-22 on `/tmp/macus-icr1` (`docs/testing/incus-crash-recovery-acceptance.json`); later guard revisions were copied into the guest by sha256, and the unexported pool after a crash remains an open finding.
