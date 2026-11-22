@@ -86,7 +86,8 @@ evidence() {
 }
 
 fail() {
-    : > "$state_dir/failed"
+    # Record the code so a later step on this boot reports the same failure.
+    printf '%s\n' "$1" > "$state_dir/failed"
     say "MACUS_OBSERVATION v1 stage=failed code=$1"
     say "TAMA_INCUSD_FAILED code=$1: $2; Incus data was kept"
     exit 1
@@ -98,7 +99,12 @@ ensure() {
     mkdir -p "$state_dir" "$boot/var/log"
     say 'MACUS_OBSERVATION v1 stage=incus'
     if [ -e "$state_dir/failed" ]; then
-        fail incus_crashed 'incusd restarts were already exhausted on this boot'
+        code=$(cat "$state_dir/failed" 2>/dev/null || true)
+        case $code in
+            incus_crashed | incus_not_ready) ;;
+            *) code=incus_crashed ;;
+        esac
+        fail "$code" 'incusd already failed earlier on this boot'
     fi
     launched=false
     started_at=$(now)

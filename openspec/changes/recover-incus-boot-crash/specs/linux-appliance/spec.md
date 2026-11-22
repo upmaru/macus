@@ -18,7 +18,7 @@ The appliance SHALL keep incusd's log and its stdout/stderr, including Go runtim
 
 ### Requirement: Bounded Incus boot recovery
 
-Guest boot SHALL restart a crashed or exited incusd at most a fixed number of times per boot, shared by bootstrap and the bridge start, without adding a supervisor to incusd or changing its stop behaviour. A running but not yet ready incusd MUST NOT be restarted. When restarts are exhausted, the guest SHALL leave the dead daemon marked stopped so shutdown can proceed to storage, and SHALL emit `MACUS_OBSERVATION v1 stage=failed code=incus_crashed` on that boot, whether or not it is a provisioning boot, and withhold bridge readiness. When a running incusd stays unready past the readiness bound, it SHALL emit `stage=failed code=incus_not_ready`. Normal boots SHALL also emit the Incus stage observation.
+Guest boot SHALL restart a crashed or exited incusd at most a fixed number of times per boot, shared by bootstrap and the bridge start, without adding a supervisor to incusd or changing its stop behaviour. A running but not yet ready incusd MUST NOT be restarted. When restarts are exhausted, the guest SHALL leave the dead daemon marked stopped so shutdown can proceed to storage, and SHALL emit `MACUS_OBSERVATION v1 stage=failed code=incus_crashed` on that boot, whether or not it is a provisioning boot, and withhold bridge readiness. When a running incusd stays unready past the readiness bound, it SHALL emit `stage=failed code=incus_not_ready`. A later step on the same boot SHALL report the same failure code without restarting incusd. Normal boots SHALL also emit the Incus stage observation.
 
 #### Scenario: Transient crash
 
@@ -34,6 +34,11 @@ Guest boot SHALL restart a crashed or exited incusd at most a fixed number of ti
 
 - **WHEN** incusd is stopped through its normal OpenRC stop or system shutdown
 - **THEN** nothing restarts it
+
+#### Scenario: Later step after a readiness timeout
+
+- **WHEN** incusd stayed running but unready past the readiness bound and a later step on the same boot invokes the guard
+- **THEN** that step emits `incus_not_ready` again, not `incus_crashed`, and does not restart incusd
 
 #### Scenario: Readiness check fails while incusd runs
 

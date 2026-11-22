@@ -135,7 +135,8 @@
   ],
   "deviations": [
     "The appliance was provisioned with payload revision ba33d62b. The guard and later storage.sh were then replaced inside the guest by sha256-verified copy, not by provisioning a second fresh state. The host binary was not rebuilt; later commits change only guest scripts and the embedded payload.",
-    "Crashes were injected with SIGABRT from a test hook, not reproduced from the original unexplained crash."
+    "Crashes were injected with SIGABRT from a test hook, not reproduced from the original unexplained crash.",
+    "After acceptance, review feedback changed the guard to record its failure code so a later step on the same boot replays incus_not_ready instead of reporting incus_crashed (payload revision c6989628). That path was covered by unit tests only, not on hardware."
   ],
   "open_findings": [
     "A crash while instances run was not exercised; instance processes holding datasets would make the retried export fail as before, and the next boot imports the pool."

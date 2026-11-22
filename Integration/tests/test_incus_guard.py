@@ -200,6 +200,14 @@ class IncusGuardTests(unittest.TestCase):
         self.assertEqual(self.starts(), 0)
         self.assertNotIn('rc-service incusd zap', self.calls())
         self.assertEqual(self.observations()[-1], 'MACUS_OBSERVATION v1 stage=failed code=incus_not_ready')
+        self.assertEqual(
+            (self.root / 'run/tama-incus-guard/failed').read_text().strip(), 'incus_not_ready')
+        # A later step on the same boot replays the original reason, not a crash.
+        again = self.run_guard('ready', TAMA_INCUS_READY_TIMEOUT='0')
+        self.assertEqual(again.returncode, 1)
+        self.assertEqual(self.starts(), 0)
+        self.assertEqual(self.observations()[-1], 'MACUS_OBSERVATION v1 stage=failed code=incus_not_ready')
+        self.assertNotIn('code=incus_crashed', self.console())
 
     def test_readiness_failure_while_running_is_returned(self):
         self.given('started-ready', ready=['fail'])

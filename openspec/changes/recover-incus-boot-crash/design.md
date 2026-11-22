@@ -64,7 +64,7 @@ Each copied line is cut to 400 bytes and prefixed with `incusd| `, so no copied 
 **Chosen: `/usr/local/libexec/tama-incus-guard.sh ensure [readiness command...]`.** Bootstrap calls `ensure` in place of `rc-service incusd start` plus `waitready`. `tama-bridge` `start_pre` calls `ensure /usr/local/libexec/tama-storage.sh ready` in place of `waitready` plus `ready`. The guard:
 
 1. Emits `MACUS_OBSERVATION v1 stage=incus`, so normal boots report the phase too.
-2. If an earlier invocation this boot already gave up (`/run/tama-incus-guard/failed`), emits the failure observation again and exits 1.
+2. If an earlier invocation this boot already gave up (`/run/tama-incus-guard/failed`, which records the failure code), emits the same failure observation again and exits 1.
 3. Reads `rc-service incusd status`. OpenRC exits 0 for started, 32 for crashed (started, but the recorded daemon is gone), 3 for stopped, 4 or 8 while stopping or starting, and 16 for inactive.
 4. Stopped or inactive before the guard has launched anything: `rc-service incusd start` once, without counting it as a restart.
 5. Started: polls `incusd waitready --timeout 5`. When ready, runs the readiness command if one was given and exits with success. If the readiness command fails, it checks the status again. A crashed or stopped incusd is a crash (step 6). A running incusd means the readiness command failed on its own, and the guard returns that failure as before.
