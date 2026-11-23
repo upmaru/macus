@@ -113,6 +113,12 @@ The work is split the way `start` already splits it: the client downloads and pr
 
 All renames stay within the state directory, so none copies data. Each step is resolvable from the journal: the recorded file identities say, for every path, whether it holds an old file, a new one or nothing, so recovery can finish or undo any partly done rename.
 
+Implementation choices:
+- The backup ID is the staging ID: a UTC time, which sorts, followed by random hex.
+- The daemon checks the staged seed by requiring the ISO to contain, byte for byte, the user data this package renders for the planned pool. The ISO stores that file uncompressed and contiguous.
+- Until commit, the upgrade owns the mutation gate and force stop is refused, so only the readiness timeout or daemon death ends it. Daemon death is resolved from the journal.
+- Rollback moves new files into `backups/<id>/failed/` and deletes nothing, except an unneeded copy of a data disk the new root never booted against. A rolled-back backup has no `backup.json`.
+
 **Failure and interruption.** Any failure after step 3 rolls back automatically: stop the guest (graceful, then forced; the host identity property in decision 2 lets the old root import a pool the new root left imported), move the new root and seed aside into `backups/<id>/failed/` for diagnosis, rename the old trio back, restore `config.json`, the journal and the guest record, and for a migrating upgrade replace `data.raw` with the clone, moving the migrated disk into `failed/`. The command then fails, naming the failure code and saying the previous state was restored. On daemon start, a present `upgrade.pending` is rolled back the same way before any other mutation is accepted, whatever step it reached, including a verified upgrade that had not yet committed; `start` is refused until that succeeds. Workload writes made before commit are discarded with a migrating rollback; the runtime never served clients in that window, so only autostarted instances can have written. A journal that cannot be parsed preserves everything and requires explicit recovery, like an invalid reset intent.
 
 **Explicit rollback.** `macus runtime upgrade --rollback [ID]` restores the latest (or named) backup with the same steps. A root must never boot against data at a different Incus package. Each backup records its root's Incus package (which may be unknown) and, when it has one, a data copy, which is by construction at that same package: it was taken after that root last stopped. For the selected backup:

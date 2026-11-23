@@ -22,6 +22,14 @@ public actor RuntimeService {
   private let catalog: ApplianceCatalogEntry
   private let payloadRevision: String
   private let macusPackage: String?
+  private let volume: any UpgradeVolume
+  /// Test seam: called at labelled points of an upgrade and its rollback.
+  private let upgradeHook: UpgradeHook?
+  /// The operation progress reports while a mutation runs, when it is not a plain start.
+  private var operation: String?
+  /// Set when an interrupted upgrade could not be rolled back at daemon start: every
+  /// mutation is refused until it is resolved by hand.
+  private var recoveryError: String?
 
   public init(driver: any VirtualMachineDriver, store: StateStore) throws {
     try self.init(driver: driver, store: store, stallLimit: .seconds(300))
@@ -31,7 +39,8 @@ public actor RuntimeService {
     driver: any VirtualMachineDriver, store: StateStore, stallLimit: Duration,
     catalog: ApplianceCatalogEntry = .current,
     payloadRevision: String = EmbeddedGuestPayload.revision,
-    macusPackage: String? = BuildIdentity.current.version
+    macusPackage: String? = BuildIdentity.current.version,
+    volume: any UpgradeVolume = HostVolume(), upgradeHook: UpgradeHook? = nil
   ) throws {
     self.driver = driver
     self.store = store
@@ -39,8 +48,38 @@ public actor RuntimeService {
     self.catalog = catalog
     self.payloadRevision = payloadRevision
     self.macusPackage = macusPackage
-    configuration = try store.load()
-    state = configuration == nil ? .absent : .stopped
+    self.volume = volume
+    self.upgradeHook = upgradeHook
+    // An upgrade that did not commit is rolled back before anything else is accepted. The VM
+    // runs inside this process, so nothing is running yet.
+    var recovered: String?
+    var failure: String?
+    do {
+      if let intent = try UpgradeJournal.load(paths: store.paths) {
+        try UpgradeJournal.rollback(intent, paths: store.paths)
+        recovered = Self.rolledBackAtStart(intent)
+      }
+    } catch {
+      failure =
+        "An interrupted upgrade could not be rolled back automatically: \(error.localizedDescription) Runtime changes are refused until it is resolved."
+    }
+    if let failure {
+      recoveryError = failure
+      configuration = try? store.load()
+      state = .failed
+      lastError = failure
+    } else {
+      configuration = try store.load()
+      state = configuration == nil ? .absent : .stopped
+      lastError = recovered
+    }
+  }
+
+  static func rolledBackAtStart(_ intent: UpgradeIntent) -> String {
+    let data =
+      intent.upgradeClass == .migrating && intent.step >= .booting ? ", data disk" : ""
+    return
+      "An upgrade (backup \(intent.backupId)) did not commit before the daemon stopped, so it was rolled back: the previous root\(data) and configuration were restored."
   }
 
   public func status() async -> RuntimeStatus {
@@ -96,7 +135,7 @@ public actor RuntimeService {
       value.seedPath == current.seedPath
     else {
       throw RuntimeError(
-        .invalidConfiguration, "Appliance replacement requires a future upgrade protocol")
+        .invalidConfiguration, "Replace the appliance with macus runtime upgrade")
     }
     guard value.dataDiskGib >= current.dataDiskGib else {
       throw RuntimeError(.invalidConfiguration, "Disk shrink is unsupported")
@@ -130,7 +169,8 @@ public actor RuntimeService {
     }
     return RuntimeProgress(
       apiVersion: 1, schemaVersion: 1, state: state, ready: state == .ready && guestHealth != nil,
-      operation: state == .starting || mutationActive ? "start" : nil, phase: bootPhase,
+      operation: operation ?? (state == .starting || mutationActive ? "start" : nil),
+      phase: bootPhase,
       elapsedSeconds: elapsed, expectedReboot: bootExpectedReboot, detail: nil, lastError: lastError
     )
   }
@@ -170,6 +210,192 @@ public actor RuntimeService {
     startedAt = nil
     return snapshot()
   }
+  /// Read-only: what an upgrade to the installed appliance would do. Refusals are errors.
+  public func upgradePlan() async throws -> UpgradePlan {
+    if let recoveryError { throw RuntimeError(.conflict, recoveryError) }
+    _ = try config()
+    let paths = store.paths
+    let catalog = self.catalog
+    let payloadRevision = self.payloadRevision
+    let volume = self.volume
+    return try await Task.detached {
+      try UpgradePlanner.plan(
+        paths: paths, catalog: catalog, payloadRevision: payloadRevision, volume: volume)
+    }.value
+  }
+
+  /// Replaces the root with a staged one and boots it against the same data disk. Everything
+  /// that can fail without changing state is checked before the stop; after the intent is
+  /// written, any failure restores the previous state before returning.
+  public func upgrade(stagingID: String) async throws -> UpgradeResult {
+    try beginMutation()
+    let operationGeneration = generation
+    defer { if generation == operationGeneration { mutationActive = false } }
+    operation = "upgrade"
+    defer { operation = nil }
+    let previous = try config()
+    let plan = try await upgradePlan()
+    guard !plan.current, let upgradeClass = plan.upgradeClass, let storage = plan.storage else {
+      throw RuntimeError(
+        .conflict,
+        "This runtime already runs the installed appliance and payload; nothing was changed.")
+    }
+    let paths = store.paths
+    let catalog = self.catalog
+    let staged = try await Task.detached {
+      try UpgradeStaging.verify(id: stagingID, paths: paths, entry: catalog, plan: plan)
+    }.value
+    var next = previous
+    next.applianceManifestPath = staged.manifest.path
+    next.seedPath = staged.creationSeed.path
+    try next.validate()
+    if await driver.isRunning() {
+      bootPhase = "stopping"
+      do {
+        _ = try await stopLocked(force: false)
+      } catch {
+        throw RuntimeError(
+          .timeout,
+          "The runtime did not stop within \(previous.shutdownTimeoutSeconds) s, so the upgrade stopped before any disk was moved; the guest may still be running. \(error.localizedDescription)"
+        )
+      }
+    }
+    guestHealth = nil
+    var intent = UpgradeIntent(
+      backupId: stagingID, stagingId: stagingID, upgradeClass: upgradeClass, step: .journaled,
+      fromCatalogId: plan.fromCatalogId, toCatalogId: catalog.id, poolGuid: storage.poolGuid,
+      root: try Self.identity(paths.rootDisk), efi: try FileIdentity.of(paths.efiStore),
+      seed: try FileIdentity.of(paths.seed), data: try Self.identity(paths.dataDisk),
+      stagedRoot: try Self.identity(staged.root), stagedSeed: try Self.identity(staged.seed))
+    try UpgradeJournal.save(intent, paths: paths)
+    do {
+      try upgradeHook?("journaled")
+      try UpgradeJournal.createBackup(&intent, paths: paths, hook: upgradeHook)
+      if upgradeClass == .migrating {
+        bootPhase = "copying_data"
+        try UpgradeJournal.copyData(
+          &intent, paths: paths, method: plan.dataCopy, volume: volume, hook: upgradeHook)
+      }
+      try GuestImageManager.prepareRoot(staged.root)
+      intent.step = .rootPrepared
+      try UpgradeJournal.save(intent, paths: paths)
+      try upgradeHook?("root_prepared")
+      try UpgradeJournal.swap(
+        &intent, paths: paths, staged: staged, configuration: next, store: store,
+        hook: upgradeHook)
+      configuration = next
+      intent.step = .booting
+      try UpgradeJournal.save(intent, paths: paths)
+      try upgradeHook?("booting")
+      guard (await driver.capabilities()).supported else {
+        throw RuntimeError(.unavailable, "Apple virtualization is unavailable on this host")
+      }
+      let deadline = ContinuousClock.now.advanced(by: .seconds(next.readinessTimeoutSeconds))
+      let health = try await bootGuest(
+        next, deadline: deadline, operationGeneration: operationGeneration)
+      bootPhase = "verifying"
+      try Self.verifyUpgraded(health, poolGuid: storage.poolGuid)
+      intent.step = .verified
+      try UpgradeJournal.save(intent, paths: paths)
+      try upgradeHook?("verified")
+      recordReady(health)
+      let record = UpgradeBackupRecord(
+        id: intent.backupId, createdAt: ISO8601DateFormatter().string(from: Date()),
+        upgradeClass: upgradeClass, fromCatalogId: plan.fromCatalogId, toCatalogId: catalog.id,
+        rootIncusPackage: plan.recordedIncusPackage,
+        rootIncusPackageSource: plan.recordedIncusPackageSource,
+        dataCopy: intent.dataCopy != nil, poolGuid: storage.poolGuid, macusPackage: macusPackage)
+      try UpgradeJournal.commit(intent, record: record, paths: paths, hook: upgradeHook)
+      // Only now is the relay served to the server and clients.
+      guestHealth = health
+      state = .ready
+      bootPhase = "ready"
+      lastError = nil
+      logger.notice("Upgrade \(intent.backupId, privacy: .public) committed")
+      return UpgradeResult(
+        backupId: intent.backupId, upgradeClass: upgradeClass, fromCatalogId: plan.fromCatalogId,
+        toCatalogId: catalog.id, poolGuid: storage.poolGuid, dataCopy: plan.dataCopy,
+        status: snapshot())
+    } catch let interruption as UpgradeInterruption {
+      throw interruption
+    } catch {
+      throw await rollBackUpgrade(intent, value: next, reason: error)
+    }
+  }
+
+  private static func identity(_ url: URL) throws -> FileIdentity {
+    guard let identity = try FileIdentity.of(url) else {
+      throw RuntimeError(.io, "Missing \(url.lastPathComponent)")
+    }
+    return identity
+  }
+
+  /// The new root must serve this host and report the pool the upgrade named.
+  static func verifyUpgraded(_ health: GuestHealth, poolGuid: String) throws {
+    if let reason = incompatibility(health) {
+      throw RuntimeError(.unavailable, "The new root is not compatible with this host: \(reason)")
+    }
+    guard let storage = health.storage, storage.backend == "zfs", storage.phase == "ready",
+      storage.poolGuid == poolGuid
+    else {
+      throw RuntimeError(
+        .unavailable,
+        "The new root did not report pool \(poolGuid) as ready (it reported \(health.storage?.poolGuid ?? "no pool"))"
+      )
+    }
+  }
+
+  /// Stops the new root (graceful, then forced: every qualified root shares one host identity,
+  /// so the previous root imports a pool the new one left imported) and restores the
+  /// previous state. Returns the error to report.
+  private func rollBackUpgrade(_ intent: UpgradeIntent, value: RuntimeConfiguration, reason: Error)
+    async -> RuntimeError
+  {
+    bootPhase = "rolling_back"
+    logger.error(
+      "Upgrade \(intent.backupId, privacy: .public) failed: \(reason.localizedDescription, privacy: .public)"
+    )
+    guestHealth = nil
+    if await driver.isRunning() {
+      state = .stopping
+      try? await driver.requestStop()
+      let deadline = ContinuousClock.now.advanced(by: .seconds(value.shutdownTimeoutSeconds))
+      while await driver.isRunning(), ContinuousClock.now < deadline {
+        try? await Task.sleep(for: .milliseconds(100))
+      }
+      if await driver.isRunning() { try? await driver.forceStop() }
+    }
+    startedAt = nil
+    let detail = reason.localizedDescription
+    guard !(await driver.isRunning()) else {
+      let message =
+        "The upgrade failed (\(detail)) and the new root could not be stopped, so nothing was rolled back yet. The daemon rolls the upgrade back when it next starts."
+      state = .failed
+      lastError = message
+      return RuntimeError(.unavailable, message)
+    }
+    do {
+      let current = try UpgradeJournal.load(paths: store.paths) ?? intent
+      try UpgradeJournal.rollback(current, paths: store.paths, hook: upgradeHook)
+      configuration = try store.load()
+      state = .stopped
+      let data =
+        intent.upgradeClass == .migrating && intent.step >= .booting
+        ? ", and the data disk was replaced by its copy" : ""
+      let message =
+        "The upgrade did not complete: \(detail) The previous root and configuration were restored\(data); diagnostics are in backups/\(intent.backupId)/failed."
+      lastError = message
+      return RuntimeError((reason as? RuntimeError)?.code ?? .unavailable, message)
+    } catch {
+      let message =
+        "The upgrade failed (\(detail)) and could not be rolled back automatically: \(error.localizedDescription) Runtime changes are refused until it is resolved."
+      recoveryError = message
+      state = .failed
+      lastError = message
+      return RuntimeError(.io, message)
+    }
+  }
+
   public func openIncusStream() async throws -> GuestStream {
     guard state == .ready else { throw RuntimeError(.unavailable, "Incus is not ready") }
     return try await driver.openStream(port: FlowRelayProtocol.port)
@@ -220,6 +446,7 @@ public actor RuntimeService {
   }
 
   private func beginMutation() throws {
+    if let recoveryError { throw RuntimeError(.conflict, recoveryError) }
     guard !mutationActive else {
       throw RuntimeError(.conflict, "A runtime mutation is already in progress")
     }
@@ -278,6 +505,35 @@ public actor RuntimeService {
       remainingSeconds.map { min($0, value.readinessTimeoutSeconds) }
       ?? value.readinessTimeoutSeconds
     let deadline = ContinuousClock.now.advanced(by: .seconds(limit))
+    do {
+      let health = try await bootGuest(
+        value, deadline: deadline, operationGeneration: operationGeneration)
+      if let reason = Self.incompatibility(health) {
+        // Recorded first, so the next start refuses before booting this guest again.
+        recordReady(health)
+        throw try await stopIncompatibleGuest(
+          value, reason: reason, operationGeneration: operationGeneration)
+      }
+      guestHealth = health
+      state = .ready
+      bootPhase = "ready"
+      logger.info("Incus ready: \(health.incusVersion, privacy: .public)")
+      recordReady(health)
+      return snapshot()
+    } catch {
+      state = .failed
+      lastError = error.localizedDescription
+      guestHealth = nil
+      throw error
+    }
+  }
+
+  /// Boots the configured disks and waits for the guest to answer health, through the expected
+  /// kernel restart and the one Incus crash recovery. It does not decide readiness: start and
+  /// upgrade each judge the health it returns.
+  private func bootGuest(
+    _ value: RuntimeConfiguration, deadline: ContinuousClock.Instant, operationGeneration: UInt64
+  ) async throws -> GuestHealth {
     state = .starting
     lastError = nil
     guestHealth = nil
@@ -392,29 +648,13 @@ public actor RuntimeService {
         if let health = try? await driver.health(), health.protocolVersion == 1 {
           try Task.checkCancellation()
           guard generation == operationGeneration else { throw CancellationError() }
-          if let reason = Self.incompatibility(health) {
-            // Recorded first, so the next start refuses before booting this guest again.
-            recordReady(health)
-            throw try await stopIncompatibleGuest(
-              value, reason: reason, operationGeneration: operationGeneration)
-          }
-          guestHealth = health
-          state = .ready
-          bootPhase = "ready"
-          logger.info("Incus ready: \(health.incusVersion, privacy: .public)")
-          recordReady(health)
-          return snapshot()
+          return health
         }
         progress.observe(
           read.observations, size: try GuestObservationParser.endOffset(store.paths.serialLog))
         if progress.stalled() { throw Self.stalled(phase: bootPhase, after: stallLimit) }
         try await Task.sleep(for: .milliseconds(500))
       }
-    } catch {
-      state = .failed
-      lastError = error.localizedDescription
-      guestHealth = nil
-      throw error
     }
   }
   /// Shuts the guest down for the single host restart after `incus_crashed`:

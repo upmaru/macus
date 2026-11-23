@@ -99,34 +99,10 @@ enum SeedPreparation {
     if try seedIsCurrent(stamp: stamp, iso: iso, manifest: manifest, entry: entry) {
       return manifest
     }
-    let seed = cache.appendingPathComponent("seed", isDirectory: true)
-    if FileManager.default.fileExists(atPath: seed.path) {
-      try FileManager.default.removeItem(at: seed)
-    }
-    try FileManager.default.createDirectory(
-      at: seed, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
     do {
-      try write(
-        "instance-id: \(entry.id)\nlocal-hostname: tama-incus\n",
-        seed.appendingPathComponent("meta-data"))
-      try write(
-        "version: 1\nconfig:\n  - type: physical\n    name: eth0\n    subnets:\n      - type: dhcp\n",
-        seed.appendingPathComponent("network-config"))
-      try write(userData(entry: entry), seed.appendingPathComponent("user-data"))
-      if FileManager.default.fileExists(atPath: iso.path) {
-        try FileManager.default.removeItem(at: iso)
-      }
-      let result = try await runner.run(
-        executable: "/usr/bin/hdiutil",
-        arguments: [
-          "makehybrid", "-iso", "-joliet", "-default-volume-name", "cidata", "-o", iso.path,
-          seed.path,
-        ],
-        environment: environment, timeout: timeout)
-      guard result.status == 0, FileManager.default.fileExists(atPath: iso.path) else {
-        throw RuntimeError(.io, "hdiutil could not create the NoCloud seed")
-      }
-      guard chmod(iso.path, 0o600) == 0 else { throw RuntimeError(.io, "Cannot secure seed") }
+      try await makeISO(
+        entry: entry, adoption: nil, directory: cache, runner: runner, timeout: timeout,
+        environment: environment)
       try writeManifest(entry: entry, manifest: manifest)
       let stampObject: [String: String] = [
         "payload_revision": EmbeddedGuestPayload.revision, "catalog_id": entry.id,
@@ -136,14 +112,69 @@ enum SeedPreparation {
       guard chmod(stamp.path, 0o600) == 0 else {
         throw RuntimeError(.io, "Cannot secure seed stamp")
       }
-      try? FileManager.default.removeItem(at: seed)
       return manifest
     } catch {
-      try? FileManager.default.removeItem(at: seed)
       try? FileManager.default.removeItem(at: iso)
       try? FileManager.default.removeItem(at: stamp)
       throw error
     }
+  }
+
+  /// The seed of an upgrade, which names the pool the replacement root adopts. It is written
+  /// only into the upgrade's private staging directory, never into the shared appliance
+  /// cache, so a later new runtime can never adopt.
+  static func prepareUpgradeSeed(
+    entry: ApplianceCatalogEntry, adoption: StorageAdoption, directory: URL,
+    runner: any LocalCommandRunner, timeout: Int, environment: [String: String]
+  ) async throws -> URL {
+    let iso = directory.appendingPathComponent("seed.iso")
+    do {
+      try await makeISO(
+        entry: entry, adoption: adoption, directory: directory, runner: runner, timeout: timeout,
+        environment: environment)
+      return iso
+    } catch {
+      try? FileManager.default.removeItem(at: iso)
+      throw error
+    }
+  }
+
+  /// Renders the NoCloud files into `directory/seed` and builds `directory/seed.iso` from
+  /// them. The working directory is removed either way.
+  private static func makeISO(
+    entry: ApplianceCatalogEntry, adoption: StorageAdoption?, directory: URL,
+    runner: any LocalCommandRunner, timeout: Int, environment: [String: String]
+  ) async throws {
+    let iso = directory.appendingPathComponent("seed.iso")
+    let seed = directory.appendingPathComponent("seed", isDirectory: true)
+    if FileManager.default.fileExists(atPath: seed.path) {
+      try FileManager.default.removeItem(at: seed)
+    }
+    try FileManager.default.createDirectory(
+      at: seed, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    defer { try? FileManager.default.removeItem(at: seed) }
+    try write(
+      "instance-id: \(entry.id)\nlocal-hostname: tama-incus\n",
+      seed.appendingPathComponent("meta-data"))
+    try write(
+      "version: 1\nconfig:\n  - type: physical\n    name: eth0\n    subnets:\n      - type: dhcp\n",
+      seed.appendingPathComponent("network-config"))
+    try write(
+      userData(entry: entry, adoption: adoption), seed.appendingPathComponent("user-data"))
+    if FileManager.default.fileExists(atPath: iso.path) {
+      try FileManager.default.removeItem(at: iso)
+    }
+    let result = try await runner.run(
+      executable: "/usr/bin/hdiutil",
+      arguments: [
+        "makehybrid", "-iso", "-joliet", "-default-volume-name", "cidata", "-o", iso.path,
+        seed.path,
+      ],
+      environment: environment, timeout: timeout)
+    guard result.status == 0, FileManager.default.fileExists(atPath: iso.path) else {
+      throw RuntimeError(.io, "hdiutil could not create the NoCloud seed")
+    }
+    guard chmod(iso.path, 0o600) == 0 else { throw RuntimeError(.io, "Cannot secure seed") }
   }
 
   private static func seedIsCurrent(

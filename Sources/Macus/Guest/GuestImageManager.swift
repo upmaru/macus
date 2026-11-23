@@ -46,6 +46,19 @@ public enum GuestImageManager {
     return hasher.finalize().map { String(format: "%02x", $0) }.joined()
   }
 
+  /// The size a root disk is grown to: 12 GiB, or the image if larger.
+  static let minimumRootBytes: UInt64 = 12 * 1024 * 1024 * 1024
+
+  static func rootBytes(imageBytes: UInt64) -> UInt64 { max(imageBytes, minimumRootBytes) }
+
+  /// Grows a staged root disk the same way for a new runtime and for an upgrade. Sparse:
+  /// blocks are allocated only as the guest writes.
+  static func prepareRoot(_ root: URL) throws {
+    let attributes = try FileManager.default.attributesOfItem(atPath: root.path)
+    let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+    try StateStore.growDisk(root, bytes: rootBytes(imageBytes: size))
+  }
+
   public static func create(configuration: RuntimeConfiguration, store: StateStore) throws {
     try configuration.validate()
     let (image, manifest) = try verifiedImage(
@@ -64,9 +77,7 @@ public enum GuestImageManager {
       throw RuntimeError(.invalidConfiguration, "Staged appliance SHA-256 mismatch")
     }
     guard chmod(root.path, 0o600) == 0 else { throw RuntimeError(.io, "Cannot secure root disk") }
-    let attributes = try FileManager.default.attributesOfItem(atPath: root.path)
-    let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
-    try StateStore.growDisk(root, bytes: max(size, 12 * 1024 * 1024 * 1024))
+    try prepareRoot(root)
     try StateStore.growDisk(
       staging.appendingPathComponent("data.raw"),
       bytes: configuration.dataDiskGib * 1024 * 1024 * 1024, create: true)

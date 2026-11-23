@@ -140,35 +140,7 @@ enum GuestRecordStore {
     return try Data(contentsOf: file)
   }
 
-  /// Atomic and private: a 0600 temporary file is synced, then renamed over the record.
   private static func write(_ data: Data, to file: URL) throws {
-    var info = stat()
-    if lstat(file.path, &info) == 0 {
-      try requireOwnedRegular(file)
-    }
-    let directory = file.deletingLastPathComponent()
-    let temporary = directory.appendingPathComponent(
-      ".\(file.lastPathComponent)-\(UUID().uuidString)")
-    let descriptor = open(
-      temporary.path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o600)
-    guard descriptor >= 0 else {
-      throw RuntimeError(.io, "Cannot write \(file.lastPathComponent)")
-    }
-    var written = 0
-    let complete = data.withUnsafeBytes { raw -> Bool in
-      guard let base = raw.baseAddress else { return data.isEmpty }
-      while written < data.count {
-        let result = Darwin.write(descriptor, base.advanced(by: written), data.count - written)
-        if result < 0 { return false }
-        written += result
-      }
-      return true
-    }
-    let synced = complete && fsync(descriptor) == 0
-    close(descriptor)
-    guard synced, rename(temporary.path, file.path) == 0 else {
-      _ = unlink(temporary.path)
-      throw RuntimeError(.io, "Cannot write \(file.lastPathComponent)")
-    }
+    try PrivateFile.write(data, to: file)
   }
 }
