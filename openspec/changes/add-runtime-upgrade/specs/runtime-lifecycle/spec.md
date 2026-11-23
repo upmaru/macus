@@ -33,7 +33,7 @@ The runtime SHALL provide an explicit upgrade that replaces the root disk with t
 
 ### Requirement: Upgrade classes and Incus direction
 
-Upgrade SHALL compare the target appliance's Incus package version with the version last reported by a ready guest of the state. When they are equal, the data disk SHALL NOT be copied. When the target is newer or the earlier version is unknown, the data disk SHALL be copied before the new root first boots. When the target is older, upgrade MUST be refused. The class and its consequences SHALL be stated before the runtime is stopped.
+Upgrade SHALL compare the target appliance's full Incus package version, including its package release suffix, with the full installed package version last reported by a ready guest of the state. The Incus server version alone MUST NOT be used, and a state whose guest never reported the full package version SHALL be treated as unknown. When the two are exactly equal, the data disk SHALL NOT be copied. When the target is newer or the earlier version is unknown, the data disk SHALL be copied before the new root first boots. When the target is older, or the direction cannot be determined, upgrade MUST be refused. The class and its consequences SHALL be stated before the runtime is stopped.
 
 #### Scenario: Same Incus package
 
@@ -45,9 +45,24 @@ Upgrade SHALL compare the target appliance's Incus package version with the vers
 - **WHEN** the target appliance carries a newer Incus package
 - **THEN** a copy of the data disk exists before the new root boots
 
+#### Scenario: Newer package release only
+
+- **WHEN** the target carries the same Incus upstream version with a higher package release suffix
+- **THEN** the upgrade is migrating and the data disk is copied
+
+#### Scenario: Older package release only
+
+- **WHEN** the target carries the same Incus upstream version with a lower package release suffix
+- **THEN** upgrade is refused
+
+#### Scenario: Server version only
+
+- **WHEN** the state's guest reported only an Incus server version without a package release
+- **THEN** the earlier version is unknown and the data disk is copied
+
 #### Scenario: Unknown earlier version
 
-- **WHEN** the state has no recorded Incus version
+- **WHEN** the state has no recorded Incus package version
 - **THEN** the upgrade is treated as migrating and the data disk is copied
 
 #### Scenario: Older Incus package
@@ -57,7 +72,7 @@ Upgrade SHALL compare the target appliance's Incus package version with the vers
 
 ### Requirement: Upgrade safety copies and rollback
 
-Upgrade SHALL keep the previous root disk, firmware store, seed and configuration, and any data disk copy, in a private backup inside the state directory. It SHALL record durable intent before moving any disk. If the new root does not reach verified readiness, or the operation is interrupted, the runtime SHALL be restored to its previous disks and configuration before any other mutation is accepted, and the failure SHALL be reported with its code. An unreadable intent record MUST preserve all files and require explicit recovery. Backups MUST NOT be removed automatically, including by runtime reset. An explicit rollback SHALL restore a named backup, and rollback of a migrating upgrade SHALL require a separate confirmation that data written since the upgrade is discarded.
+Upgrade SHALL keep the previous root disk, firmware store, seed and configuration, and any data disk copy, in a private backup inside the state directory. It SHALL record durable intent before moving any disk. If the new root does not reach verified readiness, or the operation is interrupted, the runtime SHALL be restored to its previous disks and configuration before any other mutation is accepted, and the failure SHALL be reported with its code. An unreadable intent record MUST preserve all files and require explicit recovery. Backups MUST NOT be removed automatically, including by runtime reset. An explicit rollback SHALL restore a named backup. Each backup SHALL record the Incus package of its root and of any data disk copy. Rollback MUST NOT boot a restored root against a data disk at a different Incus package: when the current data's recorded package differs from the root's, or is unknown, rollback SHALL also restore a data disk copy recorded at the root's package, from that backup or a later one, and SHALL be refused unchanged when none exists. Restoring a data disk copy SHALL require a separate confirmation that data written since that copy is discarded.
 
 #### Scenario: New root fails to become ready
 
@@ -76,8 +91,23 @@ Upgrade SHALL keep the previous root disk, firmware store, seed and configuratio
 
 #### Scenario: Rollback of a migrating upgrade
 
-- **WHEN** rollback is requested for a backup that includes a data disk copy without the discard confirmation
+- **WHEN** rollback needs to restore a data disk copy and the discard confirmation is absent
 - **THEN** it is refused and nothing changes
+
+#### Scenario: Rollback across a later migration
+
+- **WHEN** a root-only backup is selected after a later upgrade migrated the Incus database
+- **THEN** rollback restores that root together with the later backup's data disk copy recorded at the root's Incus package, after the discard confirmation, and never the root alone
+
+#### Scenario: No matching data copy
+
+- **WHEN** the selected root's Incus package differs from the current data's and no data disk copy at that package remains
+- **THEN** rollback is refused and nothing changes
+
+#### Scenario: Root-only rollback
+
+- **WHEN** the current data's recorded Incus package equals the selected root's
+- **THEN** only the root, firmware store, seed and configuration are restored and the data disk is kept
 
 #### Scenario: No space for a copy
 
@@ -105,7 +135,7 @@ Before committing, upgrade SHALL require live Incus readiness and a guest-report
 
 ### Requirement: Compatibility decision before boot
 
-The state SHALL record the guest contract version, payload revision, appliance identity and Incus version reported at each readiness. Start SHALL compare the recorded contract with the installed package before activating services or booting. A state recorded as incompatible MUST be refused with the upgrade command and MUST NOT be booted. When compatibility is unknown and the booted guest proves incompatible, start SHALL request a graceful stop and fail naming the upgrade command; it MUST NOT leave that guest running after a successful stop and MUST NOT force-stop it. A compatible state with an older root SHALL start and report that an upgrade is available.
+The state SHALL record the guest contract version, payload revision, appliance identity and full Incus package version reported at each readiness. Start SHALL compare the recorded contract with the installed package before activating services or booting. A state recorded as incompatible MUST be refused with the upgrade command and MUST NOT be booted. When compatibility is unknown and the booted guest proves incompatible, start SHALL request a graceful stop and fail naming the upgrade command; it MUST NOT leave that guest running after a successful stop and MUST NOT force-stop it. A compatible state with an older root SHALL start and report that an upgrade is available.
 
 #### Scenario: Recorded incompatible state
 

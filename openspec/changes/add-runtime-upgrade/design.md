@@ -10,7 +10,7 @@
 
 **Host and guest never run mixed while live.** The VM runs inside the daemon process. Replacing the package restarts the daemon and therefore the guest, so a new host binary never meets an already-running old guest. It only ever boots one.
 
-**Existing versions.** `ApplianceCatalogEntry.qualifiedPackages["incus"]` pins the appliance's Incus package. `GuestHealth.incusVersion` reports the running one. `EmbeddedGuestPayload.revision` identifies the payload. Start currently learns of an incompatible guest only after booting it (`health.servesFlowRelay`), and leaves it running.
+**Existing versions.** `ApplianceCatalogEntry.qualifiedPackages["incus"]` pins the appliance's Incus package with its Alpine release suffix (`7.0.1-r2`). `GuestHealth.incusVersion` is Incus's `server_version` (`7.0.1`), without the suffix, so the two cannot be compared. `EmbeddedGuestPayload.revision` identifies the payload. Start currently learns of an incompatible guest only after booting it (`health.servesFlowRelay`), and leaves it running.
 
 **Observed legacy shape.** The 2026-11-04 state is ZFS, and its `serial.log` contains a `TAMA_STORAGE_ZFS_READY <guid>` line, because the seed's `bootcmd` copies `/var/log/tama-storage.log` to the console. Its bridge answers health but not the flow relay, so the current host cannot query its Incus API.
 
@@ -65,8 +65,8 @@ Any failed check exports the pool and refuses with `stage=failed code=storage_ad
 
 ### 3. Compatibility is recorded and decided before boot
 
-- **Guest contract.** The payload carries an integer `guest_contract`, raised only when the host can no longer serve an older guest. The first value covers the flow relay. Health reports it together with the payload revision and appliance ID.
-- **Journal.** `bootstrap-journal.json` gains `guestContract`, `incusVersion` (last value reported by a ready guest) and `lastReadyPackage`. They are updated at each ready, not only at creation. A journal without them is "unknown".
+- **Guest contract.** The payload carries an integer `guest_contract`, raised only when the host can no longer serve an older guest. The first value covers the flow relay. Health reports it together with the payload revision, the appliance ID and `incus_package`: the full installed version of the `incus` package as APK reports it, including the release suffix.
+- **Journal.** `bootstrap-journal.json` gains `guestContract`, `incusPackage` (the last `incus_package` reported by a ready guest) and `lastReadyPackage`. `server_version` is never used for this: a guest that reports only `server_version` leaves `incusPackage` unknown. They are updated at each ready, not only at creation. A journal without them is "unknown".
 - **Start preflight.** Before job activation:
   - recorded contract below the host's minimum: refuse with `conflict`, naming `macus runtime upgrade`. Nothing is booted;
   - contract unknown: boot and probe as today. If health shows an incompatible guest, start requests a graceful stop, waits within the shutdown timeout, and fails with `unavailable` naming `macus runtime upgrade`. It does not force-stop; if the graceful stop times out, the message says the guest is still running and names `runtime stop --force`;
@@ -77,11 +77,11 @@ Any failed check exports the pool and refuses with `stage=failed code=storage_ad
 
 | Class | Condition | `data.raw` | Undo |
 | --- | --- | --- | --- |
-| Reversible | Target Incus package equals the journal's `incusVersion` | Not copied | Swap the old root back |
-| Migrating | Target Incus is newer, or the old version is unknown | Cloned before the first boot of the new root | Restore the clone and the old root |
-| Refused | Target Incus is older than the recorded one | Untouched | Not applicable |
+| Reversible | Target Incus package equals the journal's `incusPackage` exactly | Not copied | Swap the old root back |
+| Migrating | Target Incus package is newer, or the recorded one is unknown | Cloned before the first boot of the new root | Restore the clone and the old root |
+| Refused | Target Incus package is older than the recorded one, or the direction cannot be determined | Untouched | Not applicable |
 
-Any difference in the Incus package version, including a package release suffix, counts as migrating: a patch release may still alter the database. Kernel and ZFS changes alone are reversible, because the pool's feature flags are never upgraded.
+Both sides are full package versions with the release suffix: the catalog's `qualifiedPackages["incus"]` and the journal's `incusPackage`. Equality is exact string equality. Direction compares the dotted upstream version numerically and then the `-rN` release number; a version outside that form has no determinable direction and is refused. Any difference, including the release suffix alone, counts as migrating or refused, never reversible: a package release may still alter the database. Kernel and ZFS changes alone are reversible, because the pool's feature flags are never upgraded.
 
 The command prints the class and what will be copied before it stops the runtime. `--dry-run` prints the same and changes nothing.
 
@@ -96,20 +96,26 @@ Owned by the daemon under `RuntimeService`'s mutation gate, exposed as `POST /ru
 5. **Stage.** Build `STATE/upgrade-<id>/` with the new `root.raw` (digest verified, grown as `GuestImageManager.create` does) and the adoption seed.
 6. **Swap.** Rename `root.raw`, `efi.bin` and `seed.iso` from `runtime/` into the backup, with the old `config.json` and `bootstrap-journal.json` copied beside them. Rename the staged root and seed into `runtime/`. `efi.bin` is not carried over; the first boot creates a new variable store, as on a fresh install. Save the new `config.json`.
 7. **Boot and verify.** Start with the normal readiness loop. Require ready health, a reported `pool_guid` equal to the record, and the inventory comparison where one was taken.
-8. **Commit.** Update the journal fields, write `backups/<id>/backup.json` (time, class, old and new catalog IDs, old Incus version, package that made it), remove `upgrade.pending`.
+8. **Commit.** Update the journal fields, write `backups/<id>/backup.json` (time, class, old and new catalog IDs, the root's Incus package, the data copy's Incus package when one exists, package that made it), remove `upgrade.pending`.
 
 Renames are within one directory tree, so each step is idempotent and needs no copy.
 
 **Failure and interruption.** A failure after step 3 rolls back automatically: stop the guest (graceful, then forced, since the new root has no user state and the pool is restored or unmigrated), move the new root aside into `backups/<id>/failed/` for diagnosis, rename the old trio back, restore `config.json` and the journal, and for a migrating upgrade replace `data.raw` with the clone. The command then fails, naming the failure code and saying the previous state was restored. On daemon start, a present `upgrade.pending` is resolved the same way before any other mutation: a journal at or before the swap rolls back, and `start` is refused until resolution succeeds. A journal that cannot be parsed preserves everything and requires explicit recovery, like an invalid reset intent.
 
-**Explicit rollback.** `macus runtime upgrade --rollback [ID]` restores the latest (or named) backup with the same steps. For a migrating backup it requires `--discard-data-since-upgrade`, because everything written to `data.raw` after the upgrade is lost. After rollback the state matches the earlier package; with the current package installed, `start` will again report that an upgrade is required.
+**Explicit rollback.** `macus runtime upgrade --rollback [ID]` restores the latest (or named) backup with the same steps. Each backup records the Incus package its root carries and, for a data copy, the Incus package the data was at when copied. A root is restored only together with data at its own Incus package:
+
+- if the journal's current `incusPackage` equals the backup root's package, only the root is restored and `data.raw` stays;
+- otherwise rollback also restores a data copy recorded at that package, taken from the named backup or, when that backup has none, from the earliest later backup that has one. This requires `--discard-data-since-upgrade`, because everything written to `data.raw` since that copy is lost, and the command names the copy's time;
+- if no such copy exists (it was pruned, or the current package is unknown), rollback is refused and nothing changes.
+
+Example: A to B is reversible (root only), then B to C is migrating (root and data copied at B's package, which equals A's). Rolling back to A restores A's root and the data copy from the B to C backup, never A's root over C's migrated database. After rollback the state matches the earlier package; with the current package installed, `start` will again report that an upgrade is required.
 
 ### 6. Safety copies
 
 - **Location:** `STATE/backups/<id>/`, private (0700), on the same volume as the disks by construction.
 - **Clone:** `clonefile(2)` directly, so a volume without clone support fails clearly instead of silently copying. On that failure the upgrade falls back to a full copy only when free space exceeds the allocated size of `data.raw` plus the new root; otherwise it is refused before the stop.
 - **Space:** a clone costs nothing at first and diverges as the guest writes. Preflight requires free space for the new root image and reports the worst-case cost of keeping the backup.
-- **Retention:** nothing removes a backup automatically. `macus runtime backups` lists them with size and class; `macus runtime backups prune ID` removes one after confirmation. Runtime reset (`DELETE` with `confirm=true`) does not remove backups and says so.
+- **Retention:** nothing removes a backup automatically. `macus runtime backups` lists them with size, class, Incus package and whether each can currently be restored; `macus runtime backups prune ID` removes one after confirmation, and names any earlier backup that depends on its data copy and would stop being restorable. Runtime reset (`DELETE` with `confirm=true`) does not remove backups and says so.
 
 ### 7. Verification through Incus only
 

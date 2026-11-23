@@ -68,9 +68,9 @@ A root disk without a storage identity SHALL import an existing pool only when t
 
 ### Requirement: Guest identity reporting
 
-Guest health SHALL report the guest contract version, the payload revision, the appliance identity and, for ZFS, the storage identity and phase. The guest contract version SHALL change only when a host can no longer serve an older guest.
+Guest health SHALL report the guest contract version, the payload revision, the appliance identity, the full installed Incus package version including its package release suffix and, for ZFS, the storage identity and phase. The guest contract version SHALL change only when a host can no longer serve an older guest.
 
 #### Scenario: Ready guest
 
 - **WHEN** the host reads health from a ready guest provisioned with this payload
-- **THEN** the response includes the contract version, payload revision, appliance identity and the pool identity in its ready phase
+- **THEN** the response includes the contract version, payload revision, appliance identity, the Incus package version with its release suffix and the pool identity in its ready phase

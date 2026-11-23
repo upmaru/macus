@@ -4,7 +4,7 @@
 
 ### Requirement: Runtime upgrade commands
 
-The client SHALL provide `runtime upgrade` with `--dry-run` and `--rollback [ID]`, and `runtime backups` with `prune ID`, using the control API. Upgrade SHALL print the upgrade class, what will be copied and that every workload will be restarted before the runtime is stopped. Rollback of a backup that includes a data disk copy SHALL require `--discard-data-since-upgrade`. Prune SHALL require confirmation and SHALL remove only the named backup. These commands MUST NOT run a package manager, change the installed package or implement workload operations.
+The client SHALL provide `runtime upgrade` with `--dry-run` and `--rollback [ID]`, and `runtime backups` with `prune ID`, using the control API. Upgrade SHALL print the upgrade class, what will be copied and that every workload will be restarted before the runtime is stopped. A rollback that restores a data disk copy SHALL require `--discard-data-since-upgrade` and SHALL name the time of that copy. Prune SHALL require confirmation and SHALL remove only the named backup. These commands MUST NOT run a package manager, change the installed package or implement workload operations.
 
 #### Scenario: Upgrade summary
 
@@ -14,7 +14,7 @@ The client SHALL provide `runtime upgrade` with `--dry-run` and `--rollback [ID]
 #### Scenario: Listing backups
 
 - **WHEN** macus runtime backups is run
-- **THEN** each backup is listed with its ID, time, class, source appliance and size
+- **THEN** each backup is listed with its ID, time, class, source appliance, Incus package, size and whether it can currently be restored
 
 #### Scenario: Prune without confirmation
 
