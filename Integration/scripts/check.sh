@@ -9,6 +9,7 @@ swift build -c release -Xswiftc -warnings-as-errors
 swift format lint --strict --recursive Package.swift Sources Tests
 sh -n Integration/guest/bootstrap.sh
 sh -n Integration/guest/storage.sh
+sh -n Integration/guest/incus-guard.sh
 sh -n Integration/guest/tama-storage.initd
 sh -n Integration/guest/tama-bridge.initd
 sh -n Integration/guest/tama-bootstrap.initd

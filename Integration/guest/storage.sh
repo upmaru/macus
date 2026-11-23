@@ -12,6 +12,9 @@ metadata_mount=${TAMA_METADATA_MOUNT:-/var/lib/incus}
 identity=$root/etc/tama-storage
 log=${TAMA_STORAGE_LOG:-$root/var/log/tama-storage.log}
 run_dir=$root/run
+proc=${TAMA_PROC:-/proc}
+kill_cmd=${TAMA_KILL:-kill}
+release_wait=${TAMA_RELEASE_WAIT:-10}
 inspect=$root/mnt/tama-inspect
 # Guest-visible gate only. A 4096 MiB VZ configuration reports MemTotal below 4096 MiB.
 # This check does not reject every host configuration below 4096 MiB.
@@ -364,15 +367,84 @@ start_storage() {
     mount_shares
 }
 
+incus_alive() {
+    # The service state alone is not enough: a zapped or crashed service
+    # reports stopped. The daemon is alive only if its pidfile names incusd.
+    rc-service incusd status >/dev/null 2>&1 && return 0
+    pid=$(cat "$run_dir/incus/incusd.pid" 2>/dev/null || true)
+    case $pid in '' | *[!0-9]*) return 1 ;; esac
+    [ "$(readlink "$proc/$pid/exe" 2>/dev/null)" = /usr/sbin/incusd ]
+}
+
+mount_holders() {
+    # Processes whose cwd, root, executable or open files are under the
+    # metadata mount. Never pid 1 or this script.
+    for entry in "$proc"/[0-9]*; do
+        pid=${entry##*/}
+        [ "$pid" != 1 ] && [ "$pid" != "$$" ] || continue
+        for link in "$entry/cwd" "$entry/root" "$entry/exe" "$entry"/fd/*; do
+            case $(readlink "$link" 2>/dev/null) in
+                "$metadata_mount" | "$metadata_mount"/*)
+                    printf '%s\n' "$pid"
+                    break
+                    ;;
+            esac
+        done
+    done
+}
+
+release_dead_incus() {
+    # Only after incusd itself is gone. A crashed incusd leaves its tmpfs
+    # mounts and orphaned children (for example dnsmasq holding its lease
+    # file) under the metadata mount, which keeps the pool from exporting.
+    # Datasets are never touched here; zpool export still unmounts those.
+    if incus_alive; then
+        note "TAMA_STORAGE_INCUS_ALIVE: export failed while incusd runs; nothing released"
+        return 1
+    fi
+    note "TAMA_STORAGE_RELEASING_DEAD_INCUS"
+    holders=$(mount_holders | tr '\n' ' ')
+    if [ -n "${holders% }" ]; then
+        for pid in $holders; do
+            note "TAMA_STORAGE_HOLDER $pid $(tr '\0' ' ' <"$proc/$pid/cmdline" 2>/dev/null | cut -c 1-160)"
+        done
+        # shellcheck disable=SC2086
+        $kill_cmd -TERM $holders 2>/dev/null || true
+        waited=0
+        while [ -n "$(mount_holders)" ] && [ "$waited" -lt "$release_wait" ]; do
+            sleep 1
+            waited=$((waited + 1))
+        done
+        holders=$(mount_holders | tr '\n' ' ')
+        if [ -n "${holders% }" ]; then
+            note "TAMA_STORAGE_HOLDER_KILL $holders"
+            # shellcheck disable=SC2086
+            $kill_cmd -KILL $holders 2>/dev/null || true
+            sleep 1
+        fi
+    fi
+    # incusd's own ephemeral tmpfs mounts (devices, shmounts, guestapi), deepest first.
+    awk -v base="$metadata_mount/" '$3 == "tmpfs" && index($2, base) == 1 { print $2 }' \
+        "${TAMA_PROC_MOUNTS:-/proc/mounts}" 2>/dev/null | sort -r | while IFS= read -r target; do
+        if umount "$target"; then note "TAMA_STORAGE_UNMOUNTED $target"; fi
+    done
+    return 0
+}
+
 stop_storage() {
     if [ -f "$identity/pool-guid" ] && zpool list -H -o name "$pool" >/dev/null 2>&1; then
         actual=$(zpool get -H -o value guid "$pool")
         [ "$actual" = "$(read_token "$identity/pool-guid")" ] || refuse "refusing to export a different pool GUID"
-        zpool export "$pool" && note "TAMA_ZFS_EXPORT_OK"
+        if zpool export "$pool" || { release_dead_incus && zpool export "$pool"; }; then
+            note "TAMA_ZFS_EXPORT_OK"
+        else
+            note "TAMA_ZFS_EXPORT_FAILED: still busy: $(mount_holders | tr '\n' ' ')"
+            return 1
+        fi
     elif mountpoint -q "$metadata_mount"; then
         source=$(mounted_source "$metadata_mount")
         [ "$source" = "$disk" ] || refuse "refusing to unmount unexpected metadata source: ${source:-absent}"
-        umount "$metadata_mount"
+        umount "$metadata_mount" || { release_dead_incus && umount "$metadata_mount"; }
     fi
 }
 

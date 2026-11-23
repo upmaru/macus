@@ -17,6 +17,7 @@ FILES = (
     "verify-appliance-image.sh",
     "bridge.py",
     "storage.sh",
+    "incus-guard.sh",
     "tama-bootstrap.initd",
     "tama-bridge.initd",
     "tama-storage.initd",

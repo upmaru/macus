@@ -3,6 +3,7 @@ set -eu
 umask 077
 boot=${TAMA_BOOT_ROOT:-}
 storage_script=${TAMA_STORAGE_SCRIPT:-/usr/local/libexec/tama-storage.sh}
+incus_guard=${TAMA_INCUS_GUARD:-/usr/local/libexec/tama-incus-guard.sh}
 echo 'TAMA_ALPINE_PROVISIONING'
 prebuilt=false
 if [ -e "$boot/etc/macus-appliance-expected" ] || [ -e "$boot/etc/macus-appliance-image" ]; then
@@ -108,7 +109,7 @@ apk info -v > "$boot/var/log/tama-appliance-packages.txt"
 cat "$boot/var/log/tama-appliance-packages.txt"
 grep -q '^root:' "$boot/etc/subuid" || echo 'root:1000000:1000000000' >> "$boot/etc/subuid"
 grep -q '^root:' "$boot/etc/subgid" || echo 'root:1000000:1000000000' >> "$boot/etc/subgid"
-mkdir -p "$boot/etc/sysctl.d" "$boot/etc/conf.d"
+mkdir -p "$boot/etc/sysctl.d" "$boot/etc/conf.d" "$boot/var/log/incus"
 cat > "$boot/etc/sysctl.d/90-tama-incus.conf" <<'EOF'
 net.ipv4.ip_forward=1
 net.ipv6.conf.all.forwarding=1
@@ -125,10 +126,15 @@ modprobe vmw_vsock_virtio_transport
 modprobe virtiofs
 modprobe vhost_vsock
 modprobe tun
+# Alpine's incusd service keeps no log. Go panics bypass --logfile and go to
+# stderr, so capture stdout/stderr too; tama-incus-guard copies tails of both
+# to the serial console when incusd crashes at boot.
 cat > "$boot/etc/conf.d/incusd" <<'EOF'
-INCUSD_OPTIONS="--group incus"
+INCUSD_OPTIONS="--group incus --logfile /var/log/incus/incusd.log"
 INCUSD_STOP_TIMEOUT=45
 rc_need="tama-storage"
+output_log="/var/log/incus/incusd.err"
+error_log="/var/log/incus/incusd.err"
 EOF
 rc-update add tama-storage default
 rc-update add incusd default
@@ -144,9 +150,9 @@ rc-service tama-storage start || {
 }
 echo 'MACUS_OBSERVATION v1 stage=incus'
 rc-service dbus start
-rc-service incusd start
-# /1.0 can respond before startup cleanup/autostart completes.
-incusd waitready --timeout 120
+# Starts incusd and waits for startup cleanup/autostart (/1.0 can respond
+# earlier), restarting a crashed daemon a bounded number of times.
+"$incus_guard" ensure
 pending=$boot/var/lib/incus/.tama-preseed-pending
 started=$boot/var/lib/incus/.tama-preseed-started
 backend=$(cat "$boot/run/tama-storage-backend" 2>/dev/null || true)
