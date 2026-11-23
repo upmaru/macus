@@ -5,6 +5,7 @@ enum SeedPreparation {
   static let entries: [(name: String, destination: String, permissions: String)] = [
     ("bridge.py", "/usr/local/libexec/tama-bridge.py", "0755"),
     ("storage.sh", "/usr/local/libexec/tama-storage.sh", "0755"),
+    ("incus-guard.sh", "/usr/local/libexec/tama-incus-guard.sh", "0755"),
     ("bootstrap.sh", "/usr/local/libexec/tama-bootstrap.sh", "0755"),
     ("verify-appliance-image.sh", "/usr/local/libexec/tama-verify-appliance-image.sh", "0755"),
     ("tama-storage.initd", "/etc/init.d/tama-storage", "0755"),

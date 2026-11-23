@@ -35,8 +35,10 @@ if [ "$1" = info ]; then printf '%s\\n' '{packages}'; fi
         write_stub(bin_dir, 'sha256sum', 'exec /usr/bin/shasum -a 256 "$@"\n')
         write_stub(bin_dir, 'seq', 'printf "1\\n"\n')
         write_stub(root / 'bin', 'storage', f'printf "storage %s\\n" "$*" >> "{calls}"\n')
+        write_stub(root / 'bin', 'guard', f'printf "guard %s\\n" "$*" >> "{calls}"\n')
         env = dict(os.environ, PATH=f'{bin_dir}:/usr/bin:/bin', TAMA_BOOT_ROOT=str(root),
-                   TAMA_STORAGE_SCRIPT=str(root / 'bin/storage'))
+                   TAMA_STORAGE_SCRIPT=str(root / 'bin/storage'),
+                   TAMA_INCUS_GUARD=str(root / 'bin/guard'))
         return subprocess.run(['sh', str(BOOTSTRAP)], env=env, text=True, capture_output=True), calls
 
     def prepare(self, root):
@@ -90,6 +92,18 @@ if [ "$1" = info ]; then printf '%s\\n' '{packages}'; fi
             self.assertNotIn('poweroff', recorded)
             self.assertIn('rc-update add incusd', recorded)
             self.assertIn('rc-update del tama-bootstrap', recorded)
+            # The guard owns starting incusd and waiting for readiness.
+            self.assertNotIn('rc-service incusd start', recorded)
+            self.assertNotIn('incusd waitready', recorded)
+            self.assertLess(recorded.index('guard ensure'), recorded.index('storage ready'))
+            self.assertLess(recorded.index('guard ensure'), recorded.index('rc-service tama-bridge start'))
+            confd = (root / 'etc/conf.d/incusd').read_text()
+            self.assertIn('INCUSD_OPTIONS="--group incus --logfile /var/log/incus/incusd.log"', confd)
+            self.assertIn('error_log="/var/log/incus/incusd.err"', confd)
+            self.assertIn('output_log="/var/log/incus/incusd.err"', confd)
+            self.assertIn('rc_need="tama-storage"', confd)
+            self.assertNotIn('supervisor', confd)
+            self.assertTrue((root / 'var/log/incus').is_dir())
             self.assertTrue((root / 'var/lib/tama-bootstrap-complete').is_file())
             second, second_calls = self.run_boot(root, '6.18.60-0-lts')
             self.assertEqual(second.returncode, 0, second.stdout + second.stderr)

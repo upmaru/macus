@@ -16,10 +16,16 @@ public actor RuntimeService {
   private var bootPhase: String?
   private var bootExpectedReboot = false
   private var bootStartedAt: ContinuousClock.Instant?
+  private let stallLimit: Duration
 
   public init(driver: any VirtualMachineDriver, store: StateStore) throws {
+    try self.init(driver: driver, store: store, stallLimit: .seconds(300))
+  }
+
+  init(driver: any VirtualMachineDriver, store: StateStore, stallLimit: Duration) throws {
     self.driver = driver
     self.store = store
+    self.stallLimit = stallLimit
     configuration = try store.load()
     state = configuration == nil ? .absent : .stopped
   }
@@ -161,6 +167,28 @@ public actor RuntimeService {
   static let legacyGuestBridge =
     "The appliance guest bridge predates the flow-controlled Incus relay this Macus requires. Recreate the appliance to continue; runtime data was not deleted."
 
+  static func guestFailure(_ observation: GuestObservation, hostRestarted: Bool) -> RuntimeError {
+    let code = observation.code ?? "unknown"
+    let recovery =
+      "Disks and Incus data were kept. Inspect serial.log, then run macus runtime stop --force and macus start."
+    guard code == GuestObservation.incusCrashed else {
+      return RuntimeError(
+        .unavailable, "The guest reported a boot failure (code \(code)). \(recovery)")
+    }
+    let tried = hostRestarted ? " One automatic guest restart was already tried." : ""
+    return RuntimeError(
+      .unavailable,
+      "Incus crashed during guest boot and the guest's bounded restarts were exhausted (code incus_crashed).\(tried) The incusd log tail is in serial.log. \(recovery)"
+    )
+  }
+
+  static func stalled(phase: String?, after limit: Duration) -> RuntimeError {
+    RuntimeError(
+      .timeout,
+      "The guest stopped making progress after the \(phase ?? "unknown") stage: no Incus health and no serial output for \(limit.components.seconds) s. Disks and Incus data were kept. Inspect serial.log, then run macus runtime stop --force and macus start."
+    )
+  }
+
   private func beginMutation() throws {
     guard !mutationActive else {
       throw RuntimeError(.conflict, "A runtime mutation is already in progress")
@@ -224,8 +252,10 @@ public actor RuntimeService {
     do {
       var restarted = false
       var sawReboot = false
+      var recoveredIncus = false
       var offset = try GuestObservationParser.endOffset(store.paths.serialLog)
       var attemptOffset = offset
+      var progress = BootProgressGuard(limit: stallLimit, size: offset)
       try Task.checkCancellation()
       try await driver.start(configuration: value, paths: store.paths)
       startedAt = Date()
@@ -245,11 +275,29 @@ public actor RuntimeService {
           sawReboot = true
           bootExpectedReboot = true
         }
+        if let failure = read.observations.first(where: \.failed) {
+          guard failure.code == GuestObservation.incusCrashed, !recoveredIncus else {
+            throw Self.guestFailure(failure, hostRestarted: recoveredIncus)
+          }
+          // One host restart per start operation; a fresh boot recovered this
+          // transient crash in manual retries.
+          recoveredIncus = true
+          try await shutDownForIncusRecovery(
+            value, deadline: deadline, operationGeneration: operationGeneration)
+          sawReboot = false
+          attemptOffset = try GuestObservationParser.endOffset(store.paths.serialLog)
+          offset = attemptOffset
+          progress = BootProgressGuard(limit: stallLimit, size: offset)
+          try await driver.start(configuration: value, paths: store.paths)
+          startedAt = Date()
+          continue
+        }
         if !(await driver.isRunning()) {
           // VZ can report the guest stopped before the serial file receives the
           // marker emitted immediately before poweroff. Drain only this attempt.
           let drainDeadline = min(deadline, ContinuousClock.now.advanced(by: .seconds(15)))
-          while !sawReboot && ContinuousClock.now < drainDeadline {
+          var drainedFailure: GuestObservation?
+          while !sawReboot && drainedFailure == nil && ContinuousClock.now < drainDeadline {
             try Task.checkCancellation()
             guard generation == operationGeneration, state == .starting else {
               throw CancellationError()
@@ -272,6 +320,10 @@ public actor RuntimeService {
               bootExpectedReboot = true
             }
             if let phase = again.observations.last?.stage { bootPhase = phase }
+            drainedFailure = again.observations.first(where: \.failed)
+          }
+          if !sawReboot, let drainedFailure {
+            throw Self.guestFailure(drainedFailure, hostRestarted: recoveredIncus)
           }
           if sawReboot && !restarted {
             try RebootAllowanceStore.consume(paths: store.paths)
@@ -313,6 +365,9 @@ public actor RuntimeService {
           logger.info("Incus ready: \(health.incusVersion, privacy: .public)")
           return snapshot()
         }
+        progress.observe(
+          read.observations, size: try GuestObservationParser.endOffset(store.paths.serialLog))
+        if progress.stalled() { throw Self.stalled(phase: bootPhase, after: stallLimit) }
         try await Task.sleep(for: .milliseconds(500))
       }
     } catch {
@@ -322,6 +377,40 @@ public actor RuntimeService {
       throw error
     }
   }
+  /// Shuts the guest down for the single host restart after `incus_crashed`:
+  /// graceful first so OpenRC exports storage, forced only after a bounded wait.
+  private func shutDownForIncusRecovery(
+    _ value: RuntimeConfiguration, deadline: ContinuousClock.Instant, operationGeneration: UInt64
+  ) async throws {
+    bootPhase = "incus_recovery"
+    logger.notice("Guest reported incus_crashed; restarting the guest once")
+    let graceful = min(
+      deadline, ContinuousClock.now.advanced(by: .seconds(min(value.shutdownTimeoutSeconds, 60))))
+    var requested = true
+    do { try await driver.requestStop() } catch { requested = false }
+    while requested, await driver.isRunning(), ContinuousClock.now < graceful {
+      try Task.checkCancellation()
+      guard generation == operationGeneration, state == .starting else {
+        throw CancellationError()
+      }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+    try Task.checkCancellation()
+    guard generation == operationGeneration, state == .starting else { throw CancellationError() }
+    if await driver.isRunning() {
+      logger.notice("Graceful guest shutdown did not finish; forcing stop for Incus recovery")
+      try await driver.forceStop()
+    }
+    try Task.checkCancellation()
+    guard generation == operationGeneration, state == .starting else { throw CancellationError() }
+    guard ContinuousClock.now < deadline else {
+      throw RuntimeError(
+        .timeout,
+        "Incus readiness timed out while restarting the guest after an Incus crash. Disks and Incus data were kept."
+      )
+    }
+  }
+
   private func stopLocked(force: Bool) async throws -> RuntimeStatus {
     let value = try config()
     guestHealth = nil

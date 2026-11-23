@@ -11,6 +11,45 @@ struct GuestObservation: Sendable, Equatable {
   }
 
   var failed: Bool { stage == "failed" }
+
+  /// Guest boot gave up restarting a crashed incusd.
+  static let incusCrashed = "incus_crashed"
+
+  /// Stages after which a healthy boot keeps producing serial output or health,
+  /// so a long silence means the boot has stalled.
+  var armsProgressGuard: Bool { stage == "storage" || stage == "incus" || stage == "ready" }
+}
+
+/// Detects a boot that reached storage or Incus startup and then went silent:
+/// no health and no new serial output for `limit`.
+struct BootProgressGuard: Sendable {
+  let limit: Duration
+  private(set) var armed = false
+  private var size: UInt64
+  private var lastActivity: ContinuousClock.Instant
+
+  init(limit: Duration, size: UInt64, now: ContinuousClock.Instant = .now) {
+    self.limit = limit
+    self.size = size
+    lastActivity = now
+  }
+
+  mutating func observe(
+    _ observations: [GuestObservation], size: UInt64, now: ContinuousClock.Instant = .now
+  ) {
+    if observations.contains(where: \.armsProgressGuard) {
+      armed = true
+      lastActivity = now
+    }
+    if size != self.size {
+      self.size = size
+      lastActivity = now
+    }
+  }
+
+  func stalled(at now: ContinuousClock.Instant = .now) -> Bool {
+    armed && lastActivity.duration(to: now) >= limit
+  }
 }
 
 enum GuestObservationParser {
