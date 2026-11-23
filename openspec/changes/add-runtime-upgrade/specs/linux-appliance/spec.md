@@ -44,12 +44,12 @@ Appliance metadata SHALL persist outside the storage subtree controlled by Incus
 
 ### Requirement: Pool adoption by a replacement root
 
-A root disk without a storage identity SHALL import an existing pool only when the upgrade seed names that pool's identity and layout. Adoption SHALL import by the named identity from the attached data disk without forcing, and MUST verify the pool identity, the exact backing device, the recognized layout marker, an initialized Incus database and the absence of pending or interrupted initialization before recording ownership. Any failed check MUST leave the pool exported and unchanged, withhold readiness and emit a failure observation. A seed for a new runtime MUST NOT carry an adoption record, and a root without one SHALL keep refusing an existing pool. Adoption MUST NOT run Incus preseed.
+A root disk without a storage identity SHALL import an existing pool only when the upgrade seed names that pool's identity and layout. Adoption SHALL import by the named identity from the attached data disk without forcing, and MUST verify the pool identity, the exact backing device, the recognized layout marker, an initialized Incus database and the absence of pending or interrupted initialization before recording ownership. After recording ownership, the adopted pool SHALL pass the same per-boot import checks as an owned pool before storage reports ready. Any failed check MUST leave the pool exported and unchanged, withhold readiness and emit a failure observation. A seed for a new runtime MUST NOT carry an adoption record, and a root without one SHALL keep refusing an existing pool. Adoption MUST NOT run Incus preseed.
 
 #### Scenario: Adoption succeeds
 
 - **WHEN** a replacement root boots with an adoption record naming the pool on the attached data disk and that pool has the recognized layout and an Incus database
-- **THEN** the root records ownership, Incus starts on the existing database without preseed, and readiness is reported
+- **THEN** the root records ownership, the owned-pool import checks pass, Incus starts on the existing database without preseed, and readiness is reported
 
 #### Scenario: Identity mismatch
 
@@ -65,6 +65,20 @@ A root disk without a storage identity SHALL import an existing pool only when t
 
 - **WHEN** a root without identity and without an adoption record finds a ZFS member on the data disk
 - **THEN** it refuses the disk as foreign and preserves it
+
+### Requirement: Shared appliance host identity
+
+Every root disk built from a qualified appliance SHALL present the same ZFS host identity, so that a pool left imported by one root after a forced stop can be imported by another root without forcing. Image verification at first boot MUST refuse a root that carries its own host identity file.
+
+#### Scenario: Root with a host identity file
+
+- **WHEN** a prebuilt root boots for the first time and contains a host identity file
+- **THEN** image verification fails and storage is not started
+
+#### Scenario: Pool left imported by another root
+
+- **WHEN** a qualified root was force-stopped with the pool imported and a different qualified root boots against the same data disk
+- **THEN** that root imports the pool without forcing
 
 ### Requirement: Guest identity reporting
 
