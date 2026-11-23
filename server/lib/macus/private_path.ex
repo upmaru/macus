@@ -105,10 +105,19 @@ defmodule Macus.PrivatePath do
   end
 
   @doc """
-  Atomically replaces `path` with `bytes`: writes a new exclusive 0600
-  temporary file beside it, syncs it and renames it over `path`. The
-  caller must have checked the directory with `private_dir/2`. A failure
-  leaves `path` unchanged and removes the temporary file.
+  Atomically and durably replaces `path` with `bytes`: writes a new
+  exclusive 0600 temporary file beside it, syncs it, renames it over `path`
+  and then makes the rename durable before returning `:ok`, so a spent token
+  or an earlier trust store cannot return after power loss. The caller must
+  have checked the directory with `private_dir/2`. A failure before the
+  rename leaves `path` unchanged and removes the temporary file; a failure
+  to make the rename durable also returns `{:error, :unwritable}`, and
+  callers treat the change as not saved.
+
+  Erlang cannot open a directory to sync it, so the rename is committed by
+  syncing the renamed file again: `:file.sync/1` issues `F_FULLFSYNC` on
+  macOS, which on APFS commits the filesystem transaction that holds the
+  rename and flushes the drive cache.
   """
   @spec replace(String.t(), iodata()) :: :ok | {:error, :unwritable}
   def replace(path, bytes) do
@@ -120,22 +129,27 @@ defmodule Macus.PrivatePath do
         ".#{base}.#{Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)}.tmp"
       )
 
-    result =
-      with {:ok, device} <- :file.open(temporary, [:write, :exclusive, :binary, :raw]),
-           :ok <- File.chmod(temporary, 0o600),
-           :ok <- :file.write(device, bytes),
-           :ok <- :file.sync(device),
-           :ok <- :file.close(device) do
-        File.rename(temporary, path)
-      end
-
-    case result do
-      :ok ->
-        :ok
-
+    with {:ok, device} <- :file.open(temporary, [:write, :exclusive, :binary, :raw]),
+         :ok <- File.chmod(temporary, 0o600),
+         :ok <- :file.write(device, bytes),
+         :ok <- :file.sync(device),
+         :ok <- :file.close(device),
+         :ok <- File.rename(temporary, path) do
+      commit(path)
+    else
       _ ->
         File.rm(temporary)
         {:error, :unwritable}
+    end
+  end
+
+  defp commit(path) do
+    with {:ok, device} <- :file.open(path, [:read, :binary, :raw]) do
+      synced = :file.sync(device)
+      :file.close(device)
+      if synced == :ok, do: :ok, else: {:error, :unwritable}
+    else
+      _ -> {:error, :unwritable}
     end
   end
 end

@@ -425,7 +425,7 @@ def main():
         raise SystemExit("Refusing to run without --opt-in")
     state = args.state_dir
     root = package_root(args.package_root)
-    start.validate_report(args.report, state, root, None)
+    start.validate_report(args.report, state, root, None, client=args.incus_conf)
     start.refuse_user_paths(state, root, None)
     start.refuse_user_client(args.incus_conf)
     args.new_lock = args.new_lock or ROOT / "server" / "mix.lock"

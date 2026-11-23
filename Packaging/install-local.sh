@@ -110,13 +110,44 @@ sha256() {
 
 stage=$(mktemp -d "${TMPDIR:-/tmp}/macus-install.XXXXXX")
 new_release=
+new_executable=
+old_release=
+old_executable=
+installing=
+release_swapped=
+executable_swapped=
 cleanup() {
   rm -rf "$stage"
   if [ -n "$new_release" ]; then
     rm -rf "$new_release"
   fi
+  if [ -n "$new_executable" ]; then
+    rm -f "$new_executable"
+  fi
+  if [ -n "$installing" ]; then
+    # Never leave a new release beside an old executable or the reverse: put
+    # the previous pair back, or remove a first install's partial pair.
+    if [ -n "$release_swapped" ]; then
+      rm -rf "$prefix/libexec/macus"
+    fi
+    if [ -n "$old_release" ] && [ -d "$old_release" ]; then
+      mv "$old_release" "$prefix/libexec/macus"
+    fi
+    if [ -n "$executable_swapped" ]; then
+      if [ -n "$old_executable" ]; then
+        mv -f "$old_executable" "$prefix/bin/macus"
+      else
+        rm -f "$prefix/bin/macus"
+      fi
+    elif [ -n "$old_executable" ]; then
+      rm -f "$old_executable"
+    fi
+    echo "Installation failed; the previous macus and its server release were left in place." >&2
+  fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # The pinned opsmaru_incus cassette, obtained and checked before anything is
 # built. Only the release build fetches it; installed startup never does.
@@ -282,31 +313,47 @@ verify_release() {
 }
 verify_release "$stage/release"
 
-# Install: the release beside the executable, each replaced by a rename.
+# Install: both artifacts are staged and verified beside their destinations
+# before either is replaced, and the previous pair is kept until the new pair
+# passes its final checks; any failure restores it (see cleanup).
 mkdir -p "$prefix/bin" "$prefix/libexec"
 validate_destinations
 new_release=$(mktemp -d "$prefix/libexec/.macus-new.XXXXXX")
 cp -R -p "$stage/release/." "$new_release/"
 chmod 755 "$new_release"
 verify_release "$new_release"
-if [ -e "$prefix/libexec/macus" ]; then
-  previous="$new_release.previous"
-  mv "$prefix/libexec/macus" "$previous"
-  mv "$new_release" "$prefix/libexec/macus"
-  new_release=
-  rm -rf "$previous"
-else
-  mv "$new_release" "$prefix/libexec/macus"
-  new_release=
+new_executable="$prefix/bin/.macus.new.$$"
+cp "$stage/macus" "$new_executable"
+chmod 755 "$new_executable"
+verify_executable "$new_executable"
+installing=1
+if [ -e "$prefix/bin/macus" ]; then
+  old_executable="$prefix/bin/.macus.previous.$$"
+  cp -p "$prefix/bin/macus" "$old_executable"
 fi
-cp "$stage/macus" "$prefix/bin/.macus.new.$$"
-chmod 755 "$prefix/bin/.macus.new.$$"
-mv -f "$prefix/bin/.macus.new.$$" "$prefix/bin/macus"
+
+if [ -e "$prefix/libexec/macus" ]; then
+  old_release="$new_release.previous"
+  mv "$prefix/libexec/macus" "$old_release"
+fi
+mv "$new_release" "$prefix/libexec/macus"
+new_release=
+release_swapped=1
+mv -f "$new_executable" "$prefix/bin/macus"
+new_executable=
+executable_swapped=1
 
 verify_executable "$prefix/bin/macus"
 verify_release "$prefix/libexec/macus"
 "$prefix/bin/macus" --help >/dev/null
 "$prefix/libexec/macus/bin/macus" version >/dev/null
+installing=
+if [ -n "$old_release" ]; then
+  rm -rf "$old_release"
+fi
+if [ -n "$old_executable" ]; then
+  rm -f "$old_executable"
+fi
 
 echo "Installed macus $version ($revision) into $prefix/bin and its server release into $prefix/libexec/macus"
 echo "Local source installation requires Swift and Elixir/Erlang. These ad-hoc signatures are not notarized."

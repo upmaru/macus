@@ -109,8 +109,11 @@ def reject_report_ancestry(report):
             raise SystemExit(f"Report ancestry is not a directory: {candidate}")
 
 
-def validate_report(report, state, prefix, macus):
+def validate_report(report, state, prefix, macus, client=None):
     """Reject destinations that could replace runtime, install, or client data.
+
+    `client` is the runner's selected Incus client directory (`--incus-conf`), whose
+    config.yml and client.key a report must never replace.
 
     This runs before any directory creation, report write, or executable invocation.
     """
@@ -126,9 +129,12 @@ def validate_report(report, state, prefix, macus):
         lexical(prefix),
         lexical(Path.home() / ".tama" / "incus-mac"),
         lexical(Path.home() / ".config" / "incus"),
+        lexical(Path.home() / "Library" / "Application Support" / "incus"),
     ]
     if macus:
         protected.append(lexical(macus))
+    if client:
+        protected.append(lexical(client))
     destination = lexical(report)
     for root in protected:
         if destination == root or is_within(destination, root):
@@ -136,17 +142,18 @@ def validate_report(report, state, prefix, macus):
                 "Refusing a report destination inside runtime, installation, or client data")
     resolved_state = Path(state).resolve()
     resolved_prefix = Path(prefix).resolve()
+    resolved_client = [Path(client).resolve()] if client else []
     try:
         resolved_report = Path(report).resolve()
     except OSError as error:
         raise SystemExit(f"Cannot resolve report destination: {error}") from error
-    for root in (resolved_state, resolved_prefix):
+    for root in (resolved_state, resolved_prefix, *resolved_client):
         try:
             resolved_report.relative_to(root)
         except ValueError:
             continue
         raise SystemExit(
-            "Refusing a report destination that resolves inside runtime or installation data")
+            "Refusing a report destination that resolves inside runtime, installation, or client data")
 
 
 

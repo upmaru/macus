@@ -42,8 +42,10 @@ defmodule Macus.MCP.IncusHost do
   - `:restricted`: allowed restricted items, each `{:config, key}` or
     `{:device, name}`. Default `[]`.
   - `:projects`: the native projects callers may name in input, `:all` or a
-    list of names. Default `:all`, matching the initial owner-admin policy;
-    input without `project` uses the native default project.
+    list of names. Default `:all`, matching the initial owner-admin policy.
+    An operation that selects a project and is called without `project`
+    reaches Incus's `default` project, so it is allowed only when
+    `"default"` is listed.
   - `:timeout`: the per-request deadline in milliseconds, which also bounds
     an operation's wait. Default 30 000.
 
@@ -63,6 +65,20 @@ defmodule Macus.MCP.IncusHost do
   @native_scopes Map.new(Native.openapi()["paths"], fn {_, %{"post" => operation}} ->
                    {operation["operationId"], hd(operation["x-tama-scopes"])}
                  end)
+
+  # Native operations whose input selects a project.
+  @native_projected for {_, %{"post" => operation}} <- Native.openapi()["paths"],
+                        properties =
+                          get_in(operation, [
+                            "requestBody",
+                            "content",
+                            "application/json",
+                            "schema",
+                            "properties"
+                          ]) || %{},
+                        Map.has_key?(properties, "project"),
+                        into: MapSet.new(),
+                        do: operation["operationId"]
 
   @impl true
   def binding(caller, operation) do
@@ -114,7 +130,7 @@ defmodule Macus.MCP.IncusHost do
       # the verified caller's own.
       cond do
         scope not in caller.scopes -> {:error, :forbidden}
-        not project_allowed?(config.projects, input) -> {:error, :forbidden_project}
+        not project_allowed?(config.projects, operation, input) -> {:error, :forbidden_project}
         true -> :ok
       end
     end
@@ -152,9 +168,27 @@ defmodule Macus.MCP.IncusHost do
 
   defp verify(_caller, _config), do: {:error, :unauthenticated}
 
-  defp project_allowed?(:all, _input), do: true
-  defp project_allowed?(projects, %{"project" => project}), do: project in projects
-  defp project_allowed?(_projects, _input), do: true
+  # An operation that selects a project is checked against the list with the
+  # project it will reach: the named one, or Incus's default when omitted.
+  defp project_allowed?(:all, _operation, _input), do: true
+
+  defp project_allowed?(projects, operation, input) do
+    cond do
+      Map.has_key?(input, "project") -> input["project"] in projects
+      projected?(operation) -> "default" in projects
+      true -> true
+    end
+  end
+
+  defp projected?(operation) do
+    case Composite.fetch(operation) do
+      {:ok, descriptor} ->
+        Map.has_key?(descriptor.input_schema["properties"] || %{}, "project")
+
+      :error ->
+        MapSet.member?(@native_projected, operation)
+    end
+  end
 
   # The scope a composite or native operation requires.
   defp scope(operation) when is_binary(operation) do

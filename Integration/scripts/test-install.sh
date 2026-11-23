@@ -252,6 +252,25 @@ test ! -e "$prefix/libexec/macus/stale"
 test -z "$(ls -A "$prefix/libexec" | grep -v '^macus$' || true)"
 test "$(plutil -extract revision raw -o - "$manifest")" = "$revision"
 
+# A reinstall that cannot stage the executable changes nothing, and one whose
+# final checks fail after both replacements restores the previous pair.
+printf 'previous\n' > "$prefix/libexec/macus/previous"
+installed_before=$(shasum -a 256 "$prefix/bin/macus" "$manifest")
+chmod 555 "$prefix/bin"
+refused "" "" --prefix "$prefix" --release "$good"
+chmod 755 "$prefix/bin"
+test -e "$prefix/libexec/macus/previous"
+test "$(shasum -a 256 "$prefix/bin/macus" "$manifest")" = "$installed_before"
+tampered
+chmod 444 "$work/tampered/macus-build.json"
+printf '#!/bin/sh\nexit 1\n' > "$work/tampered/bin/macus"
+refused "" "previous macus and its server release were left in place" --prefix "$prefix" --release "$work/tampered"
+test -e "$prefix/libexec/macus/previous"
+test "$(shasum -a 256 "$prefix/bin/macus" "$manifest")" = "$installed_before"
+test -z "$(ls -A "$prefix/libexec" | grep -v '^macus$' || true)"
+test -z "$(ls -A "$prefix/bin" | grep -v '^macus$' || true)"
+rm "$prefix/libexec/macus/previous"
+
 # Passive: no runtime state, no launch agent.
 after=$(stat -f '%m %z' "$sentinel/marker")
 test "$before" = "$after"

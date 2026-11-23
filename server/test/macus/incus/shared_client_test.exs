@@ -159,6 +159,27 @@ defmodule Macus.Incus.SharedClientTest do
 
       refute_received {:incus, _, _, _, _}
 
+      # Omitting `project` reaches Incus's default project, which is checked
+      # against the list too; operations that select no project are not.
+      put_host(projects: ["sandbox"])
+      flush_requests()
+
+      for {operation, scope} <- [
+            {"incus_instance_get", "incus.read"},
+            {"incus_profile_list", "incus.read"},
+            {"incus_native_get_project_state", "incus.native.read"}
+          ] do
+        input = if operation == "incus_profile_list", do: %{}, else: %{"name" => "default"}
+        assert failed!(operation, input, [scope])["kind"] == "unauthorized", operation
+      end
+
+      refute_received {:incus, _, _, _, _}
+      ok!("incus_profile_list", %{"project" => "sandbox"}, ["incus.read"])
+      assert {query, _} = assert_request("GET", "/1.0/profiles")
+      assert query =~ "project=sandbox"
+      ok!("incus_project_list", %{}, ["incus.read"])
+      assert_request("GET", "/1.0/projects")
+
       # Native certificate operations reach the guest's own trust store and
       # never the gateway's.
       put_host(projects: :all)

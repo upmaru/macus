@@ -325,6 +325,19 @@ class StartAcceptanceTests(unittest.TestCase):
                 self.assertFalse(executed.exists())
                 self.assertFalse((root / "prefix").exists())
 
+    def test_report_inside_the_selected_client_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="msa", dir="/tmp") as folder:
+            root = Path(folder)
+            client = root / "client"
+            client.mkdir()
+            for name in ("config.yml", "client.key", "nested/report.json"):
+                with self.subTest(name=name), self.assertRaises(SystemExit) as raised:
+                    start_acceptance.validate_report(
+                        client / name, root / "state", root / "prefix", None, client=client)
+                self.assertIn("client data", str(raised.exception))
+            start_acceptance.validate_report(
+                root / "report.json", root / "state", root / "prefix", None, client=client)
+
     def test_symlink_report_is_rejected_before_mutation(self):
         with tempfile.TemporaryDirectory(prefix="msa", dir="/tmp") as folder:
             root = Path(folder)

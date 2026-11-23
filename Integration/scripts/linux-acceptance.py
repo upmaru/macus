@@ -115,6 +115,7 @@ class Linux(workload.Acceptance):
         self.spec, self.labels = spec, labels
         self.project = spec["project"]
         self.created = []
+        self.added_remote = None
 
     def in_project(self, *arguments, **options):
         extra = ["--project", self.project] if self.project else []
@@ -203,6 +204,7 @@ class Linux(workload.Acceptance):
         remotes = json.loads(self.ok("remote", "list", "--format", "json").stdout)
         require(remote["name"] not in remotes, f"refusing: remote {remote['name']} already exists")
         self.ok("remote", "add", remote["name"], remote["url"], "--protocol=oci")
+        self.added_remote = remote["name"]
         return {"remote": remote["name"], "url": remote["url"]}
 
     def launch(self, entry):
@@ -262,8 +264,10 @@ class Linux(workload.Acceptance):
             self.in_project("delete", "--force", f"{self.args.remote}:{name}", timeout=600)
         if self.project:
             self.ok("project", "delete", f"{self.args.remote}:{self.project}")
-        remote = self.spec["oci_remote"]["name"]
-        if remote in json.loads(self.ok("remote", "list", "--format", "json").stdout):
+        # Only a remote this run added is removed; a skipped OCI workload never
+        # checked for, or added, one of that name.
+        remote = self.added_remote
+        if remote and remote in json.loads(self.ok("remote", "list", "--format", "json").stdout):
             self.ok("remote", "remove", remote)
         return {"removed": self.created, "project_removed": self.project, "oci_remote_removed": remote}
 
@@ -273,7 +277,7 @@ def main():
     if not args.opt_in:
         raise SystemExit("Refusing to run without --opt-in")
     state, prefix = args.state_dir, args.prefix
-    start.validate_report(args.report, state, prefix, None)
+    start.validate_report(args.report, state, prefix, None, client=args.incus_conf)
     start.refuse_user_paths(state, prefix, None)
     start.refuse_user_client(args.incus_conf)
     report = {

@@ -59,6 +59,49 @@ class LinuxAcceptanceTests(unittest.TestCase):
         no_container = {k: v for k, v in everything.items() if not k.startswith("system_container")}
         self.assertFalse(linux.workloads_complete(spec, no_container, {"system_container": "skipped"}))
 
+    def test_a_report_over_the_selected_client_is_refused(self):
+        with tempfile.TemporaryDirectory(prefix="mlx", dir="/tmp") as folder:
+            root = Path(folder)
+            state, client, incus, log = self.prepared(root)
+            config = client / "config.yml"
+            before = config.read_bytes() if config.exists() else None
+            result = subprocess.run(
+                [sys.executable, str(RUNNER), "--opt-in", "--state-dir", str(state), "--prefix",
+                 str(root / "prefix"), "--incus-conf", str(client), "--incus", str(incus),
+                 "--remote", "accept", "--report", str(config)],
+                text=True, capture_output=True, timeout=60)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("client data", result.stderr)
+            self.assertEqual(config.read_bytes() if config.exists() else None, before)
+            self.assertFalse(log.exists())
+
+    def test_clean_up_removes_only_the_oci_remote_this_run_added(self):
+        spec = linux.fixture(linux.FIXTURE)
+        name = spec["oci_remote"]["name"]
+
+        class Result:
+            def __init__(self, stdout=""):
+                self.stdout = stdout
+
+        for added in (False, True):
+            calls = []
+            runner = object.__new__(linux.Linux)
+            runner.spec, runner.created, runner.project = spec, [], None
+            runner.args = type("Args", (), {"remote": "accept"})()
+            runner.added_remote = None
+
+            def ok(*arguments, **_options):
+                calls.append(arguments)
+                return Result(json.dumps({name: {}, "accept": {}}))
+
+            runner.ok = ok
+            if added:
+                runner.added_remote = name
+            outcome = runner.clean_up()
+            removed = [call for call in calls if call[:2] == ("remote", "remove")]
+            self.assertEqual(removed, [("remote", "remove", name)] if added else [], added)
+            self.assertEqual(outcome["oci_remote_removed"], name if added else None)
+
     def test_without_opt_in_nothing_is_read_written_or_run(self):
         with tempfile.TemporaryDirectory(prefix="mlx", dir="/tmp") as folder:
             root = Path(folder)

@@ -524,7 +524,7 @@ def main():
     args = parse_args()
     if not args.opt_in:
         raise SystemExit("Refusing to run without --opt-in")
-    start.validate_report(args.report, args.state_dir, args.prefix, None)
+    start.validate_report(args.report, args.state_dir, args.prefix, None, client=args.incus_conf)
     state, prefix = args.state_dir, args.prefix
     start.refuse_user_paths(state, prefix, None)
     start.refuse_user_client(args.incus_conf)
