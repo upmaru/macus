@@ -3,10 +3,10 @@
 ## 1. Guest payload
 
 - [x] 1.1 Add `guest_contract`, payload revision, appliance identity, `incus_package` (full APK version with release suffix) and `storage` (backend, pool GUID, layout, phase) to bridge health; verify with bridge fixture tests for ZFS, ext4 and an unready pool.
-- [ ] 1.2 Add adoption to `storage.sh` (`/etc/tama-storage/adopt`, import by GUID without force, GUID, vdev, layout, database and pending-marker checks, `storage_adoption_refused`, then the `import_owned_pool` per-boot steps); verify with storage classification tests for success (including vdev expansion, `backend_file zfs` and `TAMA_STORAGE_ZFS_READY`), GUID mismatch, wrong vdev, foreign layout, missing database, pending and started markers, an existing root identity with a stale record, and a fresh root without a record.
-- [ ] 1.3 Make `bootstrap.sh` complete on an adopted pool without preseed or `mark-ready`; verify with bootstrap shell tests.
-- [ ] 1.4 Make `verify-appliance-image.sh` refuse a root that has `/etc/hostid`; verify with an image verification test.
-- [ ] 1.5 Render the adoption record only in upgrade seeds (`SeedPreparation`, `prepare-appliance.py`), regenerate `EmbeddedGuestPayload.swift`; verify `sync-guest-payload.py --check` and seed tests, including that a creation seed never carries the record.
+- [x] 1.2 Add adoption to `storage.sh` (`/etc/tama-storage/adopt`, import by GUID without force, GUID, vdev, layout, database and pending-marker checks, `storage_adoption_refused`, then the `import_owned_pool` per-boot steps); verify with storage classification tests for success (including vdev expansion, `backend_file zfs` and `TAMA_STORAGE_ZFS_READY`), GUID mismatch, wrong vdev, foreign layout, missing database, pending and started markers, an existing root identity with a stale record, and a fresh root without a record.
+- [x] 1.3 Make `bootstrap.sh` complete on an adopted pool without preseed or `mark-ready`; verify with bootstrap shell tests.
+- [x] 1.4 Make `verify-appliance-image.sh` refuse a root that has `/etc/hostid`; verify with an image verification test.
+- [x] 1.5 Render the adoption record only in upgrade seeds (`SeedPreparation`, `prepare-appliance.py`), regenerate `EmbeddedGuestPayload.swift`; verify `sync-guest-payload.py --check` and seed tests, including that a creation seed never carries the record.
 
 ## 2. Host records and start
 

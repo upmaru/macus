@@ -10,8 +10,12 @@ pool=tama-data
 layout=zfs-v1
 metadata_mount=${TAMA_METADATA_MOUNT:-/var/lib/incus}
 identity=$root/etc/tama-storage
+# Written only by an upgrade seed: the host-named pool a replacement root may adopt.
+adopt_record=$identity/adopt
 log=${TAMA_STORAGE_LOG:-$root/var/log/tama-storage.log}
 run_dir=$root/run
+# Lets bootstrap report the specific refusal code; /run does not survive a reboot.
+failure_file=$run_dir/tama-storage-failure
 proc=${TAMA_PROC:-/proc}
 kill_cmd=${TAMA_KILL:-kill}
 release_wait=${TAMA_RELEASE_WAIT:-10}
@@ -187,6 +191,58 @@ expand_vdev() {
     note "TAMA_STORAGE_GROWTH $before $after"
 }
 
+adopt_field() {
+    sed -n "s/^$1=//p" "$adopt_record" | head -n 1
+}
+
+adoption_refused() {
+    printf '%s\n' storage_adoption_refused >"$failure_file"
+    refuse "adoption: $*"
+}
+
+adoption_export_refuse() {
+    zpool export "$pool" >/dev/null 2>&1 || true
+    adoption_refused "$@"
+}
+
+adopt_pool() {
+    # A replacement root adopts only the pool the host names, after proving it is this
+    # appliance's initialized pool on the attached disk. Nothing is written to the root
+    # until every check passes, and a refused pool is left exported and unchanged.
+    guid=$(adopt_field pool_guid)
+    delivered_layout=$(adopt_field layout)
+    case "$guid" in
+        "" | *[!0-9]*) adoption_refused "record has no valid pool GUID; disk preserved" ;;
+    esac
+    [ "$delivered_layout" = "$layout" ] || adoption_refused "record names unknown layout ${delivered_layout:-absent}; disk preserved"
+    load_zfs || adoption_refused "ZFS module is unavailable; disk preserved"
+    if zpool list -H -o name "$pool" >/dev/null 2>&1; then
+        actual=$(zpool get -H -o value guid "$pool")
+        # Not the named pool, so not ours to export.
+        [ "$actual" = "$guid" ] || adoption_refused "imported pool GUID $actual is not the named $guid; not exporting it"
+    else
+        vdev=$disk
+        if [ -e "${disk}1" ]; then vdev=${disk}1; fi
+        zpool import -N -d "$vdev" "$guid" || adoption_refused "named pool $guid cannot be imported from $vdev without force; disk preserved"
+    fi
+    actual=$(zpool get -H -o value guid "$pool")
+    [ "$actual" = "$guid" ] || adoption_export_refuse "pool GUID $actual is not the named $guid"
+    exact_vdev || adoption_export_refuse "named pool is not backed by the attached data disk"
+    zfs list -H -o name "$pool/metadata" >/dev/null 2>&1 || adoption_export_refuse "named pool has no metadata dataset"
+    (mount_owned_metadata) || adoption_export_refuse "cannot mount the named pool's metadata"
+    existing=$(read_token "$metadata_mount/.tama-storage-layout")
+    [ "$existing" = "$layout" ] || adoption_export_refuse "metadata layout is ${existing:-absent}, not $layout"
+    [ -e "$metadata_mount/database" ] || adoption_export_refuse "metadata has no Incus database"
+    [ ! -e "$metadata_mount/.tama-preseed-pending" ] || adoption_export_refuse "Incus initialization is still pending"
+    [ ! -e "$metadata_mount/.tama-preseed-started" ] || adoption_export_refuse "Incus initialization was interrupted"
+    write_atomic "$identity/pool-guid" "$guid"
+    write_atomic "$identity/layout" "$layout"
+    write_atomic "$identity/phase" ready
+    rm -f "$adopt_record"
+    sync
+    note "TAMA_STORAGE_ADOPTED $guid"
+}
+
 reject_foreign_metadata() {
     zfs list -H -o name "$pool/metadata" >/dev/null 2>&1 || return 0
     mount_owned_metadata || preserve_and_refuse "cannot inspect metadata; disk preserved"
@@ -339,6 +395,7 @@ start_storage() {
     modprobe tun || true
     kind=$(blkid -s TYPE -o value "$disk" || true)
     recorded_phase=$(read_token "$identity/phase")
+    rm -f "$failure_file"
     # Refuse before import or repair so a foreign mount cannot mutate the disk.
     refuse_if_metadata_mount_unexpected
     if [ "$recorded_phase" = intent-blank ]; then
@@ -349,7 +406,13 @@ start_storage() {
             import_owned_pool
         fi
     elif [ -f "$identity/pool-guid" ] || [ -f "$identity/phase" ] || [ -f "$identity/layout" ]; then
+        # A root that already owns a pool never adopts another.
+        if [ -f "$adopt_record" ]; then note "TAMA_STORAGE_ADOPT_IGNORED: root already has a storage identity"; fi
         load_zfs || refuse "owned ZFS pool cannot load its module; disk preserved"
+        import_owned_pool
+    elif [ -f "$adopt_record" ]; then
+        # Before any signature branch: an adoption record never creates or converts storage.
+        adopt_pool
         import_owned_pool
     elif [ "$kind" = ext4 ]; then
         start_ext4

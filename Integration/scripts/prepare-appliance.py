@@ -5,13 +5,18 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root-disk', type=Path, required=True)
 parser.add_argument('--output', type=Path, required=True)
 parser.add_argument('--appliance-id', default='alpine-3.24.2-incus-v1')
+# Upgrade seeds only: the pool a replacement root may adopt. Never pass it for a new runtime.
+parser.add_argument('--adopt-pool-guid', help='numeric GUID of the existing zfs-v1 pool to adopt')
 args = parser.parse_args()
+if args.adopt_pool_guid is not None and not re.fullmatch(r'[0-9]{1,20}', args.adopt_pool_guid):
+    parser.error('--adopt-pool-guid must be a numeric pool GUID')
 if args.root_disk.is_symlink():
     parser.error('root disk must not be a symlink')
 root = args.root_disk.resolve(strict=True)
@@ -63,9 +68,15 @@ sync_spec.loader.exec_module(sync)
 guest_record = f'format=1\npayload_revision={sync.revision(sync.load())}\nappliance_id={args.appliance_id}\n'
 user_data += '  - path: /etc/macus-guest\n    permissions: "0600"\n    content: |\n'
 user_data += ''.join('      ' + line + '\n' for line in guest_record.splitlines())
+if args.adopt_pool_guid is not None:
+    # Same record SeedPreparation renders for an upgrade seed.
+    user_data += '  - path: /etc/tama-storage/adopt\n    permissions: "0600"\n    content: |\n'
+    user_data += f'      pool_guid={args.adopt_pool_guid}\n      layout=zfs-v1\n'
 user_data += 'bootcmd:\n  - [sh, -c, "(sleep 20; rc-status default; cat /var/log/tama-storage.log; test ! -f /var/log/tama-bridge.log || cat /var/log/tama-bridge.log) > /dev/hvc0 2>&1 &"]\n'
 user_data += 'runcmd:\n  - [sh, /usr/local/libexec/tama-bootstrap.sh]\n'
 (seed / 'user-data').write_text(user_data)
+# hdiutil does not overwrite: a rerun must not keep an ISO built from earlier user data.
+(output / 'seed.iso').unlink(missing_ok=True)
 subprocess.run(['/usr/bin/hdiutil', 'makehybrid', '-iso', '-joliet', '-default-volume-name', 'cidata',
                 '-o', str(output / 'seed.iso'), str(seed)], check=True)
 config = {'schema_version': 1, 'cpu_count': 4, 'memory_mib': 4096, 'data_disk_gib': 32,

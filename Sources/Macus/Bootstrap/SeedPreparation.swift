@@ -1,6 +1,40 @@
 import Darwin
 import Foundation
 
+/// The host-named pool a replacement root may adopt. The guest treats the GUID as a selector
+/// and proves ownership itself, but the host still renders only a well-formed record.
+struct StorageAdoption: Sendable, Equatable {
+  static let path = "/etc/tama-storage/adopt"
+  static let supportedLayout = "zfs-v1"
+
+  let poolGuid: String
+  let layout: String
+
+  init(poolGuid: String, layout: String) throws {
+    guard !poolGuid.isEmpty, poolGuid.utf8.count <= 20,
+      poolGuid.utf8.allSatisfy({ (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0) })
+    else {
+      throw RuntimeError(.invalidConfiguration, "Storage adoption needs a numeric pool GUID")
+    }
+    guard layout == Self.supportedLayout else {
+      throw RuntimeError(
+        .invalidConfiguration, "Storage adoption does not support layout \(layout)")
+    }
+    self.poolGuid = poolGuid
+    self.layout = layout
+  }
+
+  /// The pool this state's record names.
+  init(_ record: StorageIdentityRecord) throws {
+    guard record.backend == "zfs" else {
+      throw RuntimeError(.invalidConfiguration, "Storage adoption needs a ZFS identity")
+    }
+    try self.init(poolGuid: record.poolGuid, layout: record.layout)
+  }
+
+  var record: String { "pool_guid=\(poolGuid)\nlayout=\(layout)\n" }
+}
+
 enum SeedPreparation {
   static let entries: [(name: String, destination: String, permissions: String)] = [
     ("bridge.py", "/usr/local/libexec/tama-bridge.py", "0755"),
@@ -22,7 +56,11 @@ enum SeedPreparation {
     return record
   }
 
-  static func userData(entry: ApplianceCatalogEntry? = nil) throws -> String {
+  /// The rendered user data for a seed. Only an upgrade seed passes `adoption`; `prepare`, which
+  /// builds the shared creation seed, never does, so a new runtime cannot adopt a pool.
+  static func userData(
+    entry: ApplianceCatalogEntry? = nil, adoption: StorageAdoption? = nil
+  ) throws -> String {
     var text =
       "#cloud-config\noutput: {all: \"| tee -a /var/log/cloud-init-output.log /dev/hvc0\"}\nusers: []\nssh_pwauth: false\ndisable_root: true\nwrite_files:\n"
     for entry in entries {
@@ -37,6 +75,10 @@ enum SeedPreparation {
     text += "  - path: \(guestRecordPath)\n    permissions: \"0600\"\n    content: |\n"
     text += guestRecord(applianceID: entry?.id).split(separator: "\n").map { "      \($0)\n" }
       .joined()
+    if let adoption {
+      text += "  - path: \(StorageAdoption.path)\n    permissions: \"0600\"\n    content: |\n"
+      text += adoption.record.split(separator: "\n").map { "      \($0)\n" }.joined()
+    }
     if let entry, let identity = entry.prebuiltIdentity {
       text += "  - path: /etc/macus-appliance-expected\n    permissions: \"0600\"\n    content: |\n"
       text += identity.record(id: entry.id).split(separator: "\n").map { "      \($0)\n" }.joined()
