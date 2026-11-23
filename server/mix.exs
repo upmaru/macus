@@ -1,0 +1,88 @@
+defmodule Macus.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      app: :macus,
+      version: "0.1.0",
+      elixir: "~> 1.19.5",
+      elixirc_paths: elixirc_paths(Mix.env()),
+      start_permanent: Mix.env() == :prod,
+      aliases: aliases(),
+      deps: deps(),
+      releases: releases(),
+      listeners: [Phoenix.CodeReloader]
+    ]
+  end
+
+  # The release macus start launches: self-contained for macOS ARM64, with
+  # its own ERTS, so no host Elixir or Erlang is needed. Macus.Release
+  # verifies it and writes `macus-build.json`, the identity the Swift
+  # component checks before starting it. MACUS_CASSETTE_PATH selects the
+  # cassette it bundles. rel/env.sh.eex keeps distribution off.
+  defp releases do
+    [
+      macus: [
+        include_erts: true,
+        include_executables_for: [:unix],
+        steps: [:assemble, &Macus.Release.bundle_cassette/1, &Macus.Release.write_manifest/1]
+      ]
+    ]
+  end
+
+  # Configuration for the OTP application.
+  #
+  # Type `mix help compile.app` for more information.
+  def application do
+    [
+      mod: {Macus.Application, []},
+      extra_applications: [:logger, :runtime_tools]
+    ]
+  end
+
+  def cli do
+    [
+      preferred_envs: [precommit: :test]
+    ]
+  end
+
+  # Specifies which paths to compile per environment.
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
+
+  # Specifies your project dependencies.
+  #
+  # Type `mix help deps` for examples and options.
+  defp deps do
+    [
+      {:phoenix, "1.8.17"},
+      {:telemetry_metrics, "~> 1.0"},
+      {:telemetry_poller, "~> 1.0"},
+      {:jason, "~> 1.4"},
+      {:mint, "1.11.0"},
+      {:plug_cowboy, "2.9.0"},
+      {:cowboy, "2.21.0"},
+      {:tama_mcp, "0.2.1"},
+      # Shared Incus client, native gateway relay and operation descriptors.
+      # A pure library: no application callback, listener or process. Hex is
+      # its only distribution route; mix.lock records the exact checksum.
+      {:opsmaru_incus, "~> 0.2.9"},
+      # Operation index behind the /mcp search and execute tools. No
+      # application callback; Macus supervises its index process.
+      {:tama_dex, "~> 0.1.0"}
+    ]
+  end
+
+  # Aliases are shortcuts or tasks specific to the current project.
+  # For example, to install project dependencies and perform other setup tasks, run:
+  #
+  #     $ mix setup
+  #
+  # See the documentation for `Mix` for more info on aliases.
+  defp aliases do
+    [
+      setup: ["deps.get"],
+      precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
+    ]
+  end
+end

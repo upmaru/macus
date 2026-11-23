@@ -96,6 +96,12 @@ struct StartupResult: Sendable {
   var installed: Bool
   var serviceOwnership: String
   var serviceLabel: String?
+  /// The Elixir server: `launchd` or `foreground`, its job label under launchd, and the public
+  /// endpoint it published.
+  var serverOwnership: String? = nil
+  var serverLabel: String? = nil
+  var serverEndpoint: String? = nil
+  var serverFingerprint: String? = nil
   var capabilities: RuntimeCapabilities?
   var nextCommands: [String]
   var pathGuidance: String?

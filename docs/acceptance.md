@@ -173,6 +173,14 @@ The flow-controlled Incus relay passed [opt-in hardware acceptance](testing/flow
 
 On 2026-11-09, the same appliance also served the opsmaru-incus real-Incus gateway gate. That run passed all twelve relay/pull/push copies and all six instance moves through the vsock relay. It is opsmaru-incus evidence, not Macus hardware qualification.
 
+## Two-component Homebrew candidate — 2026-11-20
+
+The Homebrew candidate payload changed: it now carries the Swift `macus` executable and the paired bundled-ERTS Macus server release at `libexec/macus` (add-elixir-server tasks 9.2–9.5, 9.7), built from one commit and verified as a pair. The Swift-only candidate evidence above remains historical.
+
+The candidate workflow in `.github/workflows/homebrew-candidate.yml` prepares the candidate from the PR head, assembles the release with the mise-pinned Elixir/OTP, downloads the locked opsmaru_incus cassette and verifies its `.sha256` sidecar and attestation, builds and pours the bottle on the `xcode-27` runner, and retains per run: `candidate.json`, the bottle JSON, the release log, and the separate `source-build-acceptance.json` (built as a bottle, not poured) and `package-acceptance.json` (poured) reports. Offline, the real bottle from the candidate run on `68766e3` was compared entry by entry with the archived release: 2355 of its 2356 entries were identical, and the remaining one, exqlite's `sqlite3_nif.so`, install name pointed at its `opt` path by Homebrew and was re-signed ad hoc — accepted because the Mach-O's code, data and link-edit content are otherwise unchanged. No Mach-O in the bottle links outside the system, and the receipt records no runtime dependencies, so the installed package needs no host Swift, Elixir, Erlang or OpenSSL.
+
+This is candidate evidence only: the run verifies a local-tap install on the CI runner. Nothing was pushed to the shared tap, no formula is distributed outside the candidate, no VM was booted, and installed-package hardware acceptance remains opt-in and unexecuted for the two-component package. The earlier installed-bottle hardware failure above (`7e071e38`) predates the paired release and does not count for it. The origin and verification of each packaged artifact is traced in [the candidate documentation](../Packaging/homebrew/README.md#artifact-provenance).
+
 ## Incus boot crash recovery — 2026-11-22 UTC
 
 The `recover-incus-boot-crash` change passed [opt-in hardware acceptance](testing/incus-crash-recovery-acceptance.json) on a fresh isolated appliance (`/tmp/macus-icr1`, LTS image, ZFS) started by a release build of Macus. Crashes were injected by a test-only `start_post()` in the guest `/etc/conf.d/incusd` that sent SIGABRT to incusd 1 s after each launch, for a set number of launches.

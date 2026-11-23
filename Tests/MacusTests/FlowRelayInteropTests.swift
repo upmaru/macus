@@ -57,13 +57,28 @@ struct BridgeInterop {
     relay = Task { await FlowControlledRelay.relay(client: hostClient, guest: guest) }
   }
 
-  func outcome() async throws -> String {
+  /// The bridge prints its outcome and exits, closing stdout. Read to that end of file with a
+  /// deadline rather than `waitUntilExit()`, which can miss the exit of a child that has
+  /// already gone when other tests spawn processes concurrently.
+  func outcome(seconds: Double = 30) async throws -> String {
     let process = self.process
-    let output = self.output
+    let output = self.output.fileHandleForReading
     return try await SocketIO.run {
-      process.waitUntilExit()
-      let data = output.fileHandleForReading.readDataToEndOfFile()
-      return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+      var descriptor = pollfd(fd: output.fileDescriptor, events: Int16(POLLIN), revents: 0)
+      var data = Data()
+      let deadline = Date().addingTimeInterval(seconds)
+      while Date() < deadline {
+        guard poll(&descriptor, 1, 100) > 0 else { continue }
+        let chunk = output.availableData
+        if chunk.isEmpty {
+          return String(decoding: data, as: UTF8.self).trimmingCharacters(
+            in: .whitespacesAndNewlines)
+        }
+        data.append(chunk)
+      }
+      process.terminate()
+      throw RuntimeError(
+        .io, "Guest bridge did not finish: \(String(decoding: data, as: UTF8.self))")
     }
   }
 
@@ -144,9 +159,9 @@ func acceptOne(_ listener: SocketDescriptor) throws -> SocketDescriptor {
       incus.shutdownWrite()
     }
   }
-  try await Task.sleep(for: .milliseconds(300))
-  // The bridge has spent its window and the host keeps the guest stream drained.
-  #expect(unreadBytes(interop.hostGuest) == 0)
+  // The bridge spends its window and the host keeps the guest stream drained. A loaded host
+  // can still be sending the window after any fixed delay, so wait for it to stay drained.
+  #expect(try await stayedDrained(interop.hostGuest))
   let client = interop.client
   let received = try await SocketIO.run { () throws -> Data in
     let data = try readUntil(client, count: payload.count)
@@ -159,10 +174,29 @@ func acceptOne(_ listener: SocketDescriptor) throws -> SocketDescriptor {
   #expect(try await interop.outcome() == "completed")
 }
 
+/// Whether `socket` reaches no unread bytes and keeps none for `stable` seconds within `seconds`.
+func stayedDrained(_ socket: SocketDescriptor, stable: Double = 0.3, seconds: Double = 10)
+  async throws -> Bool
+{
+  let deadline = Date().addingTimeInterval(seconds)
+  var drainedSince: Date?
+  while Date() < deadline {
+    if unreadBytes(socket) == 0 {
+      let since = drainedSince ?? Date()
+      drainedSince = since
+      if Date().timeIntervalSince(since) >= stable { return true }
+    } else {
+      drainedSince = nil
+    }
+    try await Task.sleep(for: .milliseconds(20))
+  }
+  return false
+}
+
 func readUntil(_ socket: SocketDescriptor, count: Int) throws -> Data {
   var received = Data()
   while received.count < count {
-    let chunk = try socket.read()
+    let chunk = try readPolling(socket)
     if chunk.isEmpty { break }
     received.append(chunk)
   }

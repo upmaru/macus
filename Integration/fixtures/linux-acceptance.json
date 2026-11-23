@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "project": "macus-117",
+  "oci_remote": {"name": "macus-117-oci", "url": "https://docker.io"},
+  "workloads": [
+    {
+      "name": "macus-117-system",
+      "kind": "system-container",
+      "image": "images:alpine/3.22",
+      "readiness": {
+        "command": ["sh", "-c", "test \"$(cat /proc/1/comm)\" = init && wget -q -T 10 -O /dev/null https://dl-cdn.alpinelinux.org/alpine/ && echo ready"],
+        "expect": "ready",
+        "timeout_seconds": 180
+      }
+    },
+    {
+      "name": "macus-117-oci",
+      "kind": "oci-container",
+      "image": "macus-117-oci:library/nginx:alpine",
+      "requires_capability": "oci",
+      "readiness": {
+        "command": ["wget", "-q", "-T", "5", "-O", "-", "http://127.0.0.1/"],
+        "expect": "Welcome to nginx",
+        "timeout_seconds": 180
+      }
+    },
+    {
+      "name": "macus-117-vm",
+      "kind": "virtual-machine",
+      "image": "images:debian/13",
+      "requires_capability": "vm",
+      "devices": {"root": "size=8GiB"},
+      "config": {"limits.cpu": "2", "limits.memory": "1GiB", "security.secureboot": "false"},
+      "readiness": {
+        "command": ["sh", "-c", "test \"$(cat /proc/1/comm)\" = systemd && uname -m"],
+        "expect": "aarch64",
+        "timeout_seconds": 420
+      }
+    }
+  ]
+}

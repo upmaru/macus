@@ -4,12 +4,17 @@
 
 ### Requirement: Homebrew installation
 
-The tap SHALL provide one entitled macus executable for Apple Silicon and macOS 15+. Normal installation on each advertised bottle platform SHALL use a prebuilt bottle without invoking Swift. Installation SHALL NOT start services, create runtime state, boot a guest or configure Incus. Unsupported platforms and missing bottle coverage SHALL have explicit diagnostics and documented source-build prerequisites.
+The tap SHALL provide one package carrying the entitled macus Swift executable and the paired self-contained Macus server release (bundled ERTS, pinned shared dependency and SHA-256-pinned opsmaru_incus cassette) for Apple Silicon and macOS 15+. The payload contract is owned by the add-elixir-server `service-delivery` delta; this requirement states what Homebrew delivery must carry and prove. Normal installation on each advertised bottle platform SHALL use a prebuilt bottle without invoking host Swift, Elixir or Erlang. Installation SHALL NOT start services, create runtime state, boot a guest or configure Incus. Unsupported platforms and missing bottle coverage SHALL have explicit diagnostics and documented source-build prerequisites.
 
 #### Scenario: Bottle installation
 
-- **WHEN** a tester installs the formula on an advertised bottle platform without a Swift toolchain
-- **THEN** Homebrew installs the prebuilt executable, its signature and virtualization entitlement verify, and help and host capabilities work without runtime state or service activation
+- **WHEN** a tester installs the formula on an advertised bottle platform without a host toolchain
+- **THEN** Homebrew installs the prebuilt executable and the paired release at `libexec/macus`, its signature and virtualization entitlement verify, and help and host capabilities work without runtime state or service activation
+
+#### Scenario: Paired release payload
+
+- **WHEN** package acceptance runs on the installed package
+- **THEN** the release matches the candidate's recorded release archive, its read-only build record names the same Macus version and source revision as the executable, and startup is never required to fetch a separately versioned server payload
 
 #### Scenario: Unsupported host
 
@@ -28,7 +33,7 @@ The tap SHALL provide one entitled macus executable for Apple Silicon and macOS 
 
 ### Requirement: Homebrew artifact integrity
 
-Source archives and bottles SHALL carry measured SHA-256 checksums, an immutable source revision, package version and build-platform provenance. Published URLs SHALL identify immutable artifacts. Generation SHALL refuse missing or placeholder digests. Installed binaries SHALL retain a valid virtualization entitlement. Ad-hoc development signing SHALL be labelled accurately and SHALL NOT be represented as Developer ID signing or notarization.
+Source archives, server-release archives and bottles SHALL carry measured SHA-256 checksums, an immutable source revision, package version and build-platform provenance. The candidate manifest SHALL record the release's distinct pinned shared dependency identity and cassette SHA-256 alongside the matched Macus identity. Published URLs SHALL identify immutable artifacts. Generation SHALL refuse missing or placeholder digests. Installed binaries SHALL retain a valid virtualization entitlement. Ad-hoc development signing SHALL be labelled accurately and SHALL NOT be represented as Developer ID signing or notarization.
 
 #### Scenario: Corrupted bottle
 
@@ -61,7 +66,7 @@ The project SHALL document and support local Git tap installation using locally 
 
 ### Requirement: Homebrew acceptance evidence
 
-Package checks SHALL verify installed help, capabilities, signature, entitlement and passive installation without booting a VM. Hardware acceptance SHALL require explicit opt-in and separate evidence using the Homebrew-installed binary, isolated state and Incus configuration. It SHALL cover first start, repeated start, standard Incus connectivity, persistence and the documented package upgrade/removal sequence. Failures SHALL retain state and diagnostics.
+Package checks SHALL verify installed help, capabilities, signature, entitlement, the full release payload, the stable paths both service jobs record, the absence of host toolchain requirements and passive installation, without booting a VM. Hardware acceptance SHALL require explicit opt-in and separate evidence using the Homebrew-installed binary, isolated state and Incus configuration. It SHALL cover first start, repeated start, standard Incus connectivity, persistence and the documented package upgrade/removal sequence. Failures SHALL retain state and diagnostics.
 
 #### Scenario: Package-only success
 
@@ -87,7 +92,7 @@ Package checks SHALL verify installed help, capabilities, signature, entitlement
 
 ### Requirement: Service identity and isolation
 
-New startup-managed registrations SHALL use the com.upmaru.macus namespace and bind a stable executable path to one absolute state directory. Isolated state directories SHALL receive distinct service identities without replacing the default user's agent. Existing compatible daemons SHALL be reused. Foreign or conflicting registrations and legacy agents targeting the same state SHALL be detected before activating another service. New Homebrew registrations SHALL use a validated stable package path rather than a versioned keg path. Equivalence of that path and its resolved executable SHALL require the same current installed executable; unrelated executables SHALL remain conflicts. Package operations SHALL NOT implicitly start or replace services. Upgrade and removal instructions SHALL stop the runtime and unload its owned service before changing or removing the executable, while preserving runtime and Incus data.
+New startup-managed registrations SHALL use the com.upmaru.macus namespace and bind the stable paths of both jobs — the Swift executable and the Elixir release launcher — to one absolute state directory. The full two-job identity contract is owned by the add-elixir-server `service-delivery` delta. Isolated state directories SHALL receive distinct service identities without replacing the default user's agent. Existing compatible daemons SHALL be reused. Foreign or conflicting registrations and legacy agents targeting the same state SHALL be detected before activating another service. New Homebrew registrations SHALL use validated stable package paths rather than versioned keg paths. Equivalence of a recorded path and its resolved executable SHALL require the same current installed executable; unrelated executables SHALL remain conflicts. Package operations SHALL NOT implicitly start or replace services. Upgrade and removal instructions SHALL stop the runtime and unload both owned services before changing or removing the package, while preserving runtime, server credential and Incus data.
 
 #### Scenario: Isolated startup service
 

@@ -114,8 +114,13 @@ struct HumanPresentation {
     heading("\nRuntime")
     field("Status", jsonString(object["state"])?.capitalized)
     field("Uptime", jsonInt(object["uptime_seconds"]).map(humanDuration))
-    field("Control socket", directory.appendingPathComponent("runtime.sock").path)
-    field("Incus socket", jsonString(object["incus_socket"]))
+    if let server = object["server_endpoint"] as? [String: Any] {
+      // The public server's status: the endpoint the CLI reached, never a private socket.
+      field("Server", jsonString(server["url"]))
+    } else {
+      field("Control socket", directory.appendingPathComponent("runtime.sock").path)
+      field("Incus socket", jsonString(object["incus_socket"]))
+    }
     if let error = jsonString(object["last_error"]), !error.isEmpty { field("Last error", error) }
   }
   func host(_ object: [String: Any], title: String = "Host support") {
@@ -224,6 +229,12 @@ struct HumanPresentation {
     if let label = result.serviceLabel { field("Label", label) }
     if result.serviceOwnership == "foreground" {
       text("  Closing the owning terminal stops the daemon.\n")
+    }
+    if let ownership = result.serverOwnership {
+      heading("\nServer")
+      field("Ownership", ownership.capitalized)
+      if let label = result.serverLabel { field("Label", label) }
+      if let url = result.serverEndpoint { field("Endpoint", url) }
     }
     if let capabilities = result.capabilities,
       let data = try? JSON.encoder().encode(capabilities), let object = try? jsonObject(data)

@@ -11,9 +11,36 @@ class Macus < Formula
   depends_on arch: :arm64
   depends_on macos: :sequoia
 
+  # The Macus server release from the same commit: bundled ERTS, the server and its pinned
+  # opsmaru_incus library and cassette. It is assembled when the candidate is prepared, with the
+  # pinned Elixir/OTP and statically linked OpenSSL, so neither a bottle nor a source build
+  # needs Elixir or Erlang.
+  resource "server-release" do
+    url @RELEASE_URL@
+    sha256 @RELEASE_SHA256@
+  end
+
   def install
+    macus_version = @MACUS_VERSION@
+    revision = @SOURCE_COMMIT@
+    opsmaru_incus = @OPSMARU_INCUS_VERSION@
+    # Both components record this identity; macus start refuses a mismatched pair.
+    identity = buildpath/"macus-identity.plist"
+    identity.write <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+      <plist version="1.0">
+      <dict>
+        <key>MacusVersion</key>
+        <string>#{macus_version}</string>
+        <key>MacusSourceRevision</key>
+        <string>#{revision}</string>
+      </dict>
+      </plist>
+    XML
     # Homebrew already sandboxes the build; SwiftPM cannot nest sandbox-exec inside it.
-    system "swift", "build", "--disable-sandbox", "-c", "release", "-Xswiftc", "-warnings-as-errors"
+    system "swift", "build", "--disable-sandbox", "-c", "release", "-Xswiftc", "-warnings-as-errors",
+           "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", identity
     bin.install ".build/release/macus"
     system "/usr/bin/codesign", "--force", "--sign", "-",
            "--entitlements", "Packaging/virtualization.entitlements", bin/"macus"
@@ -22,14 +49,23 @@ class Macus < Formula
     unless entitlement.include?("com.apple.security.virtualization")
       odie "macus is missing its virtualization entitlement"
     end
+
+    resource("server-release").stage { (libexec/"macus").install Dir["*"] }
+    manifest = JSON.parse((libexec/"macus/macus-build.json").read)
+    recorded = manifest.values_at("version", "revision")
+    odie "the server release is not Macus #{macus_version} (#{revision})" if recorded != [macus_version, revision]
+    bundled = manifest.dig("opsmaru_incus", "version")
+    odie "the server release does not bundle opsmaru_incus #{opsmaru_incus}" if bundled != opsmaru_incus
   end
 
   def caveats
     <<~EOS
-      Run macus start explicitly to prepare and start the per-user runtime.
+      Run macus start explicitly to prepare and start the per-user runtime and server.
       Development bottles are ad-hoc signed, not Developer ID signed or notarized.
-      Before upgrade or uninstall, stop the runtime and unload its owned launchd job.
-      Runtime disks and Incus configuration are preserved outside the Homebrew keg.
+      Before upgrade, rollback or uninstall: run macus runtime stop, then unload both owned jobs
+      (com.upmaru.macus.server, then com.upmaru.macus) and remove the server job's plist;
+      for uninstall remove both plists. macus start registers them again.
+      Runtime disks, server credentials and Incus configuration are preserved outside the keg.
       If no compatible bottle is available, source builds require Xcode 27 / Swift 6.4.
     EOS
   end
@@ -40,5 +76,8 @@ class Macus < Formula
     system "/usr/bin/codesign", "--verify", "--strict", bin/"macus"
     entitlement = Utils.safe_popen_read("/usr/bin/codesign", "-d", "--entitlements", ":-", bin/"macus")
     assert_match "com.apple.security.virtualization", entitlement
+    assert_equal @MACUS_VERSION@, shell_output("#{libexec}/macus/bin/macus version").strip.delete_prefix("macus ")
+    manifest = JSON.parse((libexec/"macus/macus-build.json").read)
+    assert_equal @SOURCE_COMMIT@, manifest["revision"]
   end
 end

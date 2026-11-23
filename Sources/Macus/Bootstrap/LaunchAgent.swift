@@ -8,6 +8,14 @@ struct LaunchJob: Sendable, Equatable {
   var loaded: Bool
   var executable: String
   var programArguments: [String]
+  /// The job's own `environment` block (its plist's EnvironmentVariables plus launchd's additions).
+  var environment: [String: String] = [:]
+}
+
+/// The two per-state jobs: the entitled Swift daemon and the Elixir server release.
+enum ServiceRole: Sendable, Equatable {
+  case runtime
+  case server
 }
 
 protocol LaunchControl: Sendable {
@@ -44,7 +52,37 @@ enum LaunchJobParser {
       isAbsoluteExecutablePath(executable)
     else { throw ambiguous(label) }
     return LaunchJob(
-      label: label, loaded: loaded, executable: executable, programArguments: arguments.values)
+      label: label, loaded: loaded, executable: executable, programArguments: arguments.values,
+      environment: try environment(lines, indentation: arguments.indentation, label: label))
+  }
+
+  /// Reads the job's `environment = {` block (not the inherited or default environment). Values
+  /// keep their literal whitespace; only launchctl's indentation is removed.
+  private static func environment(_ lines: [String], indentation: String, label: String) throws
+    -> [String: String]
+  {
+    let opening = indentation + "environment = {"
+    let starts = lines.indices.filter { lines[$0] == opening }
+    guard starts.count <= 1 else { throw ambiguous(label) }
+    guard let start = starts.first else { return [:] }
+    let entryIndentation = indentation + "\t"
+    var values: [String: String] = [:]
+    var index = start + 1
+    while index < lines.count {
+      let line = lines[index]
+      if line == indentation + "}" { return values }
+      guard line.hasPrefix(entryIndentation),
+        let separator = line.range(
+          of: " => ",
+          range: line.index(line.startIndex, offsetBy: entryIndentation.count)..<line.endIndex)
+      else { throw ambiguous(label) }
+      let key = String(
+        line[line.index(line.startIndex, offsetBy: entryIndentation.count)..<separator.lowerBound])
+      guard !key.isEmpty, values[key] == nil else { throw ambiguous(label) }
+      values[key] = String(line[separator.upperBound...])
+      index += 1
+    }
+    throw ambiguous(label)
   }
 
   private static func stateValue(_ line: String, indentation: String) -> String? {
@@ -103,10 +141,12 @@ struct ProcessLaunchControl: LaunchControl {
   var runner: any LocalCommandRunner
   var environment: [String: String]
   var uid: uid_t
+  /// `/bin/launchctl`, or an isolated `MACUS_FIXTURE_LAUNCHCTL` stand-in given the same arguments.
+  var executable = "/bin/launchctl"
 
   func printJob(label: String, timeout: Int) async throws -> LaunchJob? {
     let result = try await runner.run(
-      executable: "/bin/launchctl", arguments: ["print", "gui/\(uid)/\(label)"],
+      executable: executable, arguments: ["print", "gui/\(uid)/\(label)"],
       environment: environment, timeout: timeout)
     guard result.status == 0 else { return nil }
     let text = String(decoding: result.stdout, as: UTF8.self)
@@ -115,7 +155,7 @@ struct ProcessLaunchControl: LaunchControl {
 
   func kickstart(label: String, timeout: Int) async throws {
     let result = try await runner.run(
-      executable: "/bin/launchctl", arguments: ["kickstart", "gui/\(uid)/\(label)"],
+      executable: executable, arguments: ["kickstart", "gui/\(uid)/\(label)"],
       environment: environment, timeout: timeout)
     guard result.status == 0 else {
       let detail = terminalSafe(
@@ -127,7 +167,7 @@ struct ProcessLaunchControl: LaunchControl {
 
   func bootstrap(plist: URL, timeout: Int) async throws {
     let result = try await runner.run(
-      executable: "/bin/launchctl", arguments: ["bootstrap", "gui/\(uid)", plist.path],
+      executable: executable, arguments: ["bootstrap", "gui/\(uid)", plist.path],
       environment: environment, timeout: timeout)
     guard result.status == 0 else {
       let detail = terminalSafe(
@@ -146,11 +186,22 @@ struct ProcessLaunchControl: LaunchControl {
 }
 
 enum LaunchAgentPlan {
-  static func label(stateDirectory: URL, home: URL) -> String {
-    if isDefault(stateDirectory, home: home) { return "com.upmaru.macus" }
+  static let runtimeLabel = "com.upmaru.macus"
+  static let serverLabel = "com.upmaru.macus.server"
+
+  /// The default state uses the bare labels; any other state gets the same state-hash suffix on
+  /// both, so an isolated pair never replaces the default user's jobs.
+  static func label(stateDirectory: URL, home: URL, role: ServiceRole = .runtime) -> String {
+    let base = role == .runtime ? runtimeLabel : serverLabel
+    if isDefault(stateDirectory, home: home) { return base }
     let digest = SHA256.hash(data: Data(stateDirectory.standardizedFileURL.path.utf8))
     let hex = digest.prefix(6).map { String(format: "%02x", $0) }.joined()
-    return "com.upmaru.macus.\(hex)"
+    return "\(base).\(hex)"
+  }
+
+  /// A label in the Macus namespace (either job, any state).
+  static func isMacusLabel(_ label: String) -> Bool {
+    label == runtimeLabel || label.hasPrefix(runtimeLabel + ".")
   }
 
   static func isDefault(_ directory: URL, home: URL) -> Bool {
@@ -158,8 +209,10 @@ enum LaunchAgentPlan {
       == home.appendingPathComponent(".tama/incus-mac").standardizedFileURL.path
   }
 
-  static func plistURL(stateDirectory: URL, home: URL, launchAgents: URL) -> URL {
-    let label = label(stateDirectory: stateDirectory, home: home)
+  static func plistURL(
+    stateDirectory: URL, home: URL, launchAgents: URL, role: ServiceRole = .runtime
+  ) -> URL {
+    let label = label(stateDirectory: stateDirectory, home: home, role: role)
     if isDefault(stateDirectory, home: home) {
       return launchAgents.appendingPathComponent("\(label).plist")
     }
@@ -167,46 +220,79 @@ enum LaunchAgentPlan {
       .appendingPathComponent("\(label).plist")
   }
 
-  static func arguments(executable: String, stateDirectory: URL) -> [String] {
-    [executable, "serve", "--state-dir", stateDirectory.standardizedFileURL.path]
+  /// The Swift job names its state in argv. The release's `bin/macus start` takes no arguments,
+  /// so the server job names its state, and asks to serve, in its environment.
+  static func arguments(
+    executable: String, stateDirectory: URL, role: ServiceRole = .runtime
+  ) -> [String] {
+    switch role {
+    case .runtime: [executable, "serve", "--state-dir", stateDirectory.standardizedFileURL.path]
+    case .server: [executable, "start"]
+    }
+  }
+
+  /// The EnvironmentVariables the job's plist carries; nil for the Swift job, which has none.
+  /// The server also receives the Swift executable's source revision, which its own build must
+  /// equal before it serves.
+  static func environment(stateDirectory: URL, role: ServiceRole, revision: String? = nil)
+    -> [String: String]?
+  {
+    switch role {
+    case .runtime: return nil
+    case .server:
+      var variables = [
+        "MACUS_STATE_DIR": stateDirectory.standardizedFileURL.path, "MACUS_SERVE": "1",
+        "RELEASE_DISTRIBUTION": "none",
+      ]
+      if let revision { variables["MACUS_EXPECTED_REVISION"] = revision }
+      return variables
+    }
   }
 
   static func write(
-    stateDirectory: URL, home: URL, launchAgents: URL, executable: String
+    stateDirectory: URL, home: URL, launchAgents: URL, executable: String,
+    role: ServiceRole = .runtime, revision: String? = nil
   ) throws -> URL {
-    let label = label(stateDirectory: stateDirectory, home: home)
-    guard label == "com.upmaru.macus" || label.hasPrefix("com.upmaru.macus.") else {
+    let label = label(stateDirectory: stateDirectory, home: home, role: role)
+    guard isMacusLabel(label) else {
       throw RuntimeError(.invalidConfiguration, "Refusing an unsafe service label")
     }
-    let plist = plistURL(stateDirectory: stateDirectory, home: home, launchAgents: launchAgents)
-    let expected = arguments(executable: executable, stateDirectory: stateDirectory)
+    let plist = plistURL(
+      stateDirectory: stateDirectory, home: home, launchAgents: launchAgents, role: role)
+    let expected = arguments(executable: executable, stateDirectory: stateDirectory, role: role)
+    let variables = environment(stateDirectory: stateDirectory, role: role, revision: revision)
     // A conflicting registration at this exact path must survive even if an earlier scan missed it.
     if try destinationExists(plist) {
-      try refuseConflictingDestination(plist, label: label, arguments: expected)
+      try refuseConflictingDestination(
+        plist, label: label, arguments: expected, environment: variables)
       return plist
     }
     let logs = stateDirectory.appendingPathComponent("logs", isDirectory: true)
     try FileManager.default.createDirectory(
       at: logs, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     try createOwnedDirectory(plist.deletingLastPathComponent())
-    let object: [String: Any] = [
+    // Independent logs per job; the server's shutdown never waits on the guest.
+    let log = role == .runtime ? "service" : "server"
+    var object: [String: Any] = [
       "Label": label,
       "ProgramArguments": expected,
       "RunAtLoad": true,
       "KeepAlive": ["SuccessfulExit": false],
       "ThrottleInterval": 10,
-      "ExitTimeOut": 90,
+      "ExitTimeOut": role == .runtime ? 90 : 30,
       "ProcessType": "Background",
-      "StandardOutPath": logs.appendingPathComponent("service.out.log").path,
-      "StandardErrorPath": logs.appendingPathComponent("service.err.log").path,
+      "StandardOutPath": logs.appendingPathComponent("\(log).out.log").path,
+      "StandardErrorPath": logs.appendingPathComponent("\(log).err.log").path,
     ]
+    if let variables { object["EnvironmentVariables"] = variables }
     let data = try PropertyListSerialization.data(
       fromPropertyList: object, format: .xml, options: 0)
     let descriptor = open(
       plist.path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o600)
     if descriptor < 0 {
       if errno == EEXIST || errno == ELOOP {
-        try refuseConflictingDestination(plist, label: label, arguments: expected)
+        try refuseConflictingDestination(
+          plist, label: label, arguments: expected, environment: variables)
         return plist
       }
       throw RuntimeError(.io, "Cannot create service plist")
@@ -230,7 +316,7 @@ enum LaunchAgentPlan {
   /// Rejects a same-label plist that names another executable or state, and any symlink or
   /// foreign destination. A byte-for-byte compatible registration is left untouched.
   static func refuseConflictingDestination(
-    _ url: URL, label: String, arguments expected: [String]
+    _ url: URL, label: String, arguments expected: [String], environment: [String: String]? = nil
   ) throws {
     var info = stat()
     guard lstat(url.path, &info) == 0 else {
@@ -247,7 +333,11 @@ enum LaunchAgentPlan {
         from: Data(contentsOf: url), options: [], format: nil) as? [String: Any]
     let existingLabel = object?["Label"] as? String
     let existingArguments = object?["ProgramArguments"] as? [String]
-    guard existingLabel == label, existingArguments == expected else {
+    let existingEnvironment = object?["EnvironmentVariables"]
+    let sameEnvironment =
+      environment == nil
+      ? existingEnvironment == nil : (existingEnvironment as? [String: String]) == environment
+    guard existingLabel == label, existingArguments == expected, sameEnvironment else {
       throw RuntimeError(
         .conflict,
         "Service \(label) already points at a different executable or state. macus start will not replace that plist."
@@ -279,6 +369,29 @@ enum LaunchAgentPlan {
 
   static func targets(_ arguments: [String], stateDirectory: URL) -> Bool {
     arguments.contains(stateDirectory.standardizedFileURL.path)
+  }
+
+  /// A plist targets a state through its arguments or the state variables in its environment.
+  static func targets(plist object: [String: Any], stateDirectory: URL) -> Bool {
+    if let arguments = object["ProgramArguments"] as? [String],
+      targets(arguments, stateDirectory: stateDirectory)
+    {
+      return true
+    }
+    let variables = object["EnvironmentVariables"] as? [String: Any] ?? [:]
+    let path = stateDirectory.standardizedFileURL.path
+    return ["MACUS_STATE_DIR", "TIM_STATE_DIR"].contains { variables[$0] as? String == path }
+  }
+
+  /// launchctl's reported environment carries the plist's variables plus launchd's own. Every
+  /// variable the job is expected to have must match, and no other state may be selected.
+  static func environmentMatches(_ reported: [String: String], expected: [String: String]?)
+    -> Bool
+  {
+    guard let expected else {
+      return reported["MACUS_STATE_DIR"] == nil && reported["TIM_STATE_DIR"] == nil
+    }
+    return expected.allSatisfy { reported[$0.key] == $0.value } && reported["TIM_STATE_DIR"] == nil
   }
 }
 

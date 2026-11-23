@@ -6,6 +6,9 @@ struct StartupOverrides: Sendable {
   var hasEntitlement: (@Sendable () -> Bool)?
   var downloader: (any ApplianceDownloader)?
   var launchControl: (any LaunchControl)?
+  var server: (any ServerProbe)?
+  var gateway: (any GatewayTransport)?
+  var build: BuildIdentity?
   var executablePath: (@Sendable () -> String)?
   var now: (@Sendable () -> ContinuousClock.Instant)?
   var homeDirectory: URL?
@@ -23,8 +26,13 @@ func runStart(
   directory: URL, remote: String, setDefault: Bool, incusOverride: String?,
   progress: ProgressSelection,
   timeout: Int, json: Bool, environment: [String: String], transport: any LocalHTTPTransport,
-  runner: any LocalCommandRunner, streams: MacusStreams, overrides: StartupOverrides
+  gateway: any GatewayTransport = HTTPSGatewayClient(), runner: any LocalCommandRunner,
+  streams: MacusStreams, overrides: StartupOverrides
 ) async throws {
+  // A launchctl stand-in is refused before qualification, state or any launchd job is touched.
+  let fixtureLaunchctl = try FixtureSeam.path(
+    FixtureSeam.launchctlVariable, environment: environment, stateDirectory: directory,
+    kind: .executable)
   let draft = try DraftQualification.load(environment: environment, state: directory)
   let rendering = ProgressRenderer.resolve(
     selection: progress, stderrIsTTY: overrides.stderrIsTTY ?? streams.stderrIsTTY,
@@ -48,7 +56,11 @@ func runStart(
     downloader: overrides.downloader ?? draft?.downloader ?? URLSessionApplianceDownloader(),
     launchControl: overrides.launchControl
       ?? ProcessLaunchControl(
-        runner: runner, environment: environment, uid: overrides.uid ?? getuid()),
+        runner: runner, environment: environment, uid: overrides.uid ?? getuid(),
+        executable: fixtureLaunchctl?.path ?? "/bin/launchctl"),
+    server: overrides.server ?? GatewayServerProbe(transport: overrides.gateway ?? gateway),
+    gateway: overrides.gateway ?? gateway,
+    build: overrides.build ?? .current,
     capabilities: overrides.capabilities ?? { await MainActor.run { CapabilityDetector.detect() } },
     hasEntitlement: overrides.hasEntitlement ?? { currentProcessHasVirtualizationEntitlement() },
     executablePath: overrides.executablePath
@@ -97,6 +109,11 @@ private func resultObject(_ result: StartupResult) -> [String: Any] {
     "state_directory": result.stateDirectory,
   ]
   if let label = result.serviceLabel { object["service_label"] = label }
+  if let ownership = result.serverOwnership { object["server_ownership"] = ownership }
+  if let label = result.serverLabel { object["server_label"] = label }
+  if let url = result.serverEndpoint, let fingerprint = result.serverFingerprint {
+    object["server_endpoint"] = ["url": url, "certificate_fingerprint": fingerprint]
+  }
   if let guidance = result.pathGuidance { object["path_guidance"] = guidance }
   if let capabilities = result.capabilities,
     let data = try? JSON.encoder().encode(capabilities),

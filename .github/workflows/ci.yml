@@ -1,14 +1,17 @@
 name: Native checks
 
 on:
+  # Git Flow branches, so stacked feature PRs are checked too.
   pull_request:
-    branches: [develop, main]
+    branches: [develop, main, 'feature/**', 'release/**', 'hotfix/**']
   push:
     branches: [develop, main]
   workflow_dispatch:
 
 permissions:
   contents: read
+  # gh attestation verify reads the opsmaru-incus cassette's provenance.
+  attestations: read
 
 concurrency:
   group: native-checks-${{ github.ref }}
@@ -16,19 +19,49 @@ concurrency:
 
 jobs:
   native:
-    name: Swift and OpenSpec
+    name: Swift, Mix and OpenSpec
     runs-on: xcode-27
-    timeout-minutes: 20
+    timeout-minutes: 45
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.app/Contents/Developer
+      # check.sh builds the server release with `mise exec -- mix`, and the
+      # server tests build the official Incus reference drivers with
+      # `mise exec -- go`, so the repository's mise.toml must be trusted.
+      MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          install_args: erlang elixir go
+          cache: true
       - name: Toolchain
-        run: swift --version
-      - name: Debug, tests, release, formatting and guest syntax
+        run: |
+          swift --version
+          mise exec -- elixir --version
+          mise exec -- go version
+          mise exec -- mix local.hex --force
+          mise exec -- mix local.rebar --force
+      # check.sh never downloads, so CI fetches the locked cassette once and hands
+      # it to the opt-in release smoke; install-local.sh re-verifies its sidecar
+      # pin and attestation before bundling it.
+      - name: Fetch and verify the pinned opsmaru_incus cassette
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          locked="$(sed -n 's/.*"opsmaru_incus": {:hex, :opsmaru_incus, "\([^"]*\)".*/\1/p' server/mix.lock)"
+          mkdir -p .integration/cassette
+          gh release download "v$locked" --repo upmaru/opsmaru-incus --dir .integration/cassette \
+            --pattern "opsmaru_incus-$locked.tama-cassette*"
+          (cd .integration/cassette && shasum -a 256 -c "opsmaru_incus-$locked.tama-cassette.sha256")
+          gh attestation verify ".integration/cassette/opsmaru_incus-$locked.tama-cassette" --repo upmaru/opsmaru-incus
+          echo "MACUS_RELEASE_SMOKE_CASSETTE=$PWD/.integration/cassette/opsmaru_incus-$locked.tama-cassette" >> "$GITHUB_ENV"
+      - name: Canonical checks: Swift, Mix, guest syntax and embedded release smoke
+        env:
+          # install-local.sh verifies the cassette's attestation with gh.
+          GH_TOKEN: ${{ github.token }}
         run: Integration/scripts/check.sh
       - name: Validate OpenSpec
         run: npx --yes --package @fission-ai/openspec@1.14.0 openspec validate --all --strict --no-interactive

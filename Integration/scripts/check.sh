@@ -15,12 +15,47 @@ sh -n Integration/guest/tama-bridge.initd
 sh -n Integration/guest/tama-bootstrap.initd
 sh -n Integration/qualification/zfs-storage.sh
 sh -n Packaging/install-local.sh
+sh -n Integration/scripts/check-server.sh
 sh -n Integration/scripts/test-install.sh
-python3 -m py_compile Integration/guest/bridge.py Integration/scripts/prepare-appliance.py Integration/scripts/verify-appliance.py Integration/scripts/acceptance.py Integration/scripts/storage_contract.py Integration/scripts/relay-stress.py Integration/scripts/macus-acceptance.py Integration/scripts/start-acceptance.py Integration/scripts/sync-guest-payload.py Integration/scripts/check-catalog.py
+python3 -m py_compile Integration/guest/bridge.py Integration/scripts/prepare-appliance.py Integration/scripts/verify-appliance.py Integration/scripts/acceptance.py Integration/scripts/storage_contract.py Integration/scripts/relay-stress.py Integration/scripts/macus-acceptance.py Integration/scripts/start-acceptance.py Integration/scripts/workload-acceptance.py Integration/scripts/restart-acceptance.py Integration/scripts/remote-acceptance.py Integration/scripts/remote-client-probe.py Integration/scripts/upgrade-acceptance.py Integration/scripts/linux-acceptance.py Integration/scripts/sync-guest-payload.py Integration/scripts/check-catalog.py
 python3 Integration/scripts/sync-guest-payload.py --check
 python3 Integration/scripts/check-catalog.py
 python3 -m py_compile Packaging/homebrew/candidate.py
-python3 -m py_compile Integration/scripts/homebrew-acceptance.py Integration/scripts/presentation-acceptance.py
+python3 -m py_compile Integration/scripts/homebrew-acceptance.py Integration/scripts/presentation-acceptance.py Integration/scripts/cross-component-fixture.py
 python3 -m py_compile Integration/qualification/prepare-zfs.py Integration/qualification/run-zfs.py
 python3 -m unittest discover -s Integration/tests -v
 sh Integration/scripts/test-install.sh
+# Pinned Mix gates: locked Hex dependencies, formatting, warnings, fixture-only tests.
+sh Integration/scripts/check-server.sh
+# Opt-in embedded release smoke (task 10.1). MACUS_RELEASE_SMOKE_CASSETTE must
+# name an absolute path to a verified opsmaru_incus-<locked>.tama-cassette whose
+# .sha256 sidecar is beside it; install-local.sh re-checks the sidecar pin and
+# the attestation (gh), and release-smoke.py boots the assembled release in
+# isolation. check.sh never downloads anything.
+if [ -n "${MACUS_RELEASE_SMOKE_CASSETTE:-}" ]; then
+    case "$MACUS_RELEASE_SMOKE_CASSETTE" in
+        /*) ;;
+        *) echo "check: MACUS_RELEASE_SMOKE_CASSETTE must be an absolute path, got '$MACUS_RELEASE_SMOKE_CASSETTE'" >&2; exit 1 ;;
+    esac
+    if [ ! -f "$MACUS_RELEASE_SMOKE_CASSETTE" ]; then
+        echo "check: release smoke cassette is not a regular file: $MACUS_RELEASE_SMOKE_CASSETTE" >&2
+        exit 1
+    fi
+    if [ ! -f "$MACUS_RELEASE_SMOKE_CASSETTE.sha256" ]; then
+        echo "check: release smoke cassette has no .sha256 sidecar beside it: $MACUS_RELEASE_SMOKE_CASSETTE.sha256" >&2
+        exit 1
+    fi
+    smoke_prefix="$(mktemp -d)"
+    trap 'rm -rf "$smoke_prefix"' EXIT
+    sh Packaging/install-local.sh --prefix "$smoke_prefix" --cassette "$MACUS_RELEASE_SMOKE_CASSETTE"
+    python3 Integration/scripts/release-smoke.py --release "$smoke_prefix/libexec/macus"
+    # Opt-in cross-component fixture (task 10.2): the installed binaries and the standard
+    # Incus CLI named by MACUS_FIXTURE_INCUS, against the Incus fixture, without a VM.
+    if [ -n "${MACUS_FIXTURE_INCUS:-}" ]; then
+        python3 Integration/scripts/cross-component-fixture.py --prefix "$smoke_prefix" --incus "$MACUS_FIXTURE_INCUS"
+    else
+        echo "check: cross-component fixture skipped: set MACUS_FIXTURE_INCUS to an absolute incus executable to run it."
+    fi
+else
+    echo "check: release smoke skipped: set MACUS_RELEASE_SMOKE_CASSETTE to an absolute, verified opsmaru_incus-<locked>.tama-cassette (with its .sha256 sidecar) to run it."
+fi
