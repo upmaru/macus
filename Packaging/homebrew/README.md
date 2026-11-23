@@ -107,6 +107,13 @@ macus --state-dir /absolute/selected/state start
 
 The server plist records the package's source revision (`MACUS_EXPECTED_REVISION`), so after a package change `start` refuses the old one as a conflict instead of replacing it. Start writes a new one for the installed revision. The Swift job's plist names the stable `opt/macus/bin/macus` and stays valid across versions; start bootstraps it again unchanged. An older plist that names a versioned keg path is a conflict: after stop and unload, remove that owned plist too. Registration replacement is never implicit.
 
+A package from before the Macus server cannot be upgraded in place. Two things block it:
+
+- **Client remote:** its `macus` remote is a direct-socket registration (`unix://…/incus.sock`), and `start` refuses it as a conflict rather than changing it. Remove it yourself (`incus remote remove macus`) or choose another name with `--remote`.
+- **Appliance:** its guest bridge predates the flow-controlled Incus relay. `start` boots the VM but stops with `unavailable` and keeps the disks, because Macus never upgrades a guest image or resets disks on its own.
+
+For such a state, stop and unload both jobs, move the state directory aside without deleting it, and start a fresh state. Workloads in the old state stay on its disks, and only the earlier package can serve them. A supported guest migration is not part of this change.
+
 ### Rollback
 
 Rollback is the same sequence with a retained, verified earlier bottle in place of `brew upgrade`: stop and unload both jobs, remove the server plist, install the earlier bottle (for a candidate, `candidate.py install --opt-in --candidate /absolute/earlier/candidate` after uninstalling the current one), then `macus start`. Rollback changes only the package. It never replaces or downgrades guest disks, server credentials or the Incus client configuration.

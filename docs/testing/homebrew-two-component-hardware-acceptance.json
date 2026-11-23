@@ -1,0 +1,105 @@
+{
+  "schema_version": 2,
+  "task": "add-homebrew-tap 4.2",
+  "recorded_at": "2026-11-23T07:41:32Z",
+  "scope": "Opt-in first-use and repeated macus start of the Homebrew-poured two-component package with isolated state, credentials, INCUS_CONF, gateway port and service labels",
+  "candidate": {
+    "source_commit": "ac86fe90f4fd54cadedd569d3ade170b2152ddee",
+    "version": "0.0.0-dev.20261123073709.ac86fe90f4fd",
+    "macus_version": "0.1.0",
+    "source_sha256": "c5213b758a909e475dee0f1b9186160fe4899442296b295e6c5d3fd4e89a650e",
+    "server_release_sha256": "79585760ab6eda022e7a838281a5ccce56745f5cfbfd8dc18a2634e9cdacc1f1",
+    "opsmaru_incus": {
+      "version": "0.2.9",
+      "checksum": "10eef7015038da99532ced4e8d2b31228df29842ddc557780a0810312d5ca705",
+      "cassette_sha256": "e95571af66d63c51610db5ac170ca2b3e3f9a4408ac2914fa39143d469198fc2"
+    },
+    "erts": "15.2.7.12",
+    "bottle": {
+      "tag": "arm64_golden_gate",
+      "sha256": "00f64875c1f1726fcbdb89c2c8421b092698352d46762ab4b35fdcc74803bafa"
+    },
+    "formula": "upmaru/macus-local/macus (local tap)"
+  },
+  "package": {
+    "evidence_kind": "poured-bottle",
+    "source_build_succeeded": true,
+    "poured_from_bottle": true,
+    "passive_installation": true,
+    "signature_verified": true,
+    "virtualization_entitlement": true,
+    "system_linked_only": true,
+    "runtime_dependencies": [],
+    "homebrew_service": false,
+    "success": true
+  },
+  "host": {
+    "macos": "27.0.1",
+    "architecture": "arm64"
+  },
+  "hardware_ran": true,
+  "guest_verified": true,
+  "isolation": {
+    "state_dir": "short fresh isolated directory under /private/tmp",
+    "incus_conf": "isolated temporary INCUS_CONF created by the runner",
+    "remote": "macus-brew-42",
+    "service_label": "com.upmaru.macus.<hash>",
+    "server_label": "com.upmaru.macus.server.<hash>",
+    "gateway_listeners": 1,
+    "working_directory": "/private/tmp (outside the checkout)"
+  },
+  "executables": {
+    "runtime_job": "/opt/homebrew/opt/macus/bin/macus serve --state-dir <state>",
+    "server_job": "/opt/homebrew/opt/macus/libexec/macus/bin/macus start",
+    "checkout_binary_substituted": false
+  },
+  "first_start": {
+    "appliance_download_mib": 785.4,
+    "appliance_download_seconds": 59.6,
+    "ready_seconds": 66,
+    "serial_observations": ["stage=image state=verified", "storage", "incus", "ready"],
+    "kernel": "6.18.62-0-lts",
+    "kernel_continuation": "prebuilt LTS image booted its kernel directly; the reboot allowance stayed available",
+    "incus_version": "7.0.1",
+    "guest_os": "Alpine Linux 3.24.4",
+    "instance_types": ["lxc", "qemu"],
+    "storage_driver": "zfs"
+  },
+  "repeated_start": {
+    "ready": true,
+    "runtime_pid_unchanged": true,
+    "server_pid_unchanged": true
+  },
+  "standard_client": {
+    "incus_client_version": "7.5.1",
+    "protocol": "incus",
+    "transport": "native HTTPS on 127.0.0.1",
+    "auth": "trusted",
+    "incus_list_exit_code": 0,
+    "default_remote_unchanged": true
+  },
+  "public_runtime_control": {
+    "status": 200,
+    "start_when_ready": 200,
+    "stop_with_read_token": 403
+  },
+  "checks": {
+    "paired_artifacts": true,
+    "pinned_dependency": true,
+    "two_service_labels": true,
+    "ready": true,
+    "connected": true,
+    "isolated_labels_reported": true,
+    "isolated_gateway_port": true,
+    "jobs_registered_for_state": true,
+    "isolated_credentials": true,
+    "repeated_start": true,
+    "native_https_registration": true,
+    "public_runtime_control": true,
+    "dependency_adds_no_listener_or_service": true,
+    "default_jobs_and_endpoint_unchanged": true
+  },
+  "tokens_revoked": true,
+  "cleanup": "The isolated runtime was stopped and both isolated jobs were unloaded; its state and logs were retained.",
+  "success": true
+}
