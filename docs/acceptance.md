@@ -225,6 +225,6 @@ All 14 checks passed. The isolated runtime was then stopped, both of its jobs we
 - `start` refused the earlier direct-socket `macus` remote as a conflict. With the user's approval, that remote was removed.
 - `start` then booted the existing VM and stopped with `unavailable`, because its guest bridge predates the flow-controlled relay. The disks were kept.
 
-With the user's approval, the old state was moved aside intact and a fresh default state was started on the package. [The candidate documentation](../Packaging/homebrew/README.md#upgrade) now describes this path.
+With the user's approval, the old state was moved aside intact and a fresh default state was started on the package. [The candidate documentation](../Packaging/homebrew/README.md#upgrade) now describes this path; only a pre-relay guest needs the fresh state, while a guest that serves the flow-controlled relay keeps its appliance once the old remote is replaced.
 
 Task 4.3 is still open: upgrading between two server-era revisions with marker persistence, then removal. A supported migration for pre-relay guests is not part of this change.
