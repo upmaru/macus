@@ -30,14 +30,14 @@ The handler rescues every error and counts it. `:telemetry` detaches a handler t
 The handler turns the event into a report and logs it with the domain `[:macus, :access]`. A dedicated `:logger_std_h` handler, added at startup, filters for that domain and writes the file. This gives, without a custom writer process:
 
 - size rotation (`max_no_bytes`, `max_no_files`), with archives beside the file;
-- overload protection: the handler switches to synchronous mode, then drops, then flushes as its queue grows;
+- overload protection: the handler drops, then flushes, as its queue grows (its synchronous mode is disabled, see below);
 - `file_check`, so a file removed by the owner is reopened.
 
 A filter on the default handler drops the same domain, so access lines are not repeated in `server.out.log`.
 
-Because the stop event comes from the library's observer process, the brief synchronous mode of the logger handler delays only that observer. No relay, request process or admission slot waits for the disk.
+Because the stop event comes from the library's observer process, nothing but that observer could ever wait on the logger handler, and it does not wait either: `sync_mode_qlen` equals `drop_mode_qlen`, which turns the handler's synchronous mode off, so no relay, request process, admission slot or observer waits for the disk.
 
-Dropped lines are counted through the handler's own overload reporting and a `[:macus, :access_log, :dropped]` telemetry counter, and the next written line after a drop carries `"dropped_before": N`.
+`logger_std_h` drops in its callers without reporting the count through any public interface, so the telemetry handler does its own admission ahead of it: before logging a line it reads the handler process's message queue length, and at 500 pending lines (below the handler's own drop threshold of 1000) it drops the record, counts it and emits `[:macus, :access_log, :dropped]`. The next written line after a drop carries `"dropped_before": N`. A record the handler itself drops beyond that point, or a write error it reports, is not counted; the queue check makes that unlikely.
 
 ### 3. Location, ownership and bounds
 

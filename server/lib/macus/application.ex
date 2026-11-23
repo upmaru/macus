@@ -18,6 +18,7 @@ defmodule Macus.Application do
             MacusWeb.Telemetry,
             {Phoenix.PubSub, name: Macus.PubSub}
           ] ++
+            access_log_children(gateway) ++
             Macus.Auth.Streams.child_specs() ++
             Macus.Proxy.child_specs() ++
             Macus.Incus.child_specs(gateway) ++
@@ -35,6 +36,13 @@ defmodule Macus.Application do
         {:error, {:gateway, reason}}
     end
   end
+
+  # The access log records native exchanges only while serving. It is a
+  # temporary child that returns `:ignore` when STATE/logs is unsafe, so
+  # failing to log never stops the gateway. It attaches before the listener
+  # starts, so the first exchange is recorded.
+  defp access_log_children(nil), do: []
+  defp access_log_children(%Macus.Gateway{} = gateway), do: [{Macus.Proxy.AccessLog, gateway}]
 
   # The operation index starts with the serving gateway, owned by its user
   # and under its state directory. Without a serving gateway it starts only
