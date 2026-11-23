@@ -24,6 +24,21 @@ import Testing
   #expect(!((try SeedPreparation.userData()).contains("path: /etc/macus-appliance-expected")))
 }
 
+@Test func seedCarriesTheGuestRecordForHealth() throws {
+  let record =
+    "format=1\npayload_revision=\(EmbeddedGuestPayload.revision)\nappliance_id=\(ApplianceCatalogEntry.current.id)\n"
+  #expect(SeedPreparation.guestRecord(applianceID: ApplianceCatalogEntry.current.id) == record)
+  let yaml = try SeedPreparation.userData(entry: .current)
+  #expect(
+    yaml.contains(
+      "  - path: /etc/macus-guest\n    permissions: \"0600\"\n    content: |\n"
+        + record.split(separator: "\n").map { "      \($0)\n" }.joined()))
+  // Without a catalog entry the record still names the payload, but no appliance.
+  let bare = try SeedPreparation.userData()
+  #expect(bare.contains("      payload_revision=\(EmbeddedGuestPayload.revision)\n"))
+  #expect(!bare.contains("appliance_id="))
+}
+
 @Test func prebuiltObservationIsRecognized() {
   let observed = GuestObservationParser.parse(
     line: "MACUS_OBSERVATION v1 stage=image state=verified")

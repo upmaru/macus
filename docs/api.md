@@ -66,7 +66,7 @@ The Swift daemon serves these routes on `runtime.sock`. They are the private bac
 | --- | --- | --- |
 | GET | `/v1/runtime/status` | State, socket path, uptime and optional last error |
 | GET | `/v1/runtime/capabilities` | Host support and live Incus/workload evidence |
-| GET | `/v1/runtime/health` | Live guest protocol, Incus version/extensions and KVM |
+| GET | `/v1/runtime/health` | Live guest protocol, Incus version/extensions and KVM, and guest identity: `guest_contract`, `payload_revision`, `appliance_id`, `incus_package` (full APK version with release, such as `7.0.1-r2`) and `storage` (`backend`; for ZFS also `pool_guid`, `layout`, `phase`). Identity fields are absent from older guests, and a field the guest cannot read is absent; absent means unknown |
 | GET | `/v1/runtime/config` | Complete configuration |
 | GET | `/v1/runtime/progress` | Read-only boot snapshot; not live readiness |
 | POST | `/v1/runtime/create` | Complete configuration; creates verified writable root and persistent data |

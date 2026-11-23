@@ -2,6 +2,7 @@
 """Prepare a verified raw image manifest and NoCloud ISO; does not run a VM."""
 import argparse
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -55,6 +56,13 @@ user_data = '#cloud-config\noutput: {all: \"| tee -a /var/log/cloud-init-output.
 for filename, destination, permissions in entries:
     user_data += f'  - path: {destination}\n    permissions: "{permissions}"\n    content: |\n'
     user_data += ''.join('      ' + line + '\n' for line in (source / filename).read_text().splitlines())
+# Same record SeedPreparation writes; the revision hashes the payload so it cannot live inside it.
+sync_spec = importlib.util.spec_from_file_location('sync_guest_payload', Path(__file__).resolve().parent / 'sync-guest-payload.py')
+sync = importlib.util.module_from_spec(sync_spec)
+sync_spec.loader.exec_module(sync)
+guest_record = f'format=1\npayload_revision={sync.revision(sync.load())}\nappliance_id={args.appliance_id}\n'
+user_data += '  - path: /etc/macus-guest\n    permissions: "0600"\n    content: |\n'
+user_data += ''.join('      ' + line + '\n' for line in guest_record.splitlines())
 user_data += 'bootcmd:\n  - [sh, -c, "(sleep 20; rc-status default; cat /var/log/tama-storage.log; test ! -f /var/log/tama-bridge.log || cat /var/log/tama-bridge.log) > /dev/hvc0 2>&1 &"]\n'
 user_data += 'runcmd:\n  - [sh, /usr/local/libexec/tama-bootstrap.sh]\n'
 (seed / 'user-data').write_text(user_data)

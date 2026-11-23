@@ -13,6 +13,15 @@ enum SeedPreparation {
     ("tama-bootstrap.initd", "/etc/init.d/tama-bootstrap", "0755"),
   ]
 
+  static let guestRecordPath = "/etc/macus-guest"
+
+  /// Read by the guest bridge and reported in health.
+  static func guestRecord(applianceID: String?) -> String {
+    var record = "format=1\npayload_revision=\(EmbeddedGuestPayload.revision)\n"
+    if let applianceID { record += "appliance_id=\(applianceID)\n" }
+    return record
+  }
+
   static func userData(entry: ApplianceCatalogEntry? = nil) throws -> String {
     var text =
       "#cloud-config\noutput: {all: \"| tee -a /var/log/cloud-init-output.log /dev/hvc0\"}\nusers: []\nssh_pwauth: false\ndisable_root: true\nwrite_files:\n"
@@ -24,6 +33,10 @@ enum SeedPreparation {
         "      \($0)\n"
       }.joined()
     }
+    // The payload revision hashes the payload, so it is delivered beside it, not inside it.
+    text += "  - path: \(guestRecordPath)\n    permissions: \"0600\"\n    content: |\n"
+    text += guestRecord(applianceID: entry?.id).split(separator: "\n").map { "      \($0)\n" }
+      .joined()
     if let entry, let identity = entry.prebuiltIdentity {
       text += "  - path: /etc/macus-appliance-expected\n    permissions: \"0600\"\n    content: |\n"
       text += identity.record(id: entry.id).split(separator: "\n").map { "      \($0)\n" }.joined()

@@ -7,6 +7,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import unittest
 from unittest import mock
@@ -41,7 +42,9 @@ class BridgeTests(unittest.TestCase):
         bridge.relay_ready.clear()
         try:
             with mock.patch.object(bridge, 'incus_health',
-                                   side_effect=lambda: {'protocol_version': 1}) as probe:
+                                   side_effect=lambda: {'protocol_version': 1}) as probe, \
+                    mock.patch.object(bridge, 'guest_identity',
+                                      return_value={'guest_contract': 1}):
                 bridge.health(client)
                 self.assertTrue(client.sendall.call_args.args[0].startswith(b'HTTP/1.1 503'))
                 probe.assert_not_called()
@@ -50,7 +53,21 @@ class BridgeTests(unittest.TestCase):
                 response = client.sendall.call_args.args[0]
                 self.assertTrue(response.startswith(b'HTTP/1.1 200'))
                 body = json.loads(response.split(b'\r\n\r\n', 1)[1])
-                self.assertEqual(body, {'protocol_version': 1, 'flow_relay_version': 1})
+                self.assertEqual(body, {'protocol_version': 1, 'flow_relay_version': 1,
+                                        'guest_contract': 1})
+        finally:
+            bridge.relay_ready.clear()
+
+    def test_health_merges_identity_only_when_ready(self):
+        client = mock.Mock()
+        client.recv.return_value = b'GET /health HTTP/1.1\r\n\r\n'
+        bridge.relay_ready.set()
+        try:
+            with mock.patch.object(bridge, 'incus_health', side_effect=RuntimeError('not ready')), \
+                    mock.patch.object(bridge, 'guest_identity') as identity:
+                bridge.health(client)
+            self.assertTrue(client.sendall.call_args.args[0].startswith(b'HTTP/1.1 503'))
+            identity.assert_not_called()
         finally:
             bridge.relay_ready.clear()
 
@@ -293,6 +310,116 @@ class FlowRelayTests(unittest.TestCase):
         self.thread.join(5)
         self.assertTrue(self.connection.aborted)
         self.assertEqual(read_all(self.incus_peer), b'')
+
+
+REVISION = 'ab' * 32
+
+
+class GuestIdentityTests(unittest.TestCase):
+    """Identity fields read from fixture files; nothing here touches a guest."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        root = Path(self.temporary.name)
+        self.record = root / 'macus-guest'
+        self.identity = root / 'tama-storage'
+        self.identity.mkdir()
+        self.backend = root / 'tama-storage-backend'
+        patches = [mock.patch.object(bridge, 'GUEST_RECORD', str(self.record)),
+                   mock.patch.object(bridge, 'STORAGE_IDENTITY', str(self.identity)),
+                   mock.patch.object(bridge, 'STORAGE_BACKEND', str(self.backend)),
+                   mock.patch.dict(bridge.package_cache, {'value': None})]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.addCleanup(self.temporary.cleanup)
+
+    def write_storage(self, backend, **files):
+        self.backend.write_text(backend + '\n')
+        for name, value in files.items():
+            (self.identity / name.replace('_', '-')).write_text(value + '\n')
+
+    def test_ready_zfs_guest_reports_full_identity(self):
+        self.record.write_text(f'format=1\npayload_revision={REVISION}\nappliance_id=alpine-3.24.2-lts-1\n')
+        self.write_storage('zfs', pool_guid='1234567890123456789', layout='zfs-v1', phase='ready')
+        bridge.package_cache['value'] = '7.0.1-r2'
+        self.assertEqual(bridge.guest_identity(), {
+            'guest_contract': 1,
+            'payload_revision': REVISION,
+            'appliance_id': 'alpine-3.24.2-lts-1',
+            'incus_package': '7.0.1-r2',
+            'storage': {'backend': 'zfs', 'pool_guid': '1234567890123456789',
+                        'layout': 'zfs-v1', 'phase': 'ready'},
+        })
+
+    def test_ext4_guest_reports_backend_only(self):
+        self.write_storage('ext4', pool_guid='123')
+        self.assertEqual(bridge.guest_identity()['storage'], {'backend': 'ext4'})
+
+    def test_unready_pool_reports_only_what_is_recorded(self):
+        self.write_storage('zfs', phase='preseed-pending')
+        identity = bridge.guest_identity()
+        self.assertEqual(identity['storage'], {'backend': 'zfs', 'phase': 'preseed-pending'})
+        self.assertNotIn('incus_package', identity)
+
+    def test_unexpected_values_are_unknown_not_guessed(self):
+        self.record.write_text('format=1\npayload_revision=nothex\nappliance_id=../x\n')
+        self.write_storage('zfs', pool_guid='12ab', layout='ZFS V1', phase='ready')
+        identity = bridge.guest_identity()
+        self.assertEqual(identity, {'guest_contract': 1,
+                                    'storage': {'backend': 'zfs', 'phase': 'ready'}})
+
+    def test_missing_or_foreign_record_and_backend_are_omitted(self):
+        self.assertEqual(bridge.guest_identity(), {'guest_contract': 1})
+        self.record.write_text(f'format=2\npayload_revision={REVISION}\n')
+        self.backend.write_text('btrfs\n')
+        self.assertEqual(bridge.guest_identity(), {'guest_contract': 1})
+
+    def test_record_without_appliance_reports_payload_only(self):
+        self.record.write_text(f'format=1\npayload_revision={REVISION}\n')
+        self.assertEqual(bridge.guest_record(), {'payload_revision': REVISION})
+
+
+class IncusPackageTests(unittest.TestCase):
+    def run_listing(self, stdout):
+        result = subprocess.CompletedProcess(['apk'], 0, stdout=stdout, stderr='')
+        with mock.patch.object(bridge.subprocess, 'run', return_value=result) as run:
+            value = bridge.read_incus_package()
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], ['apk', 'info', '-v'])
+        return value
+
+    def test_reads_the_full_package_version_with_release(self):
+        listing = 'incus-client-7.0.1-r2\nincus-7.0.1-r2\nincus-openrc-7.0.1-r2\nincus-vm-7.0.1-r2\n'
+        self.assertEqual(self.run_listing(listing), '7.0.1-r2')
+
+    def test_missing_ambiguous_or_suffixless_versions_are_unknown(self):
+        self.assertIsNone(self.run_listing('incus-client-7.0.1-r2\n'))
+        self.assertIsNone(self.run_listing('incus-7.0.1\n'))
+        self.assertIsNone(self.run_listing('incus-7.0.1-r2\nincus-7.0.2-r0\n'))
+
+    def test_apk_failure_is_unknown(self):
+        with mock.patch.object(bridge.subprocess, 'run',
+                               side_effect=subprocess.TimeoutExpired('apk', 30)):
+            self.assertIsNone(bridge.read_incus_package())
+        with mock.patch.object(bridge.subprocess, 'run', side_effect=FileNotFoundError('apk')):
+            self.assertIsNone(bridge.read_incus_package())
+
+    def test_watch_retries_until_found_then_caches(self):
+        sleeps = []
+        with mock.patch.dict(bridge.package_cache, {'value': None}), \
+                mock.patch.object(bridge, 'read_incus_package',
+                                  side_effect=[None, None, '7.0.1-r2']) as read:
+            bridge.watch_incus_package(sleep=sleeps.append)
+            self.assertEqual(bridge.installed_incus_package(), '7.0.1-r2')
+        self.assertEqual(read.call_count, 3)
+        self.assertEqual(sleeps, [bridge.PACKAGE_RETRY_SECONDS] * 2)
+
+    def test_health_never_runs_apk(self):
+        with mock.patch.dict(bridge.package_cache, {'value': None}), \
+                mock.patch.object(bridge.subprocess, 'run') as run:
+            self.assertIsNone(bridge.installed_incus_package())
+        run.assert_not_called()
 
 
 if __name__ == '__main__':
