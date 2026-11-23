@@ -96,6 +96,18 @@ def fixture(path):
     return data
 
 
+def workloads_complete(spec, checks, skipped):
+    """Every workload booted and became ready, or was skipped because the runtime does not
+    report the capability the fixture says it requires (nested VMs on an unsupported host)."""
+    for entry in spec["workloads"]:
+        name = entry["kind"].replace("-", "_")
+        if name in skipped and entry.get("requires_capability"):
+            continue
+        if not (checks.get(name + "_boot") and checks.get(name + "_readiness")):
+            return False
+    return True
+
+
 class Linux(workload.Acceptance):
     def __init__(self, args, report, run, endpoint, spec, labels):
         args.instance = "-"
@@ -350,7 +362,8 @@ def main():
     finally:
         tokens.revoke_all(report)
         checks["default_jobs_and_endpoint_unchanged"] = start.default_footprint() == footprint
-        report["success"] = all(checks.values()) and "virtual_machine_boot" in checks
+        report["success"] = (all(checks.values()) and "gateway_http" in checks
+                             and workloads_complete(spec, checks, report["skipped"]))
         if report["success"]:
             attempt("clean_up", linux.clean_up)
             report["success"] = checks["clean_up"]

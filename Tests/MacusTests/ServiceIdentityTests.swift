@@ -440,6 +440,24 @@ import Testing
   #expect(pair.launch.bootstrapped.isEmpty && pair.launch.kickstarted.isEmpty)
 }
 
+@Test func foregroundServerIsRecheckedAfterTheRuntimeRecovers() async throws {
+  // A foreground server answers 503 while Swift is down, so the preflight finds nothing serving.
+  // Once the Swift job is kickstarted the same server serves again; start reuses it instead of
+  // bootstrapping a competing launchd server that could not bind the occupied port.
+  let pair = try PairFixture()
+  defer { pair.remove() }
+  pair.launch.register(pair.runtimeJob(loaded: false))
+  pair.launch.servesWithRuntime = true
+  let capture = StartCapture()
+  #expect(await pair.start(capture: capture) == 0, "\(capture.error)")
+  #expect(pair.launch.kickstarted == [pair.runtimeLabel])
+  #expect(pair.launch.bootstrapped.isEmpty)
+  let object =
+    try JSONSerialization.jsonObject(with: Data(capture.output.utf8)) as? [String: Any]
+  #expect(object?["server_ownership"] as? String == "foreground")
+  #expect(object?["service_ownership"] as? String == "launchd")
+}
+
 // MARK: - Fixtures
 
 /// An existing isolated runtime, an installed fake package (`<prefix>/bin/macus` and its release
@@ -609,11 +627,19 @@ final class PairLaunch: LaunchControl, @unchecked Sendable {
     try activate(label: label)
   }
 
+  /// A foreground server outside launchd that serves only while the Swift runtime is up.
+  var servesWithRuntime: Bool {
+    get { lock.withLock { foregroundServer } }
+    set { lock.withLock { foregroundServer = newValue } }
+  }
+  private var foregroundServer = false
+
   private func activate(label: String) throws {
     if label.hasPrefix(LaunchAgentPlan.serverLabel) {
       probe.serving = true
     } else {
       _ = try openRuntime()
+      if servesWithRuntime { probe.serving = true }
     }
   }
 

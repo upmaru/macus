@@ -43,6 +43,22 @@ class LinuxAcceptanceTests(unittest.TestCase):
             env=dict(os.environ, MACUS_ACCEPTANCE_SENTINEL=str(sentinel)))
         return result, sentinel
 
+    def test_an_unsupported_vm_skip_still_completes_the_workloads(self):
+        spec = linux.fixture(linux.FIXTURE)
+        names = [e["kind"].replace("-", "_") for e in spec["workloads"]]
+        everything = {f"{n}_{c}": True for n in names for c in ("boot", "readiness")}
+        self.assertTrue(linux.workloads_complete(spec, everything, {}))
+        vm = next(e for e in spec["workloads"] if e["kind"] == "virtual-machine")
+        self.assertTrue(vm.get("requires_capability"))
+        without_vm = {k: v for k, v in everything.items() if not k.startswith("virtual_machine")}
+        self.assertFalse(linux.workloads_complete(spec, without_vm, {}))
+        self.assertTrue(linux.workloads_complete(spec, without_vm, {"virtual_machine": "unsupported"}))
+        # A booted workload must also pass readiness, and only a capability skip is accepted.
+        unready = dict(everything, system_container_readiness=False)
+        self.assertFalse(linux.workloads_complete(spec, unready, {}))
+        no_container = {k: v for k, v in everything.items() if not k.startswith("system_container")}
+        self.assertFalse(linux.workloads_complete(spec, no_container, {"system_container": "skipped"}))
+
     def test_without_opt_in_nothing_is_read_written_or_run(self):
         with tempfile.TemporaryDirectory(prefix="mlx", dir="/tmp") as folder:
             root = Path(folder)

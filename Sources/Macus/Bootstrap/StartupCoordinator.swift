@@ -282,7 +282,10 @@ private final class StartContext: @unchecked Sendable {
       serverOwnership = "launchd"
       return
     }
-    if serverForeground, try await serverServing(paths) {
+    // Recheck even when the preflight found nothing: a foreground server answers 503 while the
+    // Swift runtime is down and serves again once ensureRuntimeJob has brought Swift back. A
+    // second, launchd-owned server could not bind its occupied port and would keep restarting.
+    if try await serverServing(paths) {
       // A server already serves this state's pinned endpoint outside launchd: reuse it.
       serverOwnership = "foreground"
       return
