@@ -96,7 +96,7 @@ private final class StartContext: @unchecked Sendable {
       }
       let ownership = try await ensureService(paths)
       if kind == .absent { try await createRuntime(paths, manifest: try publishedManifest(paths)) }
-      let capabilities = try await bootAndWait(paths)
+      let (capabilities, upgradeAvailable) = try await bootAndWait(paths)
       let client = try await configureClient(paths)
       emit(.clientSetup, .complete)
       return StartupResult(
@@ -107,7 +107,7 @@ private final class StartContext: @unchecked Sendable {
         serverLabel: serverOwnership == "launchd" ? serverLabel : nil,
         serverEndpoint: endpoint?.url.absoluteString, serverFingerprint: endpoint?.fingerprint,
         capabilities: capabilities, nextCommands: client.commands, pathGuidance: client.guidance,
-        observedState: "ready")
+        observedState: "ready", upgradeAvailable: upgradeAvailable)
     } catch is CancellationError {
       throw StartupInterrupted(message: await interruptedMessage())
     } catch let error as StartupInterrupted {
@@ -387,14 +387,16 @@ private final class StartContext: @unchecked Sendable {
     emit(.runtimeCreation, .complete)
   }
 
-  private func bootAndWait(_ paths: RuntimePaths) async throws -> RuntimeCapabilities {
+  /// Boots the runtime and returns its live capabilities and, when the runtime reported it,
+  /// whether an appliance upgrade is available.
+  private func bootAndWait(_ paths: RuntimePaths) async throws -> (RuntimeCapabilities, Bool?) {
     emit(.provisioning, .active)
     let status = try await statusObject(paths)
     if jsonString(status["state"]) == "ready" {
       let capabilities = try await liveCapabilities(paths)
       emit(.provisioning, .skipped, detail: "already ready")
       emit(.readiness, .complete)
-      return capabilities
+      return (capabilities, status["upgrade_available"] as? Bool)
     }
     if jsonString(status["state"]) == "starting" {
       throw RuntimeError(
@@ -422,13 +424,14 @@ private final class StartContext: @unchecked Sendable {
       let capabilities = try await liveCapabilities(paths)
       emit(.provisioning, .complete)
       emit(.readiness, .complete)
-      return capabilities
+      return (capabilities, nil)
     }
-    _ = try requireGatewaySuccess(response)
+    let started = try requireGatewaySuccess(response)
     let capabilities = try await liveCapabilities(paths)
     emit(.provisioning, .complete)
     emit(.readiness, .complete)
-    return capabilities
+    let object = (try? JSONSerialization.jsonObject(with: started.body)) as? [String: Any]
+    return (capabilities, object?["upgrade_available"] as? Bool)
   }
 
   private func configureClient(_ paths: RuntimePaths) async throws -> (

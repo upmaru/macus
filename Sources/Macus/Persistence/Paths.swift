@@ -13,6 +13,11 @@ public struct RuntimePaths: Sendable {
   public var dataDisk: URL { runtimeDirectory.appendingPathComponent("data.raw") }
   public var efiStore: URL { runtimeDirectory.appendingPathComponent("efi.bin") }
   public var seed: URL { runtimeDirectory.appendingPathComponent("seed.iso") }
+  /// Daemon-owned records kept beside the disks, so they move with them.
+  public var guestRecord: URL { runtimeDirectory.appendingPathComponent("guest-record.json") }
+  public var storageIdentity: URL {
+    runtimeDirectory.appendingPathComponent("storage-identity.json")
+  }
   public var serialLog: URL { directory.appendingPathComponent("serial.log") }
   public var controlSocket: URL { directory.appendingPathComponent("runtime.sock") }
   public var incusSocket: URL { directory.appendingPathComponent("incus.sock") }

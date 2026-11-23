@@ -97,7 +97,7 @@ func runStart(
   }
 }
 
-private func resultObject(_ result: StartupResult) -> [String: Any] {
+func resultObject(_ result: StartupResult) -> [String: Any] {
   var object: [String: Any] = [
     "connected": result.connected,
     "incus": result.incus,
@@ -115,6 +115,7 @@ private func resultObject(_ result: StartupResult) -> [String: Any] {
     object["server_endpoint"] = ["url": url, "certificate_fingerprint": fingerprint]
   }
   if let guidance = result.pathGuidance { object["path_guidance"] = guidance }
+  if let upgrade = result.upgradeAvailable { object["upgrade_available"] = upgrade }
   if let capabilities = result.capabilities,
     let data = try? JSON.encoder().encode(capabilities),
     let decoded = try? JSONSerialization.jsonObject(with: data)

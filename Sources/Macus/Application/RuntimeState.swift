@@ -23,8 +23,11 @@ public struct RuntimeStatus: Codable, Sendable {
   public let incusSocket: String
   public let lastError: String?
   public let uptimeSeconds: Int
+  /// Whether the state's recorded guest is older than the installed package's appliance or
+  /// payload. Absent until a ready guest of the state has been recorded.
+  public var upgradeAvailable: Bool? = nil
   public enum CodingKeys: String, CodingKey {
-    case apiVersion, state, incusSocket, lastError, uptimeSeconds
+    case apiVersion, state, incusSocket, lastError, uptimeSeconds, upgradeAvailable
   }
 }
 

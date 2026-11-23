@@ -10,9 +10,9 @@
 
 ## 2. Host records and start
 
-- [ ] 2.1 Add the daemon-owned `runtime/storage-identity.json` and `runtime/guest-record.json` (`guestContract`, `payloadRevision`, `applianceID`, `incusPackage`, `incusPackageSource`, `lastReadyPackage`), written at each ready and corrected from health; verify store tests for first write, unchanged rewrite, refusal to replace a different GUID, a missing record, a guest that reports only `server_version` (package stays unknown) and the catalog fallback for a known prebuilt entry and an unknown entry.
-- [ ] 2.2 Add the start preflight in `RuntimeService` before boot (recorded incompatible: refuse with `conflict`, runtime service stays active) and the graceful stop for a guest that proves incompatible after boot; change the legacy bridge message to name `macus runtime upgrade`; verify coordinator and runtime tests for each case, including a graceful stop timeout and `restart`.
-- [ ] 2.3 Report "upgrade available" from start and status for a compatible older root or payload; verify human and JSON output tests.
+- [x] 2.1 Add the daemon-owned `runtime/storage-identity.json` and `runtime/guest-record.json` (`guestContract`, `payloadRevision`, `applianceID`, `incusPackage`, `incusPackageSource`, `lastReadyPackage`), written at each ready and corrected from health; verify store tests for first write, unchanged rewrite, refusal to replace a different GUID, a missing record, a guest that reports only `server_version` (package stays unknown) and the catalog fallback for a known prebuilt entry and an unknown entry.
+- [x] 2.2 Add the start preflight in `RuntimeService` before boot (recorded incompatible: refuse with `conflict`, runtime service stays active) and the graceful stop for a guest that proves incompatible after boot; change the legacy bridge message to name `macus runtime upgrade`; verify coordinator and runtime tests for each case, including a graceful stop timeout and `restart`.
+- [x] 2.3 Report "upgrade available" from start and status for a compatible older root or payload; verify human and JSON output tests.
 
 ## 3. Upgrade operation
 

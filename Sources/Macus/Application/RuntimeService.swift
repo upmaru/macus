@@ -17,15 +17,28 @@ public actor RuntimeService {
   private var bootExpectedReboot = false
   private var bootStartedAt: ContinuousClock.Instant?
   private let stallLimit: Duration
+  /// The installed package's appliance, for the catalog Incus package fallback and for
+  /// reporting whether an upgrade is available.
+  private let catalog: ApplianceCatalogEntry
+  private let payloadRevision: String
+  private let macusPackage: String?
 
   public init(driver: any VirtualMachineDriver, store: StateStore) throws {
     try self.init(driver: driver, store: store, stallLimit: .seconds(300))
   }
 
-  init(driver: any VirtualMachineDriver, store: StateStore, stallLimit: Duration) throws {
+  init(
+    driver: any VirtualMachineDriver, store: StateStore, stallLimit: Duration,
+    catalog: ApplianceCatalogEntry = .current,
+    payloadRevision: String = EmbeddedGuestPayload.revision,
+    macusPackage: String? = BuildIdentity.current.version
+  ) throws {
     self.driver = driver
     self.store = store
     self.stallLimit = stallLimit
+    self.catalog = catalog
+    self.payloadRevision = payloadRevision
+    self.macusPackage = macusPackage
     configuration = try store.load()
     state = configuration == nil ? .absent : .stopped
   }
@@ -163,9 +176,26 @@ public actor RuntimeService {
   }
 
   /// Guest bridges are installed once at first boot, so an older appliance keeps serving
-  /// unframed bytes on the relay port and cannot be upgraded in place.
+  /// unframed bytes on the relay port and cannot be changed in place.
+  static let legacyGuestReason =
+    "The appliance guest bridge predates the flow-controlled Incus relay this Macus requires."
+  static let upgradeRemedy = "Run macus runtime upgrade to replace the appliance root"
   static let legacyGuestBridge =
-    "The appliance guest bridge predates the flow-controlled Incus relay this Macus requires. Recreate the appliance to continue; runtime data was not deleted."
+    "\(legacyGuestReason) \(upgradeRemedy); runtime data was not deleted."
+
+  /// Why a guest that answered health cannot be served, or nil when it can.
+  static func incompatibility(_ health: GuestHealth) -> String? {
+    guard health.servesFlowRelay else { return legacyGuestReason }
+    if let contract = health.guestContract, contract < GuestContract.minimum {
+      return
+        "The appliance guest reports contract \(contract), below the contract \(GuestContract.minimum) this Macus requires."
+    }
+    return nil
+  }
+
+  static func recordedIncompatible(contract: Int) -> String {
+    "This runtime's appliance guest was recorded with contract \(contract), below the contract \(GuestContract.minimum) this Macus requires, so it was not booted. \(upgradeRemedy); runtime data was kept."
+  }
 
   static func guestFailure(_ observation: GuestObservation, hostRestarted: Bool) -> RuntimeError {
     let code = observation.code ?? "unknown"
@@ -234,6 +264,12 @@ public actor RuntimeService {
     }
     guard !(await driver.isRunning()) else {
       throw RuntimeError(.conflict, "VM is running but unhealthy; stop before recovery")
+    }
+    // Decided from the record before anything boots; an unknown contract boots and is probed.
+    if let contract = recordedGuest()?.guestContract, contract < GuestContract.minimum {
+      let message = Self.recordedIncompatible(contract: contract)
+      lastError = message
+      throw RuntimeError(.conflict, message)
     }
     guard (await driver.capabilities()).supported else {
       throw RuntimeError(.unavailable, "Apple virtualization is unavailable on this host")
@@ -356,13 +392,17 @@ public actor RuntimeService {
         if let health = try? await driver.health(), health.protocolVersion == 1 {
           try Task.checkCancellation()
           guard generation == operationGeneration else { throw CancellationError() }
-          guard health.servesFlowRelay else {
-            throw RuntimeError(.unavailable, Self.legacyGuestBridge)
+          if let reason = Self.incompatibility(health) {
+            // Recorded first, so the next start refuses before booting this guest again.
+            recordReady(health)
+            throw try await stopIncompatibleGuest(
+              value, reason: reason, operationGeneration: operationGeneration)
           }
           guestHealth = health
           state = .ready
           bootPhase = "ready"
           logger.info("Incus ready: \(health.incusVersion, privacy: .public)")
+          recordReady(health)
           return snapshot()
         }
         progress.observe(
@@ -458,6 +498,8 @@ public actor RuntimeService {
       let live = try? await driver.health()
       guard state == .ready, !mutationActive, generation == observedGeneration else { return }
       if let live, live.protocolVersion == 1, live.servesFlowRelay {
+        // A guest can report a field later than its first ready, such as its Incus package.
+        if live != guestHealth { recordReady(live) }
         guestHealth = live
       } else {
         state = .failed
@@ -471,6 +513,80 @@ public actor RuntimeService {
   private func snapshot() -> RuntimeStatus {
     RuntimeStatus(
       state: state, incusSocket: store.paths.incusSocket.path, lastError: lastError,
-      uptimeSeconds: startedAt.map { max(0, Int(Date().timeIntervalSince($0))) } ?? 0)
+      uptimeSeconds: startedAt.map { max(0, Int(Date().timeIntervalSince($0))) } ?? 0,
+      upgradeAvailable: upgradeAvailable())
+  }
+
+  /// A corrupt or unreadable record is treated as unknown: start then boots and probes.
+  private func recordedGuest() -> GuestRecord? {
+    do {
+      return try GuestRecordStore.loadGuest(paths: store.paths)
+    } catch {
+      logger.error("Guest record is unreadable: \(error.localizedDescription, privacy: .public)")
+      return nil
+    }
+  }
+
+  /// Whether the state's recorded guest differs from the installed package's appliance or
+  /// payload. Nil when nothing was recorded yet. A guest that predates identity reporting
+  /// has no payload revision and is always older than this one.
+  private func upgradeAvailable() -> Bool? {
+    guard configuration != nil, let record = recordedGuest() else { return nil }
+    return record.payloadRevision != payloadRevision || record.applianceId != catalog.id
+  }
+
+  /// Writes the daemon-owned guest and storage identity records for a guest that answered
+  /// health. Failures are logged and never fail readiness: the post-boot probe still guards
+  /// an unknown or stale record.
+  private func recordReady(_ health: GuestHealth) {
+    let paths = store.paths
+    do {
+      let previous = recordedGuest()
+      let journalCatalog = (try? BootstrapStore.loadJournal(paths.directory))?.catalogID
+      let record = GuestRecordStore.observe(
+        health, previous: previous,
+        catalogPackage: GuestRecordStore.catalogPackage(
+          catalogID: health.applianceId ?? journalCatalog, catalog: catalog),
+        macusPackage: macusPackage)
+      if record != previous { try GuestRecordStore.saveGuest(record, paths: paths) }
+      if case .conflict(let recorded, let reported) = try GuestRecordStore.recordStorage(
+        health, paths: paths)
+      {
+        logger.error(
+          "Guest reports pool \(reported, privacy: .public), but this state records pool \(recorded, privacy: .public); the record was kept"
+        )
+      }
+    } catch {
+      logger.error("Cannot record guest identity: \(error.localizedDescription, privacy: .public)")
+    }
+  }
+
+  /// Stops a booted guest this host cannot serve: graceful only, within the shutdown timeout.
+  /// It is never forced, so a guest that does not stop is reported as still running.
+  private func stopIncompatibleGuest(
+    _ value: RuntimeConfiguration, reason: String, operationGeneration: UInt64
+  ) async throws -> RuntimeError {
+    bootPhase = "incompatible_guest"
+    logger.notice("Guest is incompatible with this host; requesting a graceful stop")
+    let deadline = ContinuousClock.now.advanced(by: .seconds(value.shutdownTimeoutSeconds))
+    var requested = true
+    do { try await driver.requestStop() } catch { requested = false }
+    while requested, await driver.isRunning(), ContinuousClock.now < deadline {
+      try Task.checkCancellation()
+      guard generation == operationGeneration, state == .starting else {
+        throw CancellationError()
+      }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+    guard !(await driver.isRunning()) else {
+      return RuntimeError(
+        .unavailable,
+        "\(reason) The guest did not stop gracefully within \(value.shutdownTimeoutSeconds) s and is still running. Run macus runtime stop --force, then macus runtime upgrade. Runtime data was kept."
+      )
+    }
+    startedAt = nil
+    return RuntimeError(
+      .unavailable,
+      "\(reason) The guest was stopped gracefully. \(Self.upgradeRemedy); runtime data was kept.")
   }
 }

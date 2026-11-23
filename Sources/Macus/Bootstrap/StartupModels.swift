@@ -106,6 +106,8 @@ struct StartupResult: Sendable {
   var nextCommands: [String]
   var pathGuidance: String?
   var observedState: String?
+  /// Reported by the runtime: the state's appliance or payload is older than the installed one.
+  var upgradeAvailable: Bool? = nil
 }
 
 enum ProgressSelection: String, Sendable {

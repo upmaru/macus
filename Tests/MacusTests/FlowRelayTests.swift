@@ -457,7 +457,10 @@ func startRefusesGuestBridgesWithoutTheFlowRelay(version: Int?) async throws {
   await #expect(throws: RuntimeError.self) { try await service.start() }
   let status = await service.status()
   #expect(status.state == .failed)
-  #expect(status.lastError == RuntimeService.legacyGuestBridge)
+  // The incompatible guest is stopped gracefully and the error names the upgrade.
+  #expect(status.lastError?.hasPrefix(RuntimeService.legacyGuestReason) == true)
+  #expect(status.lastError?.contains("macus runtime upgrade") == true)
+  #expect(await driver.running == false)
   await #expect(throws: RuntimeError.self) { try await service.openIncusStream() }
   #expect(await driver.ports.isEmpty)
 }
