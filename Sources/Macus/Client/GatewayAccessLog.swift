@@ -86,16 +86,11 @@ struct GatewayAccessLog: Sendable {
 
   /// The last `count` complete lines across the archives and the current file, oldest first.
   /// A trailing line without its newline is still being written and is left for later.
-  /// `current` replaces reading the current file, when the caller already holds it open.
-  func recentLines(_ count: Int, current: [String]? = nil) throws -> [String] {
+  func recentLines(_ count: Int) throws -> [String] {
     guard try validate() else { return [] }
-    var collected: [String]
-    if let current {
-      collected = Array(current.suffix(count))
-    } else if try validateFile(file) {
+    var collected: [String] = []
+    if try validateFile(file) {
       collected = Array(Self.completeLines(try Self.read(file)).lines.suffix(count))
-    } else {
-      collected = []
     }
     for url in try archives().reversed() {
       guard collected.count < count else { break }
@@ -130,15 +125,17 @@ struct GatewayAccessLog: Sendable {
   // MARK: Following
 
   /// Prints the last `count` lines, then new complete lines until the task is cancelled, and
-  /// throws `FollowInterrupted`. The current file is opened once and held, so the initial lines
-  /// and the followed ones come from one descriptor, and a rotation (a rename) is read to its
-  /// end before the new file is opened from its start: no record is printed twice or skipped.
+  /// throws `FollowInterrupted`. Files are told apart by device and inode, not by name: the
+  /// current file is opened once and held, a rotation (a rename) is read to its end, and every
+  /// archive not read before is read before the new current file. So a rotation while the
+  /// initial lines are gathered prints nothing twice, and several rotations between two polls
+  /// skip nothing that is still on disk.
   func follow(
     lines count: Int, emit: @Sendable ([String]) -> Void, interval: Duration = followInterval
   ) async throws -> Never {
     var reader = FollowReader(log: self)
     let current = try reader.start()
-    emit(try recentLines(count, current: current))
+    emit(try reader.recentLines(count, current: current))
     while true {
       do { try await Task.sleep(for: interval) } catch { throw FollowInterrupted() }
       if Task.isCancelled { throw FollowInterrupted() }
@@ -217,12 +214,26 @@ struct GatewayAccessLog: Sendable {
 /// `--follow` ended by an interrupt; the command exits 130 without an error message.
 struct FollowInterrupted: Error, Sendable {}
 
-/// Tracks the open log file across rotation and truncation.
-private struct FollowReader {
+/// A file's identity across renames.
+struct LogFileIdentity: Hashable, Sendable {
+  let device: dev_t
+  let inode: ino_t
+
+  init(_ info: stat) {
+    device = info.st_dev
+    inode = info.st_ino
+  }
+}
+
+/// Tracks the open log file across rotation and truncation, and which files it has already
+/// accounted for, so that a renamed file is neither read twice nor passed over.
+struct FollowReader {
   let log: GatewayAccessLog
   var handle: FileHandle?
-  var identity: (dev: dev_t, ino: ino_t)?
+  var identity: LogFileIdentity?
   var remainder = Data()
+  /// Files whose records were already printed, or that predate the lines asked for.
+  var known: Set<LogFileIdentity> = []
 
   init(log: GatewayAccessLog) { self.log = log }
 
@@ -230,6 +241,22 @@ private struct FollowReader {
   mutating func start() throws -> [String]? {
     guard try log.validate(), try open() else { return nil }
     return readAvailable()
+  }
+
+  /// The last `count` lines: `current`, the held file's lines, preceded by as many archive
+  /// lines as needed, newest archive first. The held file is skipped if a rotation has already
+  /// renamed it into the archives, and every archive present now counts as accounted for.
+  mutating func recentLines(_ count: Int, current: [String]?) throws -> [String] {
+    guard try log.validate() else { return [] }
+    var collected = Array((current ?? []).suffix(count))
+    for url in try log.archives().reversed() {
+      guard let archive = try openArchive(url) else { continue }
+      defer { try? archive.handle.close() }
+      guard known.insert(archive.identity).inserted, collected.count < count else { continue }
+      let lines = GatewayAccessLog.completeLines(Self.readToEnd(archive.handle)).lines
+      collected = Array(lines.suffix(count - collected.count)) + collected
+    }
+    return collected
   }
 
   mutating func open() throws -> Bool {
@@ -245,7 +272,8 @@ private struct FollowReader {
           .invalidConfiguration, "\(GatewayAccessLog.fileName) changed while opening")
       }
       self.handle = handle
-      identity = (info.st_dev, info.st_ino)
+      identity = LogFileIdentity(info)
+      known.insert(LogFileIdentity(info))
       remainder = Data()
       return true
     } catch let error as RuntimeError {
@@ -257,30 +285,70 @@ private struct FollowReader {
 
   mutating func poll() throws -> [String] {
     var lines: [String] = []
-    guard handle != nil else {
-      if (try? log.validate()) == true, try open() { lines += readAvailable() }
-      return lines
-    }
-    var info = stat()
-    let present = lstat(log.file.path, &info) == 0
-    let rotated =
-      !present || identity.map { info.st_dev != $0.dev || info.st_ino != $0.ino } ?? true
-    if rotated {
-      // Finish the renamed file, then move to the new one when it exists.
+    if handle != nil {
+      var info = stat()
+      let present = lstat(log.file.path, &info) == 0
+      if present, LogFileIdentity(info) == identity {
+        if let handle, let offset = try? handle.offset(), UInt64(info.st_size) < offset {
+          // Truncated in place: start again from the beginning.
+          try? handle.seek(toOffset: 0)
+          remainder = Data()
+        }
+        return readAvailable()
+      }
+      // Renamed or removed: finish it before anything newer.
       lines += readAvailable()
       try? handle?.close()
       handle = nil
       identity = nil
       remainder = Data()
-      if present, try open() { lines += readAvailable() }
-      return lines
     }
-    if let handle, let offset = try? handle.offset(), UInt64(info.st_size) < offset {
-      // Truncated in place: start again from the beginning.
-      try? handle.seek(toOffset: 0)
-      remainder = Data()
+    guard (try? log.validate()) == true else { return lines }
+    // Files rotated into the archives without ever being the held file come first, oldest
+    // first. Looking again after opening the current file catches a rotation in between.
+    lines += try unreadArchives()
+    if try open() {
+      lines += try unreadArchives()
+      lines += readAvailable()
     }
-    return readAvailable()
+    return lines
+  }
+
+  /// The lines of every archive not accounted for yet, oldest first. Identities of files that
+  /// are gone are forgotten, so a reused inode is not mistaken for a file already read.
+  private mutating func unreadArchives() throws -> [String] {
+    var lines: [String] = []
+    var present: Set<LogFileIdentity> = []
+    for url in try log.archives() {
+      guard let archive = try openArchive(url) else { continue }
+      defer { try? archive.handle.close() }
+      present.insert(archive.identity)
+      guard known.insert(archive.identity).inserted else { continue }
+      lines += GatewayAccessLog.completeLines(Self.readToEnd(archive.handle)).lines
+    }
+    if let identity { present.insert(identity) }
+    known.formIntersection(present)
+    return lines
+  }
+
+  /// Opens one archive and identifies the file actually opened, so a rename between listing
+  /// and opening cannot pass one file off as another. `nil` when it is gone.
+  private func openArchive(_ url: URL) throws -> (handle: FileHandle, identity: LogFileIdentity)? {
+    guard try log.validateFile(url), let handle = try? FileHandle(forReadingFrom: url) else {
+      return nil
+    }
+    var info = stat()
+    guard fstat(handle.fileDescriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+      info.st_uid == getuid()
+    else {
+      try? handle.close()
+      return nil
+    }
+    return (handle, LogFileIdentity(info))
+  }
+
+  private static func readToEnd(_ handle: FileHandle) -> Data {
+    (try? handle.readToEnd()) ?? Data()
   }
 
   private mutating func readAvailable() -> [String] {

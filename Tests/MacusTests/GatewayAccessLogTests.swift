@@ -332,6 +332,61 @@ private func waitFor(_ condition: () -> Bool) async {
   #expect(capture.outputLines == (2...8).map { record($0) })
 }
 
+@Test func followDoesNotRepeatAFileRotatedWhileTheInitialLinesAreGathered() throws {
+  let fixture = try LogFixture()
+  defer { fixture.remove() }
+  try fixture.write([record(1)], to: fixture.archive(0))
+  try fixture.write((2...4).map { record($0) })
+
+  var reader = FollowReader(log: GatewayAccessLog(stateDirectory: fixture.state))
+  let current = try reader.start()
+  // The held file becomes an archive before the archives are read.
+  try fixture.rotate()
+  try fixture.write([record(5)])
+
+  #expect(try reader.recentLines(10, current: current) == (1...4).map { record($0) })
+  #expect(try reader.poll() == [record(5)])
+  #expect(try reader.poll() == [])
+}
+
+@Test func followReadsEveryFileRotatedBetweenTwoPolls() throws {
+  let fixture = try LogFixture()
+  defer { fixture.remove() }
+  try fixture.write([record(1)])
+
+  var reader = FollowReader(log: GatewayAccessLog(stateDirectory: fixture.state))
+  let current = try reader.start()
+  #expect(try reader.recentLines(10, current: current) == [record(1)])
+
+  // Two rotations before the next poll: one file is never the held one.
+  try fixture.append([record(2)])
+  try fixture.rotate()
+  try fixture.write([record(3), record(4)])
+  try fixture.rotate()
+  try fixture.write([record(5)])
+
+  #expect(try reader.poll() == (2...5).map { record($0) })
+  try fixture.append([record(6)])
+  #expect(try reader.poll() == [record(6)])
+}
+
+@Test func followDoesNotRereadOldArchivesWhenTheCurrentFileIsRemoved() throws {
+  let fixture = try LogFixture()
+  defer { fixture.remove() }
+  try fixture.write([record(1), record(2)], to: fixture.archive(0))
+  try fixture.write([record(3)])
+
+  var reader = FollowReader(log: GatewayAccessLog(stateDirectory: fixture.state))
+  let current = try reader.start()
+  // Only one line was asked for; the archive is still accounted for.
+  #expect(try reader.recentLines(1, current: current) == [record(3)])
+
+  try FileManager.default.removeItem(at: fixture.file)
+  #expect(try reader.poll() == [])
+  try fixture.write([record(4)])
+  #expect(try reader.poll() == [record(4)])
+}
+
 @Test func followWaitsForALogThatDoesNotExistYet() async throws {
   let fixture = try LogFixture()
   defer { fixture.remove() }
