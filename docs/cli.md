@@ -84,25 +84,25 @@ macus runtime backups prune ID [--confirm]
 
 The human output prints the plan before anything is stopped. `--dry-run` ends there, and downloads, stages and stops nothing. A state that is already current reports so and changes nothing.
 
-Otherwise the command acquires the appliance this executable ships (never a draft qualification catalog) and stages its root with an upgrade seed in `STATE/upgrade-<id>/`. It then posts the staging ID (`POST /runtime/upgrade`). The daemon re-plans, verifies the staged root against the installed catalog and the seed against the planned pool, and then:
+Otherwise the command acquires the appliance this executable ships (never a draft qualification catalog) and stages its root with an upgrade seed in `STATE/upgrade-<id>/`. It then posts the staging ID (`POST /runtime/upgrade`); if that request certainly never reached the runtime service, the staging is removed. A plan from a runtime service still running from another package (another appliance or guest payload) is refused, even when it reports nothing to do. The daemon re-plans, verifies the staged root against the installed catalog and the seed against the planned pool, and then:
 
-1. reads the Incus inventory of a ready guest;
+1. closes Incus to clients until the upgrade ends, waits for running Incus tasks and reads the Incus inventory of a ready guest; a stopped guest, or one whose start was refused, is not read, so the comparison is skipped and the result says so (check the inventory it returns);
 2. stops the guest gracefully (a timeout leaves it running with nothing moved);
 3. journals every file in `STATE/upgrade.pending`;
 4. clones the data disk for a migrating upgrade;
 5. moves the old root, firmware store and seed into `STATE/backups/<id>/`;
 6. boots the new root, which adopts the existing pool by its GUID without force;
-7. requires the same pool, a compatible guest and every earlier instance, volume, network and profile name in Incus, then commits.
+7. requires the same pool, a compatible guest and, when it was read, every earlier instance, volume, network and profile name in Incus, then commits.
 
 Instances come back according to their own Incus autostart settings; the upgrade starts, stops and changes none. Any failure after the stop restores the previous files, and for a migrating upgrade the data disk copy, and the command names the failure. An interrupted upgrade is rolled back the next time the daemon starts. `--json` writes `{"upgraded":true,"plan":...,"result":...}`; a dry run writes `{"dry_run":true,"upgraded":false,"plan":...}` and a current state `{"upgraded":false,"plan":...}`. The human result names the new appliance, the backup ID and the inventory comparison.
 
-`runtime upgrade --rollback` restores the latest backup that still holds a root, or the one named, and leaves the runtime stopped; `start` then boots it. A root never boots against data at a different Incus package:
+`runtime upgrade --rollback` restores the latest backup that still holds a root, or the one named, and leaves the runtime stopped; `start` then boots it. A root never boots against data at a different Incus package or holding a different pool:
 
-- when the backup's Incus package equals the current data's, only the root, firmware store and seed are restored and the data disk stays;
-- otherwise its own data copy, or the earliest later backup's copy at its package, is restored with it;
+- when the backup's Incus package and pool equal the current data's, only the root, firmware store and seed are restored and the data disk stays;
+- otherwise its own data copy, or the earliest later backup's copy at its package and pool, is restored with it;
 - otherwise rollback is refused.
 
-Restoring a data copy discards everything written since that copy, so it needs `--discard-data-since-upgrade`, and the error without it names the copy's time. Rollback only renames files. The state it replaces becomes a new backup, so a rollback can itself be rolled back.
+Restoring a data copy discards everything written since that copy, so it needs `--discard-data-since-upgrade`, and the error without it names when that copy was taken. Rollback only renames files. The state it replaces becomes a new backup, so a rollback can itself be rolled back.
 
 `runtime backups` lists each backup with its time, operation, class, catalog IDs, Incus package, whether it holds a data copy, its allocated size and whether it can be restored now. Nothing removes a backup automatically, and runtime reset keeps them. `runtime backups prune ID` without `--confirm` removes nothing and names any backup that depends on that one's data copy; with `--confirm` it removes it.
 

@@ -517,13 +517,13 @@ The client stages the cached root and an upgrade seed into `STATE/upgrade-<id>/`
 Execution (`RuntimeService.upgrade`):
 - stops a running guest gracefully only; a timeout moves nothing;
 - writes `STATE/upgrade.pending` with every file's device and inode;
-- creates `STATE/backups/<id>/` (the ID is the staging ID) and, for a migrating upgrade, clones the data disk there with `clonefile(2)`;
+- creates `STATE/backups/<id>/` (the staging ID while it still sorts after every backup, otherwise a newer one) and, for a migrating upgrade, clones the data disk there with `clonefile(2)`;
 - grows the staged root and renames the old root, firmware store and seed into the backup and the staged root and seed into `runtime/`;
 - boots under the `upgrade` operation, with the relay closed and force stop refused until commit;
 - requires a compatible guest reporting the same pool, then commits by recording the guest, writing `backup.json`, and removing the staging directory and the intent.
 
 The inventory check reads Incus through an internal relay stream (a socket pair joined to the guest by the same flow-controlled relay), so it works while the relay is closed to clients:
-- before the stop, a ready runtime's instances, default-pool volumes (without `image` volumes), managed networks and profiles are read per project; failing to read them refuses the upgrade with nothing changed;
+- before the stop, Incus is closed to clients (new streams refused, open ones ended) until the upgrade ends, running task operations are waited for, and a ready runtime's instances, default-pool volumes (without `image` volumes), managed networks and profiles are read per project; failing to read them refuses the upgrade with nothing changed;
 - after readiness, the new root must serve the same reads, and every earlier name must still be listed (new names are allowed);
 - a runtime that was not ready is not booted to take an inventory, so its comparison is skipped and the result says so;
 - both inventories are kept in the backup as `inventory-before.json` and `inventory-after.json`.
@@ -537,7 +537,7 @@ Explicit rollback (`RuntimeService.rollback`) restores a named backup, or the la
 
 Rollback only renames, journaled in `STATE/rollback.pending` by device and inode. The state it replaces becomes a new backup (`operation: rollback`), so nothing is deleted and the rollback can be rolled back. A failed rename is undone at once, and an interrupted rollback is undone at the next daemon start. The runtime is left stopped. `RuntimeService.backups` lists every backup with its allocated size and whether it can be restored now. `pruneBackup` removes one only with confirmation and names the backups that would lose the data copy they depend on.
 
-`macus runtime upgrade` activates the runtime and server jobs without booting, under the bootstrap lock, then plans through the gateway. `--dry-run` stops there. Otherwise it prints the class, the copies and the restart notice, acquires the installed appliance into the shared cache, stages it, and posts the staging ID. A refusal before the upgrade journal removes the staged directory. `UpgradeCLITests` drives these commands end to end against a real `RuntimeService` behind the fake gateway, including an upgrade after a refused start.
+`macus runtime upgrade` activates the runtime and server jobs without booting, under the bootstrap lock, then plans through the gateway. `--dry-run` stops there. Otherwise it prints the class, the copies and the restart notice, acquires the installed appliance into the shared cache, stages it, and posts the staging ID. A refusal before the upgrade journal, including a failed journal write, removes the staged directory, and so does the client when its request certainly never reached the runtime service. `UpgradeCLITests` drives these commands end to end against a real `RuntimeService` behind the fake gateway, including an upgrade after a refused start.
 
 A fatal listener failure exits the entire guest helper so OpenRC can restart it; transient accept failures retry. Guest health becomes available only after the relay listener starts.
 

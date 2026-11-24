@@ -35,7 +35,7 @@ macus runtime upgrade --dry-run
 macus runtime upgrade
 ```
 
-The dry run prints the plan and changes nothing. The upgrade prints the same plan before it stops anything, then downloads the installed package's appliance, stops the guest gracefully, keeps the old root in a backup, boots the new root against the same ZFS data disk and checks that every Incus instance, volume, network and profile is still listed. Every workload restarts with the guest, and instances come back according to their own Incus autostart settings. When the Incus package changes, the data disk is cloned first, because the new Incus may migrate its database. Any failure restores the previous state.
+The dry run prints the plan and changes nothing. The upgrade prints the same plan before it stops anything, then downloads the installed package's appliance, stops the guest gracefully, keeps the old root in a backup, boots the new root against the same ZFS data disk and, when the old guest was running and serving Incus, checks that every earlier instance, volume, network and profile is still listed. When it was stopped or its start was refused, that comparison is skipped and the result says so: run `macus start` before upgrading to get it, or check the inventory the upgrade returns. Every workload restarts with the guest, and instances come back according to their own Incus autostart settings. When the Incus package changes, the data disk is cloned first, because the new Incus may migrate its database. Any failure restores the previous state.
 
 ```sh
 macus runtime backups
@@ -43,7 +43,7 @@ macus runtime upgrade --rollback
 macus runtime backups prune ID --confirm
 ```
 
-Rollback restores the latest (or a named) backup and leaves the runtime stopped. If restoring it needs the data disk copy, everything written since that copy is lost, and rollback asks for `--discard-data-since-upgrade`. Nothing removes a backup except `runtime backups prune --confirm`. Only ZFS states can be upgraded. See [the CLI reference](docs/cli.md#appliance-upgrade) and [package upgrade with Homebrew](Packaging/homebrew/README.md#upgrade-rollback-and-removal).
+Rollback restores the latest (or a named) backup and leaves the runtime stopped. A root is only restored with a data disk at its own Incus package and pool. If restoring it needs the data disk copy, everything written since that copy was taken is lost, and rollback asks for `--discard-data-since-upgrade`. Nothing removes a backup except `runtime backups prune --confirm`. Only ZFS states can be upgraded. See [the CLI reference](docs/cli.md#appliance-upgrade) and [package upgrade with Homebrew](Packaging/homebrew/README.md#upgrade-rollback-and-removal).
 
 ## Test a fresh installation
 
