@@ -42,6 +42,10 @@ handler rescues and counts every error, so it is never detached.
   domain `[:macus, :access]`, rotating at 10 MiB and keeping 5 archives
   (`gateway-access.log.0` newest to `.4` oldest). A filter on the default
   handler keeps access lines out of `server.out.log`.
+- **Identity:** every record carries `id`, `BOOT-SEQ`: 64 random bits
+  chosen when the log starts, in lowercase hex, and a per-run counter from
+  1 taken before the drop decision. It is unique across restarts, orders a
+  run's records, and a gap marks a record that was not written.
 - **Never blocking:** the handler's synchronous mode is off. When its queue
   reaches 500 lines, records are dropped, counted
   (`[:macus, :access_log, :dropped]`) and the next written line carries

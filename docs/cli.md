@@ -65,10 +65,11 @@ Exit status is 0 on success, 1 on operational failure and 2 on invalid arguments
 While it serves, the Macus server appends one JSON line per finished native Incus exchange to `STATE/logs/gateway-access.log`: relayed HTTP requests, locally served discovery and trust, WebSocket and raw (SFTP/NBD) upgrades, and refused requests. A line is written when the exchange has really ended, so a stream appears when it closes. Requests to `/runtime` and `/mcp` are not recorded here.
 
 ```json
-{"v":1,"time":"2026-11-23T10:15:02.412Z","protocol":"http","method":"GET","path":"/1.0/instances/web","project":"default","target":null,"all_projects":false,"operation":null,"peer":"192.168.1.20:51422","certificate":"3f9a…","admitted_as":"caller","status":200,"outcome":"ok","reason":null,"duration_ms":12,"request_bytes":0,"response_bytes":1834}
+{"v":1,"id":"9c1f6a02b47de853-4127","time":"2026-11-23T10:15:02.412Z","protocol":"http","method":"GET","path":"/1.0/instances/web","project":"default","target":null,"all_projects":false,"operation":null,"peer":"192.168.1.20:51422","certificate":"3f9a…","admitted_as":"caller","status":200,"outcome":"ok","reason":null,"duration_ms":12,"request_bytes":0,"response_bytes":1834}
 ```
 
 - `v` is the schema version. Adding a key keeps it; renaming or removing one increments it. Keys appear in the order above.
+- `id` is `BOOT-SEQ`. `BOOT` is 64 random bits chosen when the server starts, as 16 lowercase hexadecimal digits, so ids from different server runs do not collide. `SEQ` is a decimal counter from 1 for that run. Within one run it orders the records, and a gap marks a record that was not written. Concurrent exchanges can reach the file slightly out of `SEQ` order.
 - `time` is when the exchange ended, UTC with milliseconds. `peer` is `address:port`, IPv6 in brackets.
 - `certificate` is the SHA-256 of the client certificate the caller presented, or `null`. With `admitted_as: "caller"` it is the trusted certificate that authorized the request; for a refusal it is only what was presented.
 - `admitted_as` is `caller`, `anonymous`, `operation_peer`, `image_peer`, or `null` when the request was not admitted. `outcome` is `ok` when the exchange completed as relayed or served, whatever the native status, otherwise `not_sent`, `uncertain` or `sent`, with a `reason` such as `unauthorized`, `capacity`, `revoked`, `idle`, `lifetime` or `caller_closed`. `project` is `null` when the caller selected none.

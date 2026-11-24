@@ -12,7 +12,8 @@ defmodule Macus.Proxy.AccessLogTest do
   @event [:opsmaru_incus, :gateway, :exchange, :stop]
   @fingerprint String.duplicate("3f9a", 16)
   @ended ~U[2026-11-23 10:15:02.412345Z]
-  @keys ~w(v time protocol method path project target all_projects operation peer certificate
+  @id "9c1f6a02b47de853-1"
+  @keys ~w(v id time protocol method path project target all_projects operation peer certificate
            admitted_as status outcome reason duration_ms request_bytes response_bytes)
 
   setup do
@@ -94,12 +95,13 @@ defmodule Macus.Proxy.AccessLogTest do
     def log(_event, _config), do: :ok
   end
 
-  describe "line/4" do
+  describe "line/5" do
     test "has the documented keys in order and the documented values" do
-      line = AccessLog.line(measurements(), metadata([]), @ended)
+      line = AccessLog.line(@id, measurements(), metadata([]), @ended)
 
       assert line ==
-               ~s({"v":1,"time":"2026-11-23T10:15:02.412Z","protocol":"http","method":"GET",) <>
+               ~s({"v":1,"id":"9c1f6a02b47de853-1","time":"2026-11-23T10:15:02.412Z",) <>
+                 ~s("protocol":"http","method":"GET",) <>
                  ~s("path":"/1.0/instances","project":null,"target":null,"all_projects":false,) <>
                  ~s("operation":null,"peer":"192.168.1.20:51422","certificate":"#{@fingerprint}",) <>
                  ~s("admitted_as":"caller","status":200,"outcome":"ok","reason":null,) <>
@@ -108,15 +110,17 @@ defmodule Macus.Proxy.AccessLogTest do
 
     test "brackets IPv6 peers, from tuples and strings" do
       ipv6 = metadata(peer_address: {0, 0, 0, 0, 0, 0, 0, 1}, peer_port: 8443)
-      assert Jason.decode!(AccessLog.line(measurements(), ipv6, @ended))["peer"] == "[::1]:8443"
+
+      assert Jason.decode!(AccessLog.line(@id, measurements(), ipv6, @ended))["peer"] ==
+               "[::1]:8443"
 
       string = metadata(peer_address: "fe80::1", peer_port: 1)
 
-      assert Jason.decode!(AccessLog.line(measurements(), string, @ended))["peer"] ==
+      assert Jason.decode!(AccessLog.line(@id, measurements(), string, @ended))["peer"] ==
                "[fe80::1]:1"
 
       none = metadata(peer_address: nil, peer_port: nil)
-      assert Jason.decode!(AccessLog.line(measurements(), none, @ended))["peer"] == nil
+      assert Jason.decode!(AccessLog.line(@id, measurements(), none, @ended))["peer"] == nil
     end
 
     test "ignores unknown metadata and never writes non-scalar values" do
@@ -130,7 +134,7 @@ defmodule Macus.Proxy.AccessLogTest do
           path: <<0xFF, 0xFE>>
         )
 
-      line = AccessLog.line(measurements(), meta, @ended)
+      line = AccessLog.line(@id, measurements(), meta, @ended)
       assert keys(line) == @keys
       refute line =~ "secret"
       refute line =~ "authorization"
@@ -141,7 +145,7 @@ defmodule Macus.Proxy.AccessLogTest do
     end
 
     test "converts UTC offsets and missing measurements" do
-      line = AccessLog.line(%{}, metadata([]), ~U[2026-11-23 10:15:02Z])
+      line = AccessLog.line(@id, %{}, metadata([]), ~U[2026-11-23 10:15:02Z])
       decoded = Jason.decode!(line)
       assert decoded["time"] == "2026-11-23T10:15:02.000Z"
       assert decoded["duration_ms"] == nil
@@ -149,8 +153,8 @@ defmodule Macus.Proxy.AccessLogTest do
     end
 
     test "appends dropped_before only after drops" do
-      refute AccessLog.line(measurements(), metadata([]), @ended, 0) =~ "dropped_before"
-      line = AccessLog.line(measurements(), metadata([]), @ended, 7)
+      refute AccessLog.line(@id, measurements(), metadata([]), @ended, 0) =~ "dropped_before"
+      line = AccessLog.line(@id, measurements(), metadata([]), @ended, 7)
       assert keys(line) == @keys ++ ["dropped_before"]
       assert Jason.decode!(line)["dropped_before"] == 7
     end
@@ -217,6 +221,12 @@ defmodule Macus.Proxy.AccessLogTest do
       written = lines(ctx.log_file)
       assert length(written) == length(cases)
       assert Enum.all?(written, &(keys(&1) == @keys))
+
+      # One boot value for the run, and SEQ counting the records from 1.
+      ids = Enum.map(written, &(Jason.decode!(&1)["id"] |> String.split("-")))
+      assert [[boot, "1"] | _] = ids
+      assert boot =~ ~r/\A[0-9a-f]{16}\z/
+      assert ids == for(n <- 1..length(cases), do: [boot, Integer.to_string(n)])
 
       [read, mutation, refused, anonymous, trust, operation, image, ws, raw] =
         Enum.map(written, &Jason.decode!/1)
@@ -384,8 +394,32 @@ defmodule Macus.Proxy.AccessLogTest do
       assert %{"path" => "/1.0/resumed", "dropped_before" => 7} = List.last(written)
       assert %{dropped: 7, pending: 0} = AccessLog.stats()
 
+      # Dropped records took a SEQ, so the gap equals the marker.
+      seqs = Enum.map(written, &(&1["id"] |> String.split("-") |> List.last()))
+      assert seqs == ~w(1 2 3 4 5 13)
+
       emit(metadata(path: "/1.0/after"))
       refute Map.has_key?(List.last(records(ctx.log_file)), "dropped_before")
+    end
+  end
+
+  describe "record identity" do
+    test "ids are unique across a restart and SEQ restarts at 1", ctx do
+      start(ctx)
+      for _ <- 1..3, do: emit(metadata([]))
+      first = Enum.map(records(ctx.log_file), & &1["id"])
+      :ok = stop_supervised(AccessLog)
+
+      start(ctx)
+      for _ <- 1..3, do: emit(metadata([]))
+      all = Enum.map(records(ctx.log_file), & &1["id"])
+      second = all -- first
+
+      assert length(all) == 6
+      assert Enum.uniq(all) == all
+      [[boot_a, "1"], [boot_a, "2"], [boot_a, "3"]] = Enum.map(first, &String.split(&1, "-"))
+      [[boot_b, "1"], [boot_b, "2"], [boot_b, "3"]] = Enum.map(second, &String.split(&1, "-"))
+      assert boot_a != boot_b
     end
   end
 

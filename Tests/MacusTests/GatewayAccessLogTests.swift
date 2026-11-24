@@ -68,7 +68,8 @@ private func record(
   func json(_ value: String?) -> String { value.map { "\"\($0)\"" } ?? "null" }
   let marker = dropped.map { ",\"dropped_before\":\($0)" } ?? ""
   return
-    "{\"v\":1,\"time\":\"2026-11-23T10:15:\(String(format: "%02d", n % 60)).412Z\",\"protocol\":\"http\","
+    "{\"v\":1,\"id\":\"9c1f6a02b47de853-\(n)\","
+    + "\"time\":\"2026-11-23T10:15:\(String(format: "%02d", n % 60)).412Z\",\"protocol\":\"http\","
     + "\"method\":\"GET\",\"path\":\"/1.0/instances/n\(n)\",\"project\":null,\"target\":null,"
     + "\"all_projects\":false,\"operation\":null,\"peer\":\"192.168.1.20:51422\","
     + "\"certificate\":\"\(String(repeating: "3f9a", count: 16))\",\"admitted_as\":\(json(admittedAs)),"

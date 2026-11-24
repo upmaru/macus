@@ -8,7 +8,7 @@ defmodule Macus.Proxy.AccessLog do
   The shared library emits `[:opsmaru_incus, :gateway, :exchange, :stop]`
   once per exchange, from a per-exchange observer process, after the
   exchange has really ended. `handle_event/4` turns that event into one
-  JSON line (`line/4`) and logs it under the logger domain
+  JSON line (`line/5`) and logs it under the logger domain
   `[:macus, :access]`. It rescues every error and counts it, because
   `:telemetry` detaches a handler that raises.
 
@@ -25,6 +25,16 @@ defmodule Macus.Proxy.AccessLog do
   handler's queue: at #{500} pending lines it drops the record instead,
   counts it and emits `[:macus, :access_log, :dropped]`. The next written
   line carries `"dropped_before": N`.
+
+  ## Record identity
+
+  Every record carries `"id": "BOOT-SEQ"`. `BOOT` is 64 random bits chosen
+  when the log starts, as 16 lowercase hexadecimal digits, so ids from
+  different server runs do not collide. `SEQ` is a decimal counter from 1,
+  taken when the stop event arrives and before the drop decision, so it
+  orders the records of one run and a gap marks a record that was not
+  written. Concurrent exchanges can reach the file slightly out of `SEQ`
+  order.
 
   ## Location
 
@@ -61,6 +71,7 @@ defmodule Macus.Proxy.AccessLog do
   @errors 1
   @dropped 2
   @pending 3
+  @seq 4
 
   @doc "The telemetry event the log records."
   def event, do: @event
@@ -175,7 +186,7 @@ defmodule Macus.Proxy.AccessLog do
   end
 
   defp install(path, opts) do
-    ref = :atomics.new(3, signed: false)
+    ref = :atomics.new(4, signed: false)
     :persistent_term.put(@stats, ref)
     uninstall()
 
@@ -198,6 +209,7 @@ defmodule Macus.Proxy.AccessLog do
 
     config = %{
       stats: ref,
+      boot: Base.encode16(:crypto.strong_rand_bytes(8), case: :lower),
       handler: @handler,
       drop_qlen: Keyword.get(opts, :drop_qlen, @drop_qlen)
     }
@@ -253,7 +265,10 @@ defmodule Macus.Proxy.AccessLog do
 
   def handle_event(_event, _measurements, _metadata, _config), do: :ok
 
-  defp record(measurements, metadata, %{stats: ref} = config) do
+  defp record(measurements, metadata, %{stats: ref, boot: boot} = config) do
+    # Taken before the drop decision: a dropped record leaves a gap.
+    id = boot <> "-" <> Integer.to_string(:atomics.add_get(ref, @seq, 1))
+
     if overloaded?(config) do
       :atomics.add(ref, @dropped, 1)
       :atomics.add(ref, @pending, 1)
@@ -262,7 +277,7 @@ defmodule Macus.Proxy.AccessLog do
       dropped = :atomics.exchange(ref, @pending, 0)
 
       try do
-        log(line(measurements, metadata, DateTime.utc_now(), dropped))
+        log(line(id, measurements, metadata, DateTime.utc_now(), dropped))
       rescue
         error ->
           # The marker belongs to the next line that is written.
@@ -312,17 +327,18 @@ defmodule Macus.Proxy.AccessLog do
   @doc """
   The JSON line for a stop event, without the trailing newline.
 
-  Keys, in order: `v`, `time`, `protocol`, `method`, `path`, `project`,
+  Keys, in order: `v`, `id`, `time`, `protocol`, `method`, `path`, `project`,
   `target`, `all_projects`, `operation`, `peer`, `certificate`,
   `admitted_as`, `status`, `outcome`, `reason`, `duration_ms`,
   `request_bytes`, `response_bytes`, and `dropped_before` only when
   records were dropped before this one. Unknown metadata is ignored.
   """
-  @spec line(map(), map(), DateTime.t(), non_neg_integer()) :: String.t()
-  def line(measurements, metadata, ended_at, dropped_before \\ 0)
-      when is_map(measurements) and is_map(metadata) do
+  @spec line(String.t(), map(), map(), DateTime.t(), non_neg_integer()) :: String.t()
+  def line(id, measurements, metadata, ended_at, dropped_before \\ 0)
+      when is_binary(id) and is_map(measurements) and is_map(metadata) do
     fields = [
       v: 1,
+      id: id,
       time: time(ended_at),
       protocol: scalar(metadata[:protocol]),
       method: scalar(metadata[:method]),

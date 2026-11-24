@@ -51,10 +51,11 @@ Because the stop event comes from the library's observer process, nothing but th
 One JSON object per line, UTF-8, keys in this order:
 
 ```json
-{"v":1,"time":"2026-11-23T10:15:02.412Z","protocol":"http","method":"GET","path":"/1.0/instances/web","project":"default","target":null,"all_projects":false,"operation":null,"peer":"192.168.1.20:51422","certificate":"3f9a…","admitted_as":"caller","status":200,"outcome":"ok","reason":null,"duration_ms":12,"request_bytes":0,"response_bytes":1834}
+{"v":1,"id":"9c1f6a02b47de853-4127","time":"2026-11-23T10:15:02.412Z","protocol":"http","method":"GET","path":"/1.0/instances/web","project":"default","target":null,"all_projects":false,"operation":null,"peer":"192.168.1.20:51422","certificate":"3f9a…","admitted_as":"caller","status":200,"outcome":"ok","reason":null,"duration_ms":12,"request_bytes":0,"response_bytes":1834}
 ```
 
 - `v` is the schema version. Adding a key keeps it; renaming or removing one increments it.
+- `id` is `BOOT-SEQ`, the record's identity, added for `add-native-app`, which merges records pushed live with the same records read from the files. `BOOT` is 64 random bits chosen when the server starts, as 16 lowercase hexadecimal digits; `SEQ` is a decimal counter from 1 for that run. It is taken when the stop event arrives, before the drop decision, so within a run it orders the records and a gap marks one that was not written. Adding the key keeps `v` at 1.
 - `time` is when the exchange ended, UTC with milliseconds.
 - `peer` is `address:port`, with IPv6 in brackets.
 - `certificate` is the library's `peer_fingerprint`: the SHA-256 of the certificate the caller presented, or `null`. With `admitted_as: "caller"` it is the trusted certificate that authorized the request, because `Macus.Proxy.Host` authorizes only by certificate. For a refused request it is merely what was presented.
