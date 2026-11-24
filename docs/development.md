@@ -559,7 +559,7 @@ After daemon crash, durable configuration is loaded as stopped; readiness is nev
 
 Guest initialization records persistent pending/started markers on a newly formatted data disk. A failure before preseed begins can retry on reboot. If preseed starts and fails or is interrupted, provisioning refuses to replay it automatically; preserve the disk and inspect diagnostics before explicit recovery/reset. Reused disks without pending initialization keep their existing Incus configuration, including custom pool names.
 
-Do not replace root disks by hand to upgrade Incus; the upgrade engine above backs up the disks, checks compatibility and rolls back on failure. Local FileVault and account permissions are the v1 host security basis; no Secure Boot/TPM requirement is imposed.
+Do not replace root disks by hand to upgrade Incus or the guest; use `macus runtime upgrade`, which backs up the disks, checks compatibility and rolls back on failure. Replacing disks by hand stays unsupported. The user-facing sequence after a package change is in [Upgrade, rollback and removal](../Packaging/homebrew/README.md#upgrade-rollback-and-removal). Local FileVault and account permissions are the v1 host security basis; no Secure Boot/TPM requirement is imposed.
 
 Human CLI presentation uses the exact Noora 0.57.5 SwiftPM release, locked in
 `Package.resolved`. Its library links Rainbow 4.2.2, Logging 1.16.0 and Path

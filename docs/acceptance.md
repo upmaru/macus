@@ -191,3 +191,17 @@ The `recover-incus-boot-crash` change passed [opt-in hardware acceptance](testin
 - **Crash recovered by the host restart (3 launches):** ready in 94 s, twice.
 
 Two fixes came out of the run and were verified on the same appliance: the evidence now copies the start of the last Go crash dump, which a plain tail cut off, and a guard that gives up zaps the dead incusd so OpenRC's shutdown no longer fails at incusd. Even then, the export failed. A diagnostic shutdown hook showed incusd's tmpfs mounts (`devices`, `shmounts`, `guestapi`) and an orphaned `dnsmasq` holding its lease file under `/var/lib/incus`. Storage stop now releases those when incusd's daemon is gone and retries. On the next 3-crash run, the recovery shutdown terminated `dnsmasq`, unmounted the three tmpfs mounts and exported the pool (`TAMA_ZFS_EXPORT_OK`, no OpenRC stop errors), and start was ready in 93 s. A plain graceful stop still exported on the first attempt with nothing released. **Deviation:** later guard revisions were copied into the provisioned guest by sha256 rather than provisioned on a second fresh state. The hook, its counter and the helper container were removed, `conf.d` was restored, a clean boot was ready in 37 s, and the isolated agent was unloaded.
+
+## Pre-relay state on a later package — 2026-11-23 UTC
+
+This is an observation, not acceptance. It motivated the [add-runtime-upgrade change](../openspec/changes/add-runtime-upgrade/proposal.md).
+
+The default state (`~/.tama/incus-mac`) was created on 2026-11-04 by an earlier package, with ZFS storage. On 2026-11-23 it was started with `macus start` on the current package. Start activated both launchd jobs and booted the VM. After about 33 s at the Provisioning Linux stage it failed with `unavailable`: the guest bridge predates the flow-controlled Incus relay. The message offered only recreating the appliance. Start left both services registered and deleted no runtime data. The workloads stayed on disks that only the earlier package could serve.
+
+What the state shows:
+
+- The guest bridge answers health but not the flow relay, so the current host cannot reach that guest's Incus API. Its inventory cannot be read before an upgrade.
+- The guest reports no storage identity, guest contract, payload revision or Incus package in health. At the time the state had no `guest-record.json` or `storage-identity.json`, so its Incus package is unknown, and any upgrade of it is migrating.
+- `serial.log` is append-only, and the seed's `bootcmd` copies `/var/log/tama-storage.log` to the console on every boot. Each boot of the state therefore wrote a `TAMA_STORAGE_ZFS_READY <guid>` line, which is the only host-readable source of its pool GUID.
+
+The change answers this with `macus runtime upgrade`: start now records such a guest as contract 0 and names the upgrade command, and the upgrade reads the pool GUID from `serial.log`, skips the inventory comparison (it says why) and clones the data disk before booting a new root. The original state is retained untouched. Hardware acceptance (task 5.7 of that change) must run on an isolated copy of a state with this shape, never on the original, and has not run yet.

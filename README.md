@@ -4,7 +4,7 @@ A headless macOS compatibility layer that boots a Linux Incus host using Apple's
 
 Requires Apple Silicon, macOS 15+ and Swift 6.4. SwiftPM builds one library (`Macus`) and one `macus` command for foreground serving and local runtime/client setup. Noora 0.57.5 provides CLI presentation; SwiftPM downloads its locked dependencies during source builds. No separate client repository or host VM runtime is required.
 
-**Development status:** Installation is currently from source. Local prebuilt Homebrew candidates are documented in [Homebrew packaging](Packaging/homebrew/README.md). There is no published Macus Homebrew formula. `macus start` downloads and verifies the pinned Alpine appliance; it does not upgrade an existing root image or install Homebrew. Hardware results and distribution limitations are recorded in [the acceptance record](docs/acceptance.md).
+**Development status:** Installation is currently from source. Local prebuilt Homebrew candidates are documented in [Homebrew packaging](Packaging/homebrew/README.md). There is no published Macus Homebrew formula. `macus start` downloads and verifies the pinned Alpine appliance; it does not upgrade an existing root image or install Homebrew. `macus runtime upgrade` replaces the root of an existing ZFS appliance explicitly; it has not yet passed hardware acceptance. Hardware results and distribution limitations are recorded in [the acceptance record](docs/acceptance.md).
 
 **Transition:** `macus start` runs the Swift runtime service and the Elixir Macus server together. `Packaging/install-local.sh` installs both from source: the Swift executable at `<prefix>/bin/macus` and the paired server release at `<prefix>/libexec/macus`. A source build needs Swift, the mise-pinned Elixir/Erlang and a signed-in GitHub CLI: the release build downloads the opsmaru_incus tama-dex cassette for the locked library version from its GitHub Release and verifies its `.sha256` sidecar and attestation before building ([details](docs/development.md#macus-command)). Homebrew candidates package the same release as a checksummed resource ([candidate documentation](Packaging/homebrew/README.md), including [artifact provenance](Packaging/homebrew/README.md#artifact-provenance)); publication of the shared tap formula remains open in the [add-homebrew-tap change](openspec/changes/add-homebrew-tap/tasks.md). An installation without a paired release makes `macus start` stop with `invalid_configuration` and reinstall guidance before it downloads, activates or boots anything.
 
@@ -24,7 +24,26 @@ Homebrew must already be installed if `incus` is not on `PATH`. Start installs t
 
 `--json --progress none` writes one result object to stdout, including both services and the server endpoint. Closing the terminal does not stop a launchd-owned service. If start reuses a foreground `macus serve`, it says so: closing that terminal still stops the daemon.
 
-`serve`, `runtime`, `doctor` and `client setup` remain explicit lower-level commands. They do not download an appliance or activate a service.
+`serve`, `runtime`, `doctor` and `client setup` remain explicit lower-level commands. They do not download an appliance or activate a service, except `runtime upgrade`.
+
+## Upgrade the appliance
+
+A new Macus package can ship a newer appliance (Alpine, kernel, ZFS, Incus or guest scripts). `start` never replaces the root disk of an existing state. When the appliance is older than the installed one, `start` reports that an upgrade is available; when this Macus can no longer serve it, `start` refuses it before booting, or stops it after the first probe, and names the upgrade command. Either way the disks are kept.
+
+```sh
+macus runtime upgrade --dry-run
+macus runtime upgrade
+```
+
+The dry run prints the plan and changes nothing. The upgrade prints the same plan before it stops anything, then downloads the installed package's appliance, stops the guest gracefully, keeps the old root in a backup, boots the new root against the same ZFS data disk and checks that every Incus instance, volume, network and profile is still listed. Every workload restarts with the guest, and instances come back according to their own Incus autostart settings. When the Incus package changes, the data disk is cloned first, because the new Incus may migrate its database. Any failure restores the previous state.
+
+```sh
+macus runtime backups
+macus runtime upgrade --rollback
+macus runtime backups prune ID --confirm
+```
+
+Rollback restores the latest (or a named) backup and leaves the runtime stopped. If restoring it needs the data disk copy, everything written since that copy is lost, and rollback asks for `--discard-data-since-upgrade`. Nothing removes a backup except `runtime backups prune --confirm`. Only ZFS states can be upgraded. See [the CLI reference](docs/cli.md#appliance-upgrade) and [package upgrade with Homebrew](Packaging/homebrew/README.md#upgrade-rollback-and-removal).
 
 ## Test a fresh installation
 
@@ -230,9 +249,10 @@ mise run spec:validate
 - [Per-user launchd packaging](Packaging/README.md) and [artifact provenance](Packaging/homebrew/README.md#artifact-provenance)
 - [OpenSpec design and decisions](openspec/changes/archive/2026-10-04-native-incus-runtime/design.md)
 - [Implementation and acceptance checklist](openspec/changes/archive/2026-10-04-native-incus-runtime/tasks.md)
+- [Runtime upgrade design](openspec/changes/add-runtime-upgrade/design.md)
 - [Git Flow development workflow](docs/development.md#git-flow)
 
-`macus start` acquires the pinned appliance. Automatic root-image upgrades, production signed/notarized releases, service forwarding and custom DNS remain future work.
+`macus start` acquires the pinned appliance, and `macus runtime upgrade` replaces an existing root on request. Automatic root-image upgrades, production signed/notarized releases, service forwarding and custom DNS remain future work.
 
 ## Macus naming and compatibility
 

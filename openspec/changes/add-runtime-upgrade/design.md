@@ -16,7 +16,7 @@
 
 **Host identity.** Neither the appliance image nor the seed sets `/etc/hostid`. ZFS refuses to import, without force, a pool left imported by a system with a different host identity. Today every boot of a state uses the same root, so the forced stop in the `incus_crashed` recovery path is followed by a successful import. Two different roots against one pool have not been exercised.
 
-**Observed legacy shape.** On 2026-11-23 a state created on 2026-11-04 by an earlier package booted on the current one and stopped with `unavailable`, because its guest bridge predates the flow-controlled relay. That state is ZFS. `serial.log` is append-only and never truncated by the host, and the seed's `bootcmd` copies `/var/log/tama-storage.log` to the console on every boot, so each boot of that state wrote a `TAMA_STORAGE_ZFS_READY <guid>` line. Its bridge answers health but not the flow relay, so the current host cannot query its Incus API. This observation is not yet recorded in `docs/acceptance.md`.
+**Observed legacy shape.** On 2026-11-23 a state created on 2026-11-04 by an earlier package booted on the current one and stopped with `unavailable`, because its guest bridge predates the flow-controlled relay. That state is ZFS. `serial.log` is append-only and never truncated by the host, and the seed's `bootcmd` copies `/var/log/tama-storage.log` to the console on every boot, so each boot of that state wrote a `TAMA_STORAGE_ZFS_READY <guid>` line. Its bridge answers health but not the flow relay, so the current host cannot query its Incus API. The observation is recorded in `docs/acceptance.md`.
 
 ## Goals / Non-Goals
 
