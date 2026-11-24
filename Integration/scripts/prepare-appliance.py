@@ -53,6 +53,7 @@ entries = [('bridge.py', '/usr/local/libexec/tama-bridge.py', '0755'),
            ('storage.sh', '/usr/local/libexec/tama-storage.sh', '0755'),
            ('incus-guard.sh', '/usr/local/libexec/tama-incus-guard.sh', '0755'),
            ('bootstrap.sh', '/usr/local/libexec/tama-bootstrap.sh', '0755'),
+           ('verify-appliance-image.sh', '/usr/local/libexec/tama-verify-appliance-image.sh', '0755'),
            ('tama-storage.initd', '/etc/init.d/tama-storage', '0755'),
            ('tama-bridge.initd', '/etc/init.d/tama-bridge', '0755'),
            ('tama-bootstrap.initd', '/etc/init.d/tama-bootstrap', '0755')]
