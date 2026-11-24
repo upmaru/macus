@@ -18,7 +18,7 @@ Macus SHALL provide an optional native macOS application for macOS 15 and later 
 
 ### Requirement: Gateway-only connection
 
-The application SHALL reach the runtime and Incus only through the selected state's published HTTPS gateway, with the published certificate pinned and the same state ownership checks as the CLI. It MUST NOT open the private runtime or Incus Unix sockets, run the `macus` or `incus` executables or any host VM command, or create or repair state. It SHALL serve only state directories of the current user on the local Mac.
+The application SHALL reach the runtime and Incus only through the selected state's published HTTPS gateway, including its live channel, with the published certificate pinned and the same state ownership checks as the CLI. It MUST NOT open the private runtime or Incus Unix sockets, run the `macus` or `incus` executables or any host VM command, or create or repair state. It SHALL serve only state directories of the current user on the local Mac.
 
 #### Scenario: Server not set up
 
@@ -32,7 +32,7 @@ The application SHALL reach the runtime and Incus only through the selected stat
 
 ### Requirement: Application gateway identity
 
-The application SHALL use its own client certificate and owner-private key for native Incus requests, distinct from any other client's. It SHALL enroll that certificate in gateway trust only after an explicit owner action in the application, using a single-use enrollment token bound to its certificate, and SHALL revoke a token it could not redeem. Before enrollment, and after its certificate is removed from trust, it SHALL make no native Incus request other than the enrollment itself and MUST NOT re-enroll without a new owner action.
+The application SHALL use its own client certificate and owner-private key for native Incus requests, distinct from any other client's. It SHALL enroll that certificate in gateway trust only after an explicit owner action in the application, using a single-use enrollment token bound to its certificate, and SHALL revoke a token it could not redeem. Before enrollment, and after its certificate is removed from trust, it SHALL make no native Incus request other than the enrollment itself, SHALL join no live topic that carries Incus data, and MUST NOT re-enroll without a new owner action.
 
 #### Scenario: First connection
 
@@ -49,9 +49,28 @@ The application SHALL use its own client certificate and owner-private key for n
 - **WHEN** the owner removes the application's certificate from gateway trust while it is open
 - **THEN** instance views stop, the application reports that it is no longer trusted and it does not enroll again by itself
 
+### Requirement: Live updates without polling
+
+The application SHALL receive runtime state, the instance list and instance process and resource data as pushes from the gateway's live channel. It MUST NOT request them on a repeating timer. It SHALL subscribe to a topic only while a view that shows it is visible. When the server is not running it SHALL connect when the server publishes its endpoint, and SHALL retry a published server that refuses with bounded backoff. Data shown while disconnected SHALL be marked as not current.
+
+#### Scenario: Change pushed
+
+- **WHEN** the runtime changes state while the overview is visible
+- **THEN** the overview shows the new state without the application having requested it
+
+#### Scenario: View hidden
+
+- **WHEN** the owner leaves an instance's process view
+- **THEN** the application leaves that instance's topic
+
+#### Scenario: Server started later
+
+- **WHEN** the application is open while the server is stopped and the server is then started
+- **THEN** the application connects when the endpoint is published and shows current state
+
 ### Requirement: Runtime overview
 
-The application SHALL show the runtime's state, uptime, Incus version, resources, public endpoint and failure reason as reported by the gateway's runtime status. It SHALL distinguish an unreachable server from a reachable server whose runtime is absent, stopped, booting or failed.
+The application SHALL show the runtime's state, uptime, Incus version, resources, public endpoint and failure reason as pushed on the live channel's runtime topic. It SHALL distinguish an unreachable server from a reachable server whose runtime is absent, stopped, booting or failed.
 
 #### Scenario: Runtime failed
 
@@ -65,21 +84,21 @@ The application SHALL show the runtime's state, uptime, Incus version, resources
 
 ### Requirement: Instance list
 
-When connected, the application SHALL list containers and virtual machines across projects with their name, project, type, status, image, addresses and resource use, read from native Incus routes. It SHALL keep the list current from the native events stream and SHALL fall back to bounded polling when the stream is unavailable.
+When connected, the application SHALL list containers and virtual machines across projects with their name, project, type, status and image, and SHALL keep the list current from the live channel's instances topic. When that topic is unavailable the list SHALL be marked as not current, and the application MUST NOT substitute polling.
 
 #### Scenario: Instance started elsewhere
 
 - **WHEN** an instance is started with a standard Incus client while the list is visible
 - **THEN** the list shows it as running without a manual refresh
 
-#### Scenario: Events stream lost
+#### Scenario: Topic unavailable
 
-- **WHEN** the events stream ends
-- **THEN** the list continues to update by polling and the stream is retried with bounded backoff
+- **WHEN** the instances topic reports that it is unavailable
+- **THEN** the list is marked as not current with the reason, and updates resume when the topic recovers
 
 ### Requirement: Instance process and agent inspection
 
-For a running instance the application SHALL show its processes, read with a fixed non-interactive native exec whose output and duration are bounded. Processes matching the owner's list of agent programs SHALL be shown as agents with their command, working directory, age and resource use. Inspection SHALL run only while its view is visible, MUST NOT pass owner-entered text to the instance, and MUST NOT signal or modify a process. When processes cannot be read, the application SHALL say why.
+For a running instance the application SHALL show its processes, addresses and resource use from that instance's live topic. Processes matching the owner's list of agent programs SHALL be shown as agents with their command, working directory, age and resource use. The application SHALL be subscribed only while the view is visible, MUST NOT pass owner-entered text to the instance, and MUST NOT signal or modify a process. When processes cannot be read, the application SHALL show the reason the topic gives.
 
 #### Scenario: Agent running
 
@@ -91,10 +110,10 @@ For a running instance the application SHALL show its processes, read with a fix
 - **WHEN** the instance is a virtual machine whose Incus agent is not running
 - **THEN** the view reports that processes are unavailable and why
 
-#### Scenario: View closed
+#### Scenario: Agent exits
 
-- **WHEN** the owner leaves the processes view
-- **THEN** no further exec is started for that instance
+- **WHEN** a listed agent program exits while the view is visible
+- **THEN** it leaves the list on the next snapshot without a refresh
 
 ### Requirement: Instance terminal
 
