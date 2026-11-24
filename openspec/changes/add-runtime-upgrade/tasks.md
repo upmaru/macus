@@ -27,8 +27,8 @@
 
 ## 4. API, client and server
 
-- [ ] 4.1 Add `POST /runtime/upgrade/plan`, `POST /runtime/upgrade` and the backup routes to the runtime API and the server's runtime route list, with the existing authorization; verify route and conformance tests.
-- [ ] 4.2 Add `runtime upgrade` (activating the runtime service without booting), `--dry-run`, `--rollback`, `runtime backups` and `prune` to the client with human and JSON output; verify CLI tests, including upgrade after a refused start and a dry run that downloads nothing.
+- [x] 4.1 Add `POST /runtime/upgrade/plan`, `POST /runtime/upgrade` and the backup routes to the runtime API and the server's runtime route list, with the existing authorization; verify route and conformance tests.
+- [x] 4.2 Add `runtime upgrade` (activating the runtime service without booting), `--dry-run`, `--rollback`, `runtime backups` and `prune` to the client with human and JSON output; verify CLI tests, including upgrade after a refused start and a dry run that downloads nothing.
 
 ## 5. Documentation and verification
 

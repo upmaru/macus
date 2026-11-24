@@ -325,7 +325,7 @@ enum BackupRollback {
   static func intent(
     _ prepared: PreparedRollback, paths: RuntimePaths, macusPackage: String?, now: Date = Date()
   ) throws -> RollbackIntent {
-    let id = UpgradeID.make(now: now)
+    let id = UpgradeID.next(paths: paths, now: now)
     let source = "backups/\(prepared.entry.id)"
     let target = "backups/\(id)"
     var moves: [StateMove] = []

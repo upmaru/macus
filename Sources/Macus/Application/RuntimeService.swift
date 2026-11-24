@@ -249,6 +249,15 @@ public actor RuntimeService {
     defer { if generation == operationGeneration { mutationActive = false } }
     operation = "upgrade"
     defer { operation = nil }
+    // A refusal before the journal leaves nothing behind: the staged root is a whole disk
+    // image, and every client stages under a new ID. Once journaled, rollback owns it.
+    var journaled = false
+    let stagingPaths = store.paths
+    defer {
+      if !journaled, UpgradeID.isValid(stagingID) {
+        try? FileManager.default.removeItem(at: stagingPaths.staging(stagingID))
+      }
+    }
     let previous = try config()
     let plan = try await upgradePlan()
     guard !plan.current, let upgradeClass = plan.upgradeClass, let storage = plan.storage else {
@@ -300,6 +309,7 @@ public actor RuntimeService {
       root: try Self.identity(paths.rootDisk), efi: try FileIdentity.of(paths.efiStore),
       seed: try FileIdentity.of(paths.seed), data: try Self.identity(paths.dataDisk),
       stagedRoot: try Self.identity(staged.root), stagedSeed: try Self.identity(staged.seed))
+    journaled = true
     try UpgradeJournal.save(intent, paths: paths)
     do {
       try upgradeHook?("journaled")

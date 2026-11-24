@@ -138,6 +138,15 @@ public enum MacusCLI {
       runtime restart
       serve [--state-dir ABSOLUTE_PATH]    Own the daemon in this terminal.
 
+    Appliance upgrade:
+      runtime upgrade [--dry-run]
+        Replace the appliance root with the one this macus installs, keeping the data disk.
+      runtime upgrade --rollback [ID] [--discard-data-since-upgrade]
+        Restore the latest or named backup and leave the runtime stopped.
+      runtime backups                 List backups, their size and whether each can be restored.
+      runtime backups prune ID [--confirm]
+        Remove one backup; without --confirm, show what it would break and remove nothing.
+
     Client:
       client setup [--remote NAME] [--set-default] [--incus ABSOLUTE_PATH]
 
@@ -184,7 +193,18 @@ public enum MacusCLI {
     activates the per-user runtime and server jobs when needed, creates an absent
     runtime, waits for live Incus readiness, and registers the standard incus client.
     It does not install Homebrew or require sudo. serve, runtime, doctor and client setup remain
-    explicit lower-level commands and do not download an appliance or activate a service.
+    explicit lower-level commands and do not download an appliance or activate a service,
+    except runtime upgrade.
+
+    runtime upgrade activates the runtime and server jobs as start does, without booting,
+    so it also works after start refused an incompatible appliance. It prints the upgrade
+    class, what is copied and that every workload restarts before it stops anything, then
+    downloads the installed appliance into STATE/upgrade-ID and lets the runtime service
+    swap it in. --dry-run prints the plan and downloads, stages and stops nothing. Every
+    upgrade and rollback keeps the replaced state as a backup in STATE/backups; nothing
+    removes backups but runtime backups prune --confirm. A rollback that restores a data
+    disk copy discards what was written since that copy and needs
+    --discard-data-since-upgrade. Neither runs a package manager or changes this package.
 
     The outer runtime is the Apple VZ appliance. runtime commands and doctor use
     the Macus server's pinned HTTPS endpoint and never install software or boot implicitly.
@@ -201,8 +221,9 @@ public enum MacusCLI {
     then ~/.tama/incus-mac. The existing default preserves appliance data.
     Selecting a state directory does not create it. Invalid flags fail before
     networking or installation. Timeout is \(readOnlyTimeout) seconds for read-only
-    requests and \(lifecycleTimeout) seconds for runtime start, stop, restart and
-    client setup (1...3600). macus start defaults to \(startTimeout) seconds, still within
+    requests and \(lifecycleTimeout) seconds for runtime start, stop, restart, upgrade
+    --dry-run, upgrade --rollback, backups prune and client setup (1...3600). runtime
+    upgrade defaults to \(startTimeout) seconds. macus start defaults to \(startTimeout) seconds, still within
     1...3600, and uses one deadline across download, boot, the expected kernel restart and
     client setup. A restart or Homebrew install may need a larger value.
     Bearer scopes: incus.read, incus.write, incus.exec, incus.delete, runtime.read,
@@ -235,6 +256,9 @@ private enum Command {
   case runtimeStart
   case runtimeStop(force: Bool)
   case runtimeRestart
+  case runtimeUpgrade(RuntimeUpgradeAction)
+  case runtimeBackups
+  case runtimeBackupsPrune(id: String, confirm: Bool)
   case doctor
   case clientSetup(remote: String, setDefault: Bool, incus: String?)
   case start(remote: String, setDefault: Bool, incus: String?, progress: ProgressSelection)
@@ -283,8 +307,11 @@ private func isAbsolute(_ path: String) -> Bool {
 
 private func defaultTimeout(_ command: Command) -> Int {
   switch command {
-  case .runtimeStart, .runtimeStop, .runtimeRestart, .clientSetup: MacusCLI.lifecycleTimeout
-  case .start: MacusCLI.startTimeout
+  case .runtimeStart, .runtimeStop, .runtimeRestart, .clientSetup, .runtimeBackupsPrune:
+    MacusCLI.lifecycleTimeout
+  case .runtimeUpgrade(.upgrade(dryRun: false)), .start: MacusCLI.startTimeout
+  case .runtimeUpgrade: MacusCLI.lifecycleTimeout
+  case .runtimeBackups: MacusCLI.readOnlyTimeout
   case .capabilities, .runtimeStatus, .doctor, .serverConfigShow, .serverConfigSet,
     .serverConfigReset, .serverTokenIssue, .serverTokenList, .serverTokenRevoke,
     .serverTrustTokenIssue, .serverTrustTokenList, .serverTrustTokenRevoke:
@@ -298,6 +325,11 @@ private func parse(_ arguments: [String]) throws -> Invocation {
   var timeout: Int?
   var stateDirectory: String?
   var force = false
+  var dryRun = false
+  var rollback = false
+  var rollbackID: String?
+  var discardData = false
+  var confirm = false
   var setDefault = false
   var remote: String?
   var incusOverride: String?
@@ -341,6 +373,25 @@ private func parse(_ arguments: [String]) throws -> Invocation {
     case "--force":
       guard !force else { throw UsageError(message: "Duplicate --force") }
       force = true
+    case "--dry-run":
+      guard !dryRun else { throw UsageError(message: "Duplicate --dry-run") }
+      dryRun = true
+    case "--rollback":
+      guard !rollback else { throw UsageError(message: "Duplicate --rollback") }
+      rollback = true
+      // An optional backup ID; without one the latest restorable backup is restored.
+      if index + 1 < arguments.count, UpgradeID.isValid(arguments[index + 1]) {
+        index += 1
+        rollbackID = arguments[index]
+      }
+    case "--discard-data-since-upgrade":
+      guard !discardData else {
+        throw UsageError(message: "Duplicate --discard-data-since-upgrade")
+      }
+      discardData = true
+    case "--confirm":
+      guard !confirm else { throw UsageError(message: "Duplicate --confirm") }
+      confirm = true
     case "--set-default":
       guard !setDefault else { throw UsageError(message: "Duplicate --set-default") }
       setDefault = true
@@ -447,6 +498,21 @@ private func parse(_ arguments: [String]) throws -> Invocation {
     command = .runtimeStop(force: force)
   } else if positionals == ["runtime", "restart"] {
     command = .runtimeRestart
+  } else if positionals == ["runtime", "upgrade"] {
+    if rollback {
+      guard !dryRun else { throw UsageError(message: "--dry-run is not valid with --rollback") }
+      command = .runtimeUpgrade(.rollback(id: rollbackID, discardData: discardData))
+    } else {
+      command = .runtimeUpgrade(.upgrade(dryRun: dryRun))
+    }
+  } else if positionals == ["runtime", "backups"] {
+    command = .runtimeBackups
+  } else if positionals.count == 4, positionals.prefix(3) == ["runtime", "backups", "prune"] {
+    guard UpgradeID.isValid(positionals[3]) else {
+      throw UsageError(
+        message: "runtime backups prune needs a backup ID from macus runtime backups")
+    }
+    command = .runtimeBackupsPrune(id: positionals[3], confirm: confirm)
   } else if positionals == ["doctor"] {
     command = .doctor
   } else if positionals == ["client", "setup"] {
@@ -526,6 +592,19 @@ private func parse(_ arguments: [String]) throws -> Invocation {
   if force, case .runtimeStop = command {
   } else if force {
     throw UsageError(message: "--force is only valid with runtime stop")
+  }
+  if dryRun || rollback, case .runtimeUpgrade = command {
+  } else if dryRun || rollback {
+    throw UsageError(message: "--dry-run and --rollback are only valid with runtime upgrade")
+  }
+  if discardData, case .runtimeUpgrade(.rollback) = command {
+  } else if discardData {
+    throw UsageError(
+      message: "--discard-data-since-upgrade is only valid with runtime upgrade --rollback")
+  }
+  if confirm, case .runtimeBackupsPrune = command {
+  } else if confirm {
+    throw UsageError(message: "--confirm is only valid with runtime backups prune")
   }
   if remote != nil || setDefault || incusOverride != nil {
     switch command {
@@ -644,6 +723,19 @@ private func execute(
     } else {
       presentation.runtime(try jsonObject(response.body), directory: directory)
     }
+  case .runtimeUpgrade(let action):
+    try await runRuntimeUpgrade(
+      action, directory: directory, timeout: timeout, json: json, environment: environment,
+      transport: transport, gateway: gateway, runner: runner, streams: streams,
+      overrides: overrides)
+  case .runtimeBackups:
+    try await listBackups(
+      directory: directory, timeout: timeout, json: json, gateway: gateway, streams: streams,
+      presentation: presentation)
+  case .runtimeBackupsPrune(let id, let confirm):
+    try await pruneBackup(
+      id: id, confirm: confirm, directory: directory, timeout: timeout, json: json,
+      gateway: gateway, streams: streams, presentation: presentation)
   case .clientSetup(let remote, let setDefault, let incus):
     let result = try await IncusClientService(
       runner: overrides.runner ?? runner, streams: streams, environment: environment

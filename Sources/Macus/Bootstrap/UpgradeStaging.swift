@@ -5,12 +5,29 @@ import Foundation
 /// names a path.
 enum UpgradeID {
   static func make(now: Date = Date()) -> String {
+    let random = (0..<4).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
+    return "\(stamp().string(from: now))-\(random)"
+  }
+
+  /// A new ID that sorts after every backup's. Rollback restores the latest backup by ID, so
+  /// an ID made within the second of the newest backup, or before it under a clock change,
+  /// takes the second after it.
+  static func next(paths: RuntimePaths, now: Date = Date()) -> String {
+    let names =
+      (try? FileManager.default.contentsOfDirectory(atPath: paths.backupsDirectory.path)) ?? []
+    guard let newest = names.filter(isValid).max(),
+      let newestTime = stamp().date(from: String(newest.prefix(16))),
+      now < newestTime.addingTimeInterval(1)
+    else { return make(now: now) }
+    return make(now: newestTime.addingTimeInterval(1))
+  }
+
+  private static func stamp() -> DateFormatter {
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_US_POSIX")
     formatter.timeZone = TimeZone(identifier: "UTC")
     formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
-    let random = (0..<4).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
-    return "\(formatter.string(from: now))-\(random)"
+    return formatter
   }
 
   static func isValid(_ id: String) -> Bool {
@@ -75,7 +92,7 @@ enum UpgradeStaging {
     // The creation seed and manifest in the cache, exactly as start prepares them.
     _ = try await SeedPreparation.prepare(
       entry: entry, cache: cache, runner: runner, timeout: timeout, environment: environment)
-    let id = UpgradeID.make(now: now)
+    let id = UpgradeID.next(paths: paths, now: now)
     let directory = paths.staging(id)
     try PrivateFile.makeDirectory(directory)
     do {

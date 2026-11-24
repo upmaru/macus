@@ -26,7 +26,12 @@ defmodule Macus.Runtime.Client do
     {"POST", "/v1/runtime/stop"},
     {"POST", "/v1/runtime/restart"},
     {"PUT", "/v1/runtime/config"},
-    {"DELETE", "/v1/runtime"}
+    {"DELETE", "/v1/runtime"},
+    {"POST", "/v1/runtime/upgrade/plan"},
+    {"POST", "/v1/runtime/upgrade"},
+    {"POST", "/v1/runtime/upgrade/rollback"},
+    {"GET", "/v1/runtime/backups"},
+    {"POST", "/v1/runtime/backups/prune"}
   ]
 
   @enforce_keys [:socket, :owner_uid]
@@ -170,7 +175,8 @@ defmodule Macus.Runtime.Client do
   defp consume([], _ref, state), do: {:ok, state}
 
   defp consume([{:status, ref, status} | rest], ref, %{status: nil} = state)
-       when status in 200..599, do: consume(rest, ref, %{state | status: status})
+       when status in 200..599,
+       do: consume(rest, ref, %{state | status: status})
 
   defp consume([{:headers, ref, headers} | rest], ref, state) do
     headers = state.headers ++ headers

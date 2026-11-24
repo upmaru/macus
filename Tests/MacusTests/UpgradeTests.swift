@@ -26,6 +26,8 @@ actor UpgradeVM: VirtualMachineDriver {
   var gate: CheckedContinuation<Void, Never>?
   var gated = false
   var healthCalls = 0
+  /// What the guest reports once it boots next, as a new root would.
+  var nextBootHealth: GuestHealth?
 
   func capabilities() async -> HostCapabilities {
     HostCapabilities(supported: true, nestedVirtualization: true)
@@ -33,6 +35,10 @@ actor UpgradeVM: VirtualMachineDriver {
   func start(configuration: RuntimeConfiguration, paths: RuntimePaths) async throws {
     running = true
     startCount += 1
+    if let nextBootHealth {
+      health = nextBootHealth
+      self.nextBootHealth = nil
+    }
     let root = try FileHandle(forReadingFrom: paths.rootDisk)
     bootedRoots.append(try root.read(upToCount: 16) ?? Data())
     try root.close()
@@ -62,6 +68,7 @@ actor UpgradeVM: VirtualMachineDriver {
     return health
   }
   func set(_ value: GuestHealth?) { health = value }
+  func setAfterBoot(_ value: GuestHealth?) { nextBootHealth = value }
   func setRunning(_ value: Bool) { running = value }
   func setShutdownWorks(_ value: Bool) { shutdownWorks = value }
   func setWritesData(_ value: Bool, backup: URL?) {
@@ -428,6 +435,7 @@ func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.pat
   await #expect(throws: RuntimeError.self) { _ = try await service.upgrade(stagingID: id) }
   #expect(await driver.running)
   #expect(!exists(fixture.paths.upgradeIntent))
+  #expect(!exists(fixture.paths.staging(id)))
   #expect(try fixture.snapshot() == before)
 }
 
@@ -555,7 +563,8 @@ func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.pat
   #expect(await driver.running)
   #expect(!exists(fixture.paths.upgradeIntent))
   #expect(!exists(fixture.paths.backup(id)))
-  #expect(exists(fixture.paths.staging(id)))
+  // Refused before the journal: the staged files are removed, and the next try stages anew.
+  #expect(!exists(fixture.paths.staging(id)))
   #expect(try fixture.snapshot() == before)
 }
 

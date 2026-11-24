@@ -22,6 +22,39 @@ struct StartupOverrides: Sendable {
   var runner: (any LocalCommandRunner)?
 }
 
+/// What start and the commands that activate its services run against: the real host, or
+/// the overrides tests and fixtures supply.
+func startupDependencies(
+  environment: [String: String], transport: any LocalHTTPTransport,
+  gateway: any GatewayTransport, runner: any LocalCommandRunner, overrides: StartupOverrides,
+  launchctl: URL?, downloader: (any ApplianceDownloader)?, catalog: ApplianceCatalogEntry?,
+  sink: any StartupProgressSink
+) -> StartupDependencies {
+  let home = overrides.homeDirectory ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+  return StartupDependencies(
+    transport: transport,
+    runner: overrides.runner ?? runner,
+    downloader: overrides.downloader ?? downloader ?? URLSessionApplianceDownloader(),
+    launchControl: overrides.launchControl
+      ?? ProcessLaunchControl(
+        runner: runner, environment: environment, uid: overrides.uid ?? getuid(),
+        executable: launchctl?.path ?? "/bin/launchctl"),
+    server: overrides.server ?? GatewayServerProbe(transport: overrides.gateway ?? gateway),
+    gateway: overrides.gateway ?? gateway,
+    build: overrides.build ?? .current,
+    capabilities: overrides.capabilities ?? { await MainActor.run { CapabilityDetector.detect() } },
+    hasEntitlement: overrides.hasEntitlement ?? { currentProcessHasVirtualizationEntitlement() },
+    executablePath: overrides.executablePath
+      ?? { ServiceExecutable.stablePath(for: currentExecutablePath()) },
+    now: overrides.now ?? { ContinuousClock.now },
+    homeDirectory: home,
+    launchAgentsDirectory: overrides.launchAgentsDirectory
+      ?? home.appendingPathComponent("Library/LaunchAgents", isDirectory: true),
+    uid: overrides.uid ?? getuid(),
+    catalog: overrides.catalog ?? catalog ?? .current,
+    sink: sink)
+}
+
 func runStart(
   directory: URL, remote: String, setDefault: Bool, incusOverride: String?,
   progress: ProgressSelection,
@@ -49,29 +82,10 @@ func runStart(
     width: { terminal.size()?.columns }, write: streams.writeError)
   sink.startRefreshing()
   defer { sink.cleanup() }
-  let home = overrides.homeDirectory ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-  let dependencies = StartupDependencies(
-    transport: transport,
-    runner: overrides.runner ?? runner,
-    downloader: overrides.downloader ?? draft?.downloader ?? URLSessionApplianceDownloader(),
-    launchControl: overrides.launchControl
-      ?? ProcessLaunchControl(
-        runner: runner, environment: environment, uid: overrides.uid ?? getuid(),
-        executable: fixtureLaunchctl?.path ?? "/bin/launchctl"),
-    server: overrides.server ?? GatewayServerProbe(transport: overrides.gateway ?? gateway),
-    gateway: overrides.gateway ?? gateway,
-    build: overrides.build ?? .current,
-    capabilities: overrides.capabilities ?? { await MainActor.run { CapabilityDetector.detect() } },
-    hasEntitlement: overrides.hasEntitlement ?? { currentProcessHasVirtualizationEntitlement() },
-    executablePath: overrides.executablePath
-      ?? { ServiceExecutable.stablePath(for: currentExecutablePath()) },
-    now: overrides.now ?? { ContinuousClock.now },
-    homeDirectory: home,
-    launchAgentsDirectory: overrides.launchAgentsDirectory
-      ?? home.appendingPathComponent("Library/LaunchAgents", isDirectory: true),
-    uid: overrides.uid ?? getuid(),
-    catalog: overrides.catalog ?? draft?.catalog ?? .current,
-    sink: sink)
+  let dependencies = startupDependencies(
+    environment: environment, transport: transport, gateway: gateway, runner: runner,
+    overrides: overrides, launchctl: fixtureLaunchctl,
+    downloader: draft?.downloader, catalog: draft?.catalog, sink: sink)
   let request = StartupRequest(
     stateDirectory: directory, remote: remote, setDefault: setDefault, incusOverride: incusOverride,
     timeout: timeout, environment: environment)

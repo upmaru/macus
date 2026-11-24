@@ -144,6 +144,13 @@ Implementation choices for explicit rollback:
 - The selected backup's guest record replaces the current one; a backup without one removes the current one, which describes another root.
 - Automatic rollback likewise removes a guest record written for the new root when the earlier state had none, moving it into `failed/`.
 
+Implementation choices for the API and client:
+- Public routes and scopes: `POST /runtime/upgrade/plan` and `GET /runtime/backups` need `runtime.read`, since neither writes anything. `POST /runtime/upgrade` and `POST /runtime/upgrade/rollback` need `runtime.write`. A rollback with `discard_data_since_upgrade` also needs `runtime.delete` and `"confirm": "discard-data"`, like a forced stop. `POST /runtime/backups/prune` needs `runtime.delete`. Its `"confirm": "prune-backup"` is optional: without it Swift receives `confirm: false`, removes nothing and names the dependent backups, which is how `macus runtime backups prune ID` warns before `--confirm`.
+- The server checks every ID against the upgrade ID form before dispatch, and projects the runtime `status` inside an upgrade or rollback result as it does a status object, so the private socket path never leaves the host.
+- `macus runtime upgrade` (and `--dry-run` and `--rollback`) activates the jobs through the start coordinator's job handling, under the bootstrap lock, and boots nothing. The lock stays held until the command ends, so a concurrent `macus start` cannot prepare the shared appliance cache while staging reads it. The client stages the appliance this executable ships, never a draft qualification catalog, because the daemon plans against that one.
+- A refusal before the upgrade journal is written removes `STATE/upgrade-<id>/`; every client run stages under a new ID. After the journal, rollback owns the staged files as before.
+- New upgrade and rollback IDs take the second after the newest backup's when the clock would not sort them after it, so the latest backup is the last one made even within one second.
+
 ### 6. Safety copies
 
 - **Location:** `STATE/backups/<id>/`, private (0700), on the same volume as the disks by construction.
