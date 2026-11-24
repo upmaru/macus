@@ -765,3 +765,56 @@ private final class OperationsScript: IncusQuerying, @unchecked Sendable {
   }
   #expect(error?.message.contains("Deleting instance") == true)
 }
+
+@Test func upgradeBackupIsTheLatestEvenAfterARollbackDuringStaging() async throws {
+  let fixture = try UpgradeFixture()
+  defer { fixture.clean() }
+  try fixture.record(package: packageP)
+  let driver = UpgradeVM()
+  let service = try fixture.service(driver)
+  let stagingID = try await fixture.stage(try await service.upgradePlan())
+  // Another client's rollback finished while this one staged: its safety backup is newer.
+  let newer = UpgradeID.next(paths: fixture.paths, now: Date().addingTimeInterval(5))
+  try writeBackup(fixture, id: newer, root: "X", package: packageP, data: nil)
+  #expect(newer > stagingID)
+  await driver.set(upgradeHealth(payload: fixture.targetPayload, appliance: fixture.entry.id))
+  let result = try await service.upgrade(stagingID: stagingID)
+  #expect(result.backupId > newer)
+  #expect(exists(fixture.paths.backup(result.backupId).appendingPathComponent("root.raw")))
+  #expect(!exists(fixture.paths.staging(stagingID)))
+  // An unnamed rollback restores the state this upgrade replaced.
+  let rolled = try await service.rollback(backupID: nil, discardDataSinceUpgrade: false)
+  #expect(rolled.restoredBackupId == result.backupId)
+  #expect(try Data(contentsOf: fixture.paths.rootDisk) == oldRootBytes)
+}
+
+@Test(arguments: [false, true])
+func failedJournalWriteLeavesNoStagingOrJournal(installed: Bool) async throws {
+  let fixture = try UpgradeFixture()
+  defer { fixture.clean() }
+  try fixture.record()
+  let before = try fixture.snapshot()
+  let identities = try fixture.identities()
+  let driver = UpgradeVM()
+  let paths = fixture.paths
+  // Either the write failed before its rename, or after it, while syncing the directory.
+  let service = try fixture.service(
+    driver,
+    hook: { label in
+      guard label == "journaling" else { return }
+      if installed { try PrivateFile.write(Data("{}".utf8), to: paths.upgradeIntent) }
+      throw RuntimeError(.io, "disk full")
+    })
+  let id = try await fixture.stage(try await service.upgradePlan())
+  let error = await #expect(throws: RuntimeError.self) {
+    _ = try await service.upgrade(stagingID: id)
+  }
+  #expect(error?.message == "disk full")
+  #expect(!exists(paths.staging(id)))
+  #expect(!exists(paths.upgradeIntent))
+  #expect(!exists(paths.backup(id)))
+  #expect(try fixture.snapshot() == before)
+  #expect(try fixture.identities() == identities)
+  // Nothing is left to recover: the next upgrade is accepted.
+  #expect(try await service.upgradePlan().current == false)
+}

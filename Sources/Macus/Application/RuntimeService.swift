@@ -319,14 +319,36 @@ public actor RuntimeService {
       }
     }
     guestHealth = nil
+    // The staging ID sorted after every backup when staging began; a rollback since may have
+    // made a newer one, and the latest backup must be the state this upgrade replaces.
+    let backupId =
+      UpgradeID.sortsAfterBackups(stagingID, paths: paths)
+      ? stagingID : UpgradeID.next(paths: paths)
     var intent = UpgradeIntent(
-      backupId: stagingID, stagingId: stagingID, upgradeClass: upgradeClass, step: .journaled,
+      backupId: backupId, stagingId: stagingID, upgradeClass: upgradeClass, step: .journaled,
       fromCatalogId: plan.fromCatalogId, toCatalogId: catalog.id, poolGuid: storage.poolGuid,
       root: try Self.identity(paths.rootDisk), efi: try FileIdentity.of(paths.efiStore),
       seed: try FileIdentity.of(paths.seed), data: try Self.identity(paths.dataDisk),
       stagedRoot: try Self.identity(staged.root), stagedSeed: try Self.identity(staged.seed))
+    do {
+      try upgradeHook?("journaling")
+      try UpgradeJournal.save(intent, paths: paths)
+    } catch let saveError {
+      // Nothing has moved. A journal installed before the failure is withdrawn, so the staged
+      // root goes with it; one that cannot be withdrawn keeps it for the start-time rollback.
+      do {
+        if try FileIdentity.of(paths.upgradeIntent) != nil {
+          try FileManager.default.removeItem(at: paths.upgradeIntent)
+          try PrivateFile.sync(paths.directory)
+        }
+      } catch {
+        journaled = true
+        recoveryError =
+          "upgrade.pending could not be written or withdrawn (\(error.localizedDescription)). Nothing was moved; restart the runtime service, which rolls the unfinished upgrade back. Runtime changes are refused until then."
+      }
+      throw saveError
+    }
     journaled = true
-    try UpgradeJournal.save(intent, paths: paths)
     do {
       try upgradeHook?("journaled")
       try UpgradeJournal.createBackup(&intent, paths: paths, hook: upgradeHook)

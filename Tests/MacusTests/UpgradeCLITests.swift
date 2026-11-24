@@ -257,7 +257,8 @@ private func refusedState(_ fixture: UpgradeFixture) async throws -> (UpgradeVM,
 
   let json = StartCapture()
   #expect(
-    await pair.run(["--json", "runtime", "upgrade", "--dry-run"], capture: json) == 0,
+    await pair.run(
+      ["--json", "runtime", "upgrade", "--dry-run"], capture: json, catalog: fixture.entry) == 0,
     "\(json.error)")
   let object = try #require(
     try JSONSerialization.jsonObject(with: Data(json.output.utf8)) as? [String: Any])
@@ -329,4 +330,94 @@ private func refusedState(_ fixture: UpgradeFixture) async throws -> (UpgradeVM,
   #expect(restored.output.contains("Data disk: Restored from this backup's copy of"))
   #expect(try Data(contentsOf: fixture.paths.rootDisk) == oldRootBytes)
   await MainActor.run { served.stop() }
+}
+
+// MARK: Review fixes
+
+/// A ready runtime served to a client pair whose jobs are already loaded.
+private func servedReady(
+  _ fixture: UpgradeFixture, service: RuntimeService, driver: UpgradeVM, payload: String
+) async throws -> (PairFixture, ServedRuntime) {
+  await driver.set(upgradeHealth(payload: payload, appliance: "alpine-3.24.2-lts-1"))
+  _ = try await service.start()
+  let pair = try PairFixture(state: fixture.paths.directory)
+  let served = ServedRuntime(service: service, paths: fixture.paths)
+  try await MainActor.run { try served.serve() }
+  pair.launch.register(pair.runtimeJob(loaded: true))
+  pair.launch.register(pair.serverJob(loaded: true))
+  pair.probe.serving = true
+  return (pair, served)
+}
+
+private func stagingEntries(_ fixture: UpgradeFixture) throws -> [String] {
+  try FileManager.default.contentsOfDirectory(atPath: fixture.paths.directory.path).filter {
+    $0.hasPrefix("upgrade-")
+  }
+}
+
+@Test func runtimeServiceFromAnotherPackageIsNeverReportedCurrent() async throws {
+  // The service still running plans with its own, older payload, which the state also runs.
+  let stale = String(repeating: "e", count: 64)
+  let fixture = try UpgradeFixture()
+  defer { fixture.clean() }
+  try fixture.record(payload: stale, appliance: fixture.entry.id)
+  let driver = UpgradeVM()
+  let service = try RuntimeService(
+    driver: driver, store: StateStore(paths: fixture.paths), stallLimit: .seconds(300),
+    catalog: fixture.entry, payloadRevision: stale, macusPackage: "old",
+    volume: TestVolume(), inventory: FakeInventory())
+  #expect(try await service.upgradePlan().current)
+  let (pair, served) = try await servedReady(
+    fixture, service: service, driver: driver, payload: stale)
+  defer { pair.remove() }
+  for arguments in [["runtime", "upgrade"], ["runtime", "upgrade", "--dry-run"]] {
+    let capture = StartCapture()
+    #expect(await pair.run(arguments, capture: capture, catalog: fixture.entry) == 1)
+    #expect(capture.error.contains("it runs from another package"), "\(capture.error)")
+    #expect(!capture.output.contains("already runs the installed appliance"))
+  }
+  #expect(pair.downloader.calls == 0)
+  #expect(try stagingEntries(fixture).isEmpty)
+  #expect(await service.status().state == .ready)
+  await MainActor.run { served.stop() }
+}
+
+@Test func stagingIsRemovedWhenTheUpgradeRequestNeverLeaves() async throws {
+  let fixture = try UpgradeFixture()
+  defer { fixture.clean() }
+  try fixture.record()
+  let driver = UpgradeVM()
+  let service = try fixture.service(driver)
+  let (pair, served) = try await servedReady(
+    fixture, service: service, driver: driver, payload: oldRevision)
+  defer { pair.remove() }
+  pair.probe.drop("POST", "/runtime/upgrade", .beforeDispatch)
+  let capture = StartCapture()
+  #expect(await pair.run(["runtime", "upgrade"], capture: capture, catalog: fixture.entry) == 1)
+  #expect(capture.error.contains("Cannot connect"), "\(capture.error)")
+  #expect(try stagingEntries(fixture).isEmpty)
+  #expect(await driver.startCount == 1)
+  #expect(await service.status().state == .ready)
+  await MainActor.run { served.stop() }
+}
+
+@Test func onlyAnswersThatNeverReachedTheRuntimeServiceCountAsUndelivered() throws {
+  func answer(_ status: Int, _ outcome: String?) -> LocalHTTPResponse {
+    var error: [String: Any] = ["code": "unavailable", "message": "m"]
+    if let outcome { error["outcome"] = outcome }
+    return LocalHTTPResponse(
+      status: status, body: try! JSONSerialization.data(withJSONObject: ["error": error]))
+  }
+  #expect(HTTPSGatewayClient.notDispatched(answer(503, "not_dispatched")))
+  #expect(HTTPSGatewayClient.notDispatched(LocalHTTPResponse(status: 401, body: Data())))
+  #expect(!HTTPSGatewayClient.notDispatched(answer(503, "unknown")))
+  #expect(!HTTPSGatewayClient.notDispatched(answer(409, nil)))
+  #expect(!HTTPSGatewayClient.notDispatched(answer(200, "not_dispatched")))
+  #expect(
+    HTTPSGatewayClient.neverConnected(
+      RuntimeError(.unavailable, "Cannot connect to the Macus server at https://x.")))
+  #expect(
+    !HTTPSGatewayClient.neverConnected(
+      RuntimeError(.unavailable, "The connection to the Macus server at x was lost")))
+  #expect(!HTTPSGatewayClient.neverConnected(RuntimeError(.timeout, "Cannot connect")))
 }

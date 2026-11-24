@@ -22,6 +22,13 @@ enum UpgradeID {
     return make(now: newestTime.addingTimeInterval(1))
   }
 
+  /// Whether `id` sorts after every backup's, so a backup under it is the latest.
+  static func sortsAfterBackups(_ id: String, paths: RuntimePaths) -> Bool {
+    let names =
+      (try? FileManager.default.contentsOfDirectory(atPath: paths.backupsDirectory.path)) ?? []
+    return names.filter(isValid).allSatisfy { $0 < id }
+  }
+
   private static func stamp() -> DateFormatter {
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -117,6 +124,12 @@ enum UpgradeStaging {
       try? FileManager.default.removeItem(at: directory)
       throw error
     }
+  }
+
+  /// Client side: removes a staged upgrade the runtime service never received.
+  static func discard(_ id: String, paths: RuntimePaths) {
+    guard UpgradeID.isValid(id) else { return }
+    try? FileManager.default.removeItem(at: paths.staging(id))
   }
 
   /// Daemon side: the staged files are input from another process, so each one is checked
