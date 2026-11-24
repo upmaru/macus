@@ -135,20 +135,20 @@ One state directory per window: the default, or `--state-dir DIR`, or the one pi
 
 ### 9. Access log: a topic for live records, the files for history
 
-**Record identity.** To merge a pushed record with the same record read from a file, each record needs an identity. `Macus.Proxy.AccessLog` adds `"id": "BOOT-SEQ"` to every record: `BOOT` is a random 64-bit value chosen when the server starts, in hex, and `SEQ` is a counter from 1. Adding a key keeps the log's schema version at 1, as `add-gateway-access-log` defines. Within one boot, `SEQ` orders records and a gap shows a dropped one.
+**Record identity.** To merge a pushed record with the same record read from a file, each record needs an identity. Every record carries `"id": "BOOT-SEQ"`, directly after `v`: `BOOT` is 64 random bits chosen when `Macus.Proxy.AccessLog` starts, as 16 lowercase hex digits, and `SEQ` is a decimal counter from 1. The key is added by `add-gateway-access-log` itself (its task 2.7), at this change's request, and keeps that log's schema version at 1. `SEQ` is taken when the exchange's stop event is handled, before the decision to drop, so within one boot a gap marks a record that was not written, whether dropped under overload or lost to a formatting error. Concurrent exchanges can reach the file slightly out of `SEQ` order, so a reader orders by `id` within a boot and does not rely on file order.
 
-**Publishing.** The telemetry handler that formats the line also broadcasts the same map, with exactly the documented keys and nothing else, on `Macus.PubSub`. A broadcast is a message send: it does not wait for a subscriber or for the disk, so the access log's rule that recording never holds up an exchange is kept. A small server process keeps the last 200 records in memory for the join reply and coalesces pushes into batches of at most 200 records or 100 ms, so a burst of requests is one frame, not hundreds. A subscriber whose outbound queue passes a bound is disconnected and can rejoin; it never slows the handler.
+**Publishing.** Where the telemetry handler formats a line (`AccessLog.line/5`), it also broadcasts the same map, with exactly the documented keys and nothing else, on `Macus.PubSub`. A broadcast is a message send: it does not wait for a subscriber or for the disk, so the access log's rule that recording never holds up an exchange is kept. A small server process keeps the last 200 records in memory for the join reply and coalesces pushes into batches of at most 200 records or 100 ms, so a burst of requests is one frame, not hundreds. A subscriber whose outbound queue passes a bound is disconnected and can rejoin; it never slows the handler.
 
-The topic is published from the handler, not from the file, so a record dropped by the file writer under overload can still be pushed. The app shows it; the file remains the durable record.
+The topic carries exactly the records the handler formats. A record the handler drops is neither written nor pushed; subscribers see it as a `SEQ` gap and as `dropped_before` on the next record, the same as a reader of the file. The handler's drop branch returns before formatting, and building a record there only to push it would add work at the moment the server is overloaded.
 
 **The app.** The files remain necessary: they hold history and they work when the server is stopped, which a channel cannot. So the view has two inputs and one table keyed by `id`:
 
 - On open it loads history from the files.
-- While joined to `access`, new rows come from the topic, and the join reply's 200 records close the gap between the file read and the join. Duplicates are dropped by `id`.
+- While joined to `access`, new rows come from the topic, and the join reply's 200 records close the gap between the file read and the join. Duplicates are dropped by `id`, and rows of one boot are ordered by `SEQ`.
 - While not joined (server stopped, or the socket is down), it follows the files with a file-system event source. Neither path is polling.
 - A record with no `id` (written before this change) can only come from a file and is keyed by its position.
 
-For the files it uses the reader `add-gateway-access-log` adds for `macus server logs` (ownership validation, archives oldest first, follow across rotation), which that change must expose from the `Macus` library rather than keep private to the CLI.
+For the files it uses the reader `add-gateway-access-log` adds for `macus server logs` (ownership validation, archives oldest first, follow across rotation). That reader, `GatewayAccessLog` in `Sources/Macus/Client`, is internal to the `Macus` module; this change makes the part the app needs public (task 1.3).
 
 - Loads the most recent 5,000 records and follows new ones. The oldest rows are discarded past 50,000.
 - Columns: time, caller, method, path, status, outcome, duration, bytes in/out. Caller is a short fingerprint, replaced by a name when it is the app's own or matches a gateway trust entry.
@@ -180,7 +180,7 @@ The live channel ships with the server release whether or not anyone builds the 
 - **Process observation is still sampling.** It is one loop per watched instance instead of one request per client per interval, and it stops with the last subscriber, but a 2 s loop runs in the instance while someone is watching.
 - **The sampling exec is not in the gateway access log**, because it does not pass through the gateway. Mitigation: the server logs when an instance observer starts and stops, and for which certificate.
 - **Two inputs to one table.** The access view merges a topic and files. Mitigation: one key (`id`), one rule (first seen wins), and tests for join during a burst, rejoin after a gap and rotation.
-- **Coupling to an unarchived change.** The `id` key is added to a record defined by `add-gateway-access-log`. Mitigation: it is one additive key under that change's own versioning rule; task 2.9 lands it there if that change is still open.
+- **Coupling to an unarchived change.** The `id` key and the Swift reader belong to `add-gateway-access-log`. Mitigation: the key is implemented there; task 2.9 confirms it is merged before the topic is built.
 - **SwiftTerm is a new dependency.** Pinned exactly, linked only into `MacusApp`.
 - **Ad-hoc signing.** Gatekeeper will not open a copied build without the owner's override. Documented; the supported path in this change is building locally.
 - **Rule reversal invites scope growth.** The `native-app` spec states the read-only boundary as a requirement, so a workload or lifecycle control needs its own change.

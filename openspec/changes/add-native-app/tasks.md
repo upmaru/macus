@@ -6,7 +6,7 @@ Planning only. All tasks remain unchecked until implementation and their specifi
 
 - [ ] 1.1 Update `AGENTS.md` and `openspec/config.yaml`: the runtime, services and installation stay headless and never require an application; an optional client application is allowed; cross-platform requirements stay excluded; `/live` is a public route. Verify strict OpenSpec validation passes.
 - [ ] 1.2 Add the `MacusAppCore` library and `MacusApp` executable targets and the exactly pinned SwiftTerm dependency (linked only into `MacusApp`). Verify `swift build` of `macus` links no SwiftUI, AppKit or SwiftTerm symbol, and extend `Integration/scripts/check.sh` to build and test the new targets with warnings as errors and swift-format.
-- [ ] 1.3 Make public in `Macus` what the app reuses: endpoint discovery, the pinning delegate, bound trust token issuance and revocation, gateway trust lookup. Verify existing tests pass unchanged.
+- [ ] 1.3 Make public in `Macus` what the app reuses: endpoint discovery, the pinning delegate, bound trust token issuance and revocation, gateway trust lookup, and, once `add-gateway-access-log` is merged, the reading and following surface of `GatewayAccessLog` (with a follow API that does not depend on the CLI's signal handling). Verify existing tests pass unchanged.
 
 ## 2. Live channel in the server
 
@@ -19,8 +19,8 @@ Planning only. All tasks remain unchecked until implementation and their specifi
 - [ ] 2.7 Refuse every client event other than join, leave and heartbeat on all channels. Verify nothing is dispatched.
 - [ ] 2.8 Verify under load that a slow or stalled live subscriber does not delay relayed HTTP, WebSocket or raw exchanges, and log observer start and stop with the subscribing certificate.
 
-- [ ] 2.9 Add `id` (`BOOT-SEQ`) to the access record in `Macus.Proxy.AccessLog` and document it with the record's other keys; if `add-gateway-access-log` is still open, make the change there. Verify uniqueness across restarts, ordering within a run, and that the redaction test still passes.
-- [ ] 2.10 Add the `access` channel: owner-local credential only, broadcast from the telemetry handler with the documented keys only, the 200-record ring for the join reply, batching (200 records or 100 ms) and disconnection of a subscriber over its queue bound. Verify refusal for a trusted certificate and for a non-local bearer credential, the pushed record equal to the written line, the same redaction, and with a stalled subscriber that exchanges keep their responses and timing bounds and the log is still written.
+- [ ] 2.9 Confirm `add-gateway-access-log` is merged with the `id` key (`BOOT-SEQ`, its task 2.7) before starting 2.10. Verify against the merged code that `SEQ` is taken before the drop decision and that the redaction test's allowed keys include `id`.
+- [ ] 2.10 Add the `access` channel: owner-local credential only, broadcast of the formatted record from the telemetry handler with the documented keys only (a record the handler drops is not pushed), the 200-record ring for the join reply, batching (200 records or 100 ms) and disconnection of a subscriber over its queue bound. Verify refusal for a trusted certificate and for a non-local bearer credential, the pushed record equal to the written line, the same redaction, that a dropped record appears to subscribers only as a gap and `dropped_before`, and with a stalled subscriber that exchanges keep their responses and timing bounds and the log is still written.
 
 ## 3. Runtime state stream in the Swift daemon
 
@@ -49,9 +49,8 @@ Planning only. All tasks remain unchecked until implementation and their specifi
 
 ## 7. Access log
 
-- [ ] 7.1 After `add-gateway-access-log` is implemented, confirm its reader is public API of `Macus` (ownership validation, archives oldest first, follow across rotation); if it is CLI-private, move it there in that change.
-- [ ] 7.2 Add the log model: initial 5,000 records from the files, live records from the `access` topic while joined and from following the files otherwise, merging by `id`, 50,000-row bound, filters, caller naming from gateway trust, `dropped_before` rows, tolerance of a newer `v` and of malformed lines. Verify each, including no duplicate or lost record across a rotation, a join during a burst, a rejoin after a disconnect and records without an `id`.
-- [ ] 7.3 Add the Access Log view. Verify a missing file shows an explained empty table and an unsafe directory shows an error and no records.
+- [ ] 7.1 Add the log model: initial 5,000 records from the files, live records from the `access` topic while joined and from following the files otherwise, merging by `id` and ordering by `SEQ` within a boot, 50,000-row bound, filters, caller naming from gateway trust, `dropped_before` rows, tolerance of a newer `v` and of malformed lines. Verify each, including no duplicate or lost record across a rotation, a join during a burst, a rejoin after a disconnect, records that reach the file out of `SEQ` order and records without an `id`.
+- [ ] 7.2 Add the Access Log view. Verify a missing file shows an explained empty table and an unsafe directory shows an error and no records.
 
 ## 8. Packaging and documentation
 
