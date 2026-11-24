@@ -324,6 +324,32 @@ defmodule Macus.Proxy.AccessLog do
 
   ## Line
 
+  @metadata_keys [
+    :protocol,
+    :method,
+    :path,
+    :project,
+    :target,
+    :all_projects,
+    :operation,
+    :peer_address,
+    :peer_port,
+    :peer_fingerprint,
+    :admitted_as,
+    :status,
+    :outcome,
+    :reason
+  ]
+  @measurement_keys [:duration, :request_bytes, :response_bytes]
+
+  @doc """
+  The stop event keys `line/5` reads. A test holds the locked library's
+  event to this list, so a release that renames one fails a test instead of
+  writing nulls.
+  """
+  @spec reads() :: %{metadata: [atom()], measurements: [atom()]}
+  def reads, do: %{metadata: @metadata_keys, measurements: @measurement_keys}
+
   @doc """
   The JSON line for a stop event, without the trailing newline.
 
