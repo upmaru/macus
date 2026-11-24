@@ -2,7 +2,7 @@
 import Foundation
 
 enum EmbeddedGuestPayload {
-  static let revision = "c4fb31504760104362c7d95b0868f5a93987cf2bdf40725a43a447c339f13d26"
+  static let revision = "50670a7d91d1e1d21a545aa622f388bf203552061dd6d4b02930de23a5e32f3b"
   static let files: [String: String] = [
     "bootstrap.sh": """
     IyEvYmluL3NoCnNldCAtZXUKdW1hc2sgMDc3CmJvb3Q9JHtUQU1BX0JPT1RfUk9PVDotfQpzdG9y
@@ -759,7 +759,16 @@ enum EmbeddedGuestPayload {
     JHJlY29yZGVkX3BoYXNlIiA9IGludGVudC1ibGFuayBdOyB0aGVuCiAgICAgICAgaWYgYmxhbmtf
     ZGlzazsgdGhlbgogICAgICAgICAgICBjcmVhdGVfemZzCiAgICAgICAgZWxzZQogICAgICAgICAg
     ICByZWNvdmVyX2ludGVudF9wb29sCiAgICAgICAgICAgIGltcG9ydF9vd25lZF9wb29sCiAgICAg
-    ICAgZmkKICAgIGVsaWYgWyAtZiAiJGlkZW50aXR5L3Bvb2wtZ3VpZCIgXSB8fCBbIC1mICIkaWRl
+    ICAgZmkKICAgIGVsaWYgWyAtZiAiJGFkb3B0X3JlY29yZCIgXSAmJiBbIC1mICIkaWRlbnRpdHkv
+    cG9vbC1ndWlkIiBdICYmCiAgICAgICAgWyAiJChyZWFkX3Rva2VuICIkaWRlbnRpdHkvcG9vbC1n
+    dWlkIikiID0gIiQoYWRvcHRfZmllbGQgcG9vbF9ndWlkKSIgXTsgdGhlbgogICAgICAgICMgVGhl
+    IHJlY29yZCBpcyByZW1vdmVkIG9ubHkgYWZ0ZXIgcG9vbC1ndWlkLCBsYXlvdXQgYW5kIHBoYXNl
+    IGFyZSBhbGwgd3JpdHRlbiwgc28gYQogICAgICAgICMgcmVjb3JkIGJlc2lkZSBpdHMgb3duIEdV
+    SUQgaXMgYW4gYWRvcHRpb24gdGhhdCBzdG9wcGVkIHBhcnQgd2F5LiBSZWRvIGl0OiB0aGUgc2Ft
+    ZQogICAgICAgICMgY2hlY2tzIHJ1biBhZ2FpbiBhbmQgZXZlcnkgaWRlbnRpdHkgZmlsZSBpcyBy
+    ZXdyaXR0ZW4gYmVmb3JlIHRoZSByZWNvcmQgZ29lcy4KICAgICAgICBub3RlICJUQU1BX1NUT1JB
+    R0VfQURPUFRfUkVTVU1FRCIKICAgICAgICBhZG9wdF9wb29sCiAgICAgICAgaW1wb3J0X293bmVk
+    X3Bvb2wKICAgIGVsaWYgWyAtZiAiJGlkZW50aXR5L3Bvb2wtZ3VpZCIgXSB8fCBbIC1mICIkaWRl
     bnRpdHkvcGhhc2UiIF0gfHwgWyAtZiAiJGlkZW50aXR5L2xheW91dCIgXTsgdGhlbgogICAgICAg
     ICMgQSByb290IHRoYXQgYWxyZWFkeSBvd25zIGEgcG9vbCBuZXZlciBhZG9wdHMgYW5vdGhlci4K
     ICAgICAgICBpZiBbIC1mICIkYWRvcHRfcmVjb3JkIiBdOyB0aGVuIG5vdGUgIlRBTUFfU1RPUkFH

@@ -121,14 +121,14 @@ Implementation choices:
 
 **Failure and interruption.** Any failure after step 3 rolls back automatically: stop the guest (graceful, then forced; the host identity property in decision 2 lets the old root import a pool the new root left imported), move the new root and seed aside into `backups/<id>/failed/` for diagnosis, rename the old trio back, restore `config.json`, the journal and the guest record, and for a migrating upgrade replace `data.raw` with the clone, moving the migrated disk into `failed/`. The command then fails, naming the failure code and saying the previous state was restored. On daemon start, a present `upgrade.pending` is rolled back the same way before any other mutation is accepted, whatever step it reached, including a verified upgrade that had not yet committed; `start` is refused until that succeeds. Workload writes made before commit are discarded with a migrating rollback; the runtime never served clients in that window, so only autostarted instances can have written. A journal that cannot be parsed preserves everything and requires explicit recovery, like an invalid reset intent.
 
-**Explicit rollback.** `macus runtime upgrade --rollback [ID]` restores the latest (or named) backup with the same steps. A root must never boot against data at a different Incus package. Each backup records its root's Incus package (which may be unknown) and, when it has one, a data copy, which is by construction at that same package: it was taken after that root last stopped. For the selected backup:
+**Explicit rollback.** `macus runtime upgrade --rollback [ID]` restores the latest (or named) backup with the same steps. A root must never boot against data at a different Incus package, nor against a pool other than the one it owns. Each backup records its root's Incus package (which may be unknown), its pool GUID and, when it has one, a data copy, which is by construction at that same package: it was taken after that root last stopped. For the selected backup:
 
-1. if its root's package is known and equals the guest record's current `incusPackage`, only the root, firmware store, seed and configuration are restored, and `data.raw` stays;
+1. if its root's package is known and equals the guest record's current `incusPackage`, and its pool equals the current pool identity, only the root, firmware store, seed and configuration are restored, and `data.raw` stays;
 2. otherwise, if the backup has its own data copy, that copy is restored with the root, whatever the package, even when it is unknown;
-3. otherwise, if its root's package is known, the data copy of the earliest later backup recorded at that same known package is restored with the root;
+3. otherwise, if its root's package is known, the data copy of the earliest later backup recorded at that same known package and pool is restored with the root;
 4. otherwise rollback is refused and nothing changes.
 
-Cases 2 and 3 require `--discard-data-since-upgrade`, because everything written to `data.raw` since that copy is lost, and the command names the copy's time.
+Cases 2 and 3 require `--discard-data-since-upgrade`, because everything written to `data.raw` since that copy is lost, and the command names the copy's time: when it was taken, after the root stopped, not when the upgrade committed.
 
 Examples:
 - First upgrade of a pre-relay state: the Incus package is unknown, so the upgrade is migrating and its backup holds the old root and a data copy. Rollback uses case 2.
@@ -139,7 +139,7 @@ After rollback the state matches the earlier package; with the current package i
 Implementation choices for explicit rollback:
 - It only renames files. The root, firmware store, seed and, in cases 2 and 3, `data.raw` it replaces go into a new backup with `operation: rollback`, `restored_from` and `data_from`, beside copies of the records. Nothing is deleted, and the rollback can itself be rolled back under the same rules: its root's package is the one the data was at, and its data copy, when it has one, is at that package.
 - It leaves the runtime stopped. A ready runtime is stopped gracefully first, and a timeout moves nothing. `start` then boots the restored root normally, or refuses it before boot if its recorded contract is incompatible.
-- `STATE/rollback.pending` journals every rename with the file's device and inode before the first one. A failed rename is undone at once; an interrupted rollback is undone at the next daemon start, which restores the replaced records and removes the new backup. An unreadable journal preserves everything and refuses runtime changes, as for an upgrade.
+- `STATE/rollback.pending` journals every rename with the file's device and inode before the first one. A failed rename is undone at once; an interrupted rollback is undone at the next daemon start, which restores the replaced records, journals that they are restored, and only then removes the new backup, so a repeated undo never reads a partly removed one. An unreadable journal preserves everything and refuses runtime changes, as for an upgrade.
 - The selected backup's directory is kept with whatever remains, such as its own data copy when case 1 left it unused, and lists as `restored`. A data copy restored from another backup is moved, so that backup lists without one. With no ID, rollback selects the latest backup that still holds a root.
 - The selected backup's guest record replaces the current one; a backup without one removes the current one, which describes another root.
 - Automatic rollback likewise removes a guest record written for the new root when the earlier state had none, moving it into `failed/`.
@@ -161,7 +161,7 @@ Implementation choices for the API and client:
 
 ### 7. Verification through Incus only
 
-Before the stop, when the guest is ready, the daemon reads names only, per project, through the existing relay: instances, storage volumes of the default pool, networks and profiles. After the new root is ready it reads them again through an internal relay stream, which is available during the upgrade operation although the relay is closed to clients, and requires every earlier name to be present. New names are allowed. The inventory is stored in the backup directory.
+Before the stop the relay is closed to clients: new client streams are refused and open ones are ended. When the guest is ready, the daemon then waits until Incus runs no task operation and reads names only, per project, through the existing relay: instances, storage volumes of the default pool, networks and profiles. After the new root is ready it reads them again through an internal relay stream, which is available during the upgrade operation although the relay is closed to clients, and requires every earlier name to be present. New names are allowed. The inventory is stored in the backup directory.
 
 When the old guest cannot be queried (the pre-relay case), the comparison is skipped and the result says so. Pool identity and Incus readiness are still required, and the post-upgrade inventory is printed for the user to check.
 

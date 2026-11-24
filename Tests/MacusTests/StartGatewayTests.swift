@@ -61,6 +61,24 @@ import Testing
   #expect(script.reads >= 6)
 }
 
+@Test func lostGatewayDuringBootStillReportsAnAvailableUpgrade() async throws {
+  let pair = try PairFixture()
+  defer { pair.remove() }
+  let script = BootScript(state: pair.state, startingReads: 3, upgradeAvailable: true)
+  pair.launch.responder = script.respond
+  _ = try pair.openRuntime()
+  pair.launch.register(pair.runtimeJob(loaded: true))
+  pair.launch.register(pair.serverJob(loaded: true))
+  pair.probe.serving = true
+  pair.probe.drop("POST", "/runtime/start", .afterDispatch)
+  let capture = StartCapture()
+  #expect(await pair.start(capture: capture) == 0, "\(capture.error)")
+  let object = try JSONSerialization.jsonObject(with: Data(capture.output.utf8)) as? [String: Any]
+  #expect(object?["ready"] as? Bool == true)
+  // Read from the ready status the recovery observed, as a completed start request reports it.
+  #expect(object?["upgrade_available"] as? Bool == true)
+}
+
 @Test func startLostBeforeDispatchIsReportedWithoutRetryOrMutation() async throws {
   let pair = try PairFixture()
   defer { pair.remove() }
@@ -130,10 +148,19 @@ final class BootScript: @unchecked Sendable {
   private var phase = "stopped"
   private var remaining: Int
   private var count = 0
+  private let upgradeAvailable: Bool?
 
-  init(state: URL, startingReads: Int = 0) {
+  init(state: URL, startingReads: Int = 0, upgradeAvailable: Bool? = nil) {
     self.state = state
     remaining = startingReads
+    self.upgradeAvailable = upgradeAvailable
+  }
+
+  /// A status object, with the runtime's `upgrade_available` once it is ready.
+  private func status(_ state: String, _ incus: String) -> [String: Any] {
+    var object = statusObject(state: state, incus: incus)
+    if state == "ready", let upgradeAvailable { object["upgrade_available"] = upgradeAvailable }
+    return object
   }
 
   /// Status reads answered while starting.
@@ -151,7 +178,7 @@ final class BootScript: @unchecked Sendable {
         phase = remaining > 0 ? "starting" : "ready"
         return phase
       }
-      return mustJSON(200, statusObject(state: state, incus: incus))
+      return mustJSON(200, status(state, incus))
     case ("GET", "/v1/runtime/status"):
       let state: String = lock.withLock {
         if phase == "starting" {
@@ -162,7 +189,7 @@ final class BootScript: @unchecked Sendable {
         }
         return phase
       }
-      return mustJSON(200, statusObject(state: state, incus: incus))
+      return mustJSON(200, status(state, incus))
     case ("GET", "/v1/runtime/progress"):
       let state = lock.withLock { phase }
       if state == "starting" {

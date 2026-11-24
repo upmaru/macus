@@ -405,6 +405,14 @@ start_storage() {
             recover_intent_pool
             import_owned_pool
         fi
+    elif [ -f "$adopt_record" ] && [ -f "$identity/pool-guid" ] &&
+        [ "$(read_token "$identity/pool-guid")" = "$(adopt_field pool_guid)" ]; then
+        # The record is removed only after pool-guid, layout and phase are all written, so a
+        # record beside its own GUID is an adoption that stopped part way. Redo it: the same
+        # checks run again and every identity file is rewritten before the record goes.
+        note "TAMA_STORAGE_ADOPT_RESUMED"
+        adopt_pool
+        import_owned_pool
     elif [ -f "$identity/pool-guid" ] || [ -f "$identity/phase" ] || [ -f "$identity/layout" ]; then
         # A root that already owns a pool never adopts another.
         if [ -f "$adopt_record" ]; then note "TAMA_STORAGE_ADOPT_IGNORED: root already has a storage identity"; fi

@@ -132,10 +132,16 @@ enum BackupCatalog {
     return total
   }
 
-  /// The pairing rules: a restored root never boots against data at another Incus package.
-  static func decide(_ entry: BackupEntry, all: [BackupEntry], currentPackage: String?)
-    -> Result<RestoreDecision, RuntimeError>
-  {
+  /// The pool the current data disk holds, when it is known.
+  static func currentPool(paths: RuntimePaths) -> String? {
+    (try? UpgradePlanner.identity(paths: paths))?.poolGuid
+  }
+
+  /// The pairing rules: a restored root never boots against data at another Incus package,
+  /// nor against a pool other than the one it owns.
+  static func decide(
+    _ entry: BackupEntry, all: [BackupEntry], currentPackage: String?, currentPool: String?
+  ) -> Result<RestoreDecision, RuntimeError> {
     guard let record = entry.record, entry.hasRoot, entry.hasConfig else {
       let reason =
         entry.record == nil
@@ -144,7 +150,9 @@ enum BackupCatalog {
         RuntimeError(.conflict, "Backup \(entry.id) \(reason); it cannot be restored."))
     }
     let package = record.rootIncusPackage
-    if let package, package == currentPackage {
+    // The root imports only the pool it owns; an empty GUID matches nothing.
+    let pool = record.poolGuid.isEmpty ? nil : record.poolGuid
+    if let package, package == currentPackage, let pool, pool == currentPool {
       return .success(RestoreDecision(data: .kept))
     }
     if entry.hasDataCopy {
@@ -153,9 +161,17 @@ enum BackupCatalog {
     if let package,
       let later = all.first(where: {
         $0.id > entry.id && $0.hasDataCopy && $0.record?.rootIncusPackage == package
+          && pool != nil && $0.record?.poolGuid == pool
       })
     {
       return .success(RestoreDecision(data: .later, dataFrom: later.id))
+    }
+    if let package, package == currentPackage {
+      return .failure(
+        RuntimeError(
+          .conflict,
+          "Backup \(entry.id) holds a root that owns \(pool.map { "pool \($0)" } ?? "an unrecorded pool"), but the data disk holds \(currentPool.map { "pool \($0)" } ?? "an unrecorded pool") and no data disk copy of the root's pool remains. Restoring the root would boot it against a pool it refuses. Nothing was changed."
+        ))
     }
     guard let package else {
       return .failure(
@@ -173,8 +189,10 @@ enum BackupCatalog {
 
   static func summaries(paths: RuntimePaths, currentPackage: String?) throws -> [BackupSummary] {
     let all = try load(paths: paths)
+    let currentPool = currentPool(paths: paths)
     return all.map { entry in
-      let decision = decide(entry, all: all, currentPackage: currentPackage)
+      let decision = decide(
+        entry, all: all, currentPackage: currentPackage, currentPool: currentPool)
       let record = entry.record
       var summary = BackupSummary(
         id: entry.id, status: entry.status,
@@ -186,14 +204,15 @@ enum BackupCatalog {
         rootIncusPackage: record?.rootIncusPackage,
         rootIncusPackageSource: record?.rootIncusPackageSource, dataCopy: entry.hasDataCopy,
         allocatedBytes: entry.allocatedBytes, restorable: false,
-        pruneBreaks: breaks(pruning: entry.id, all: all, currentPackage: currentPackage))
+        pruneBreaks: breaks(
+          pruning: entry.id, all: all, currentPackage: currentPackage, currentPool: currentPool))
       switch decision {
       case .success(let value):
         summary.restorable = true
         summary.restoreData = value.data.rawValue
         summary.dataFrom = value.dataFrom
         summary.discardsDataSince = value.dataFrom.flatMap { id in
-          all.first { $0.id == id }?.record?.createdAt
+          all.first { $0.id == id }?.record?.dataTakenAt
         }
       case .failure(let error):
         summary.refusal = entry.status == BackupSummary.available ? error.message : nil
@@ -203,15 +222,19 @@ enum BackupCatalog {
   }
 
   /// Backups restorable now that would not be once `id` is removed.
-  static func breaks(pruning id: String, all: [BackupEntry], currentPackage: String?) -> [String] {
+  static func breaks(
+    pruning id: String, all: [BackupEntry], currentPackage: String?, currentPool: String?
+  ) -> [String] {
     let remaining = all.filter { $0.id != id }
     return remaining.filter { entry in
-      guard case .success = decide(entry, all: all, currentPackage: currentPackage) else {
-        return false
-      }
-      guard case .failure = decide(entry, all: remaining, currentPackage: currentPackage) else {
-        return false
-      }
+      guard
+        case .success = decide(
+          entry, all: all, currentPackage: currentPackage, currentPool: currentPool)
+      else { return false }
+      guard
+        case .failure = decide(
+          entry, all: remaining, currentPackage: currentPackage, currentPool: currentPool)
+      else { return false }
       return true
     }.map(\.id)
   }
@@ -233,6 +256,8 @@ enum RollbackStep: String, Codable, Sendable, Comparable {
   case moving
   case moved
   case recordsRestored = "records_restored"
+  /// The undo put every file and record back; only removing the new backup remains.
+  case undone
 
   private var order: Int {
     switch self {
@@ -241,6 +266,7 @@ enum RollbackStep: String, Codable, Sendable, Comparable {
     case .moving: 2
     case .moved: 3
     case .recordsRestored: 4
+    case .undone: 5
     }
   }
 
@@ -269,6 +295,7 @@ struct PreparedRollback: Sendable {
   let decision: RestoreDecision
   let configuration: RuntimeConfiguration
   let current: UpgradePlanner.RecordedState
+  let currentPool: String?
   let dataCopyCreatedAt: String?
 }
 
@@ -293,11 +320,12 @@ enum BackupRollback {
       selected = latest
     }
     let current = try UpgradePlanner.recordedState(paths: paths, catalog: catalog)
+    let currentPool = BackupCatalog.currentPool(paths: paths)
     let decision = try BackupCatalog.decide(
-      selected, all: all, currentPackage: current.incusPackage
+      selected, all: all, currentPackage: current.incusPackage, currentPool: currentPool
     ).get()
     let copyTime = decision.dataFrom.flatMap { source in
-      all.first { $0.id == source }?.record?.createdAt
+      all.first { $0.id == source }?.record?.dataTakenAt
     }
     if decision.data != .kept, !discardData {
       throw RuntimeError(
@@ -317,7 +345,7 @@ enum BackupRollback {
     }
     return PreparedRollback(
       entry: selected, decision: decision, configuration: configuration, current: current,
-      dataCopyCreatedAt: copyTime)
+      currentPool: currentPool, dataCopyCreatedAt: copyTime)
   }
 
   /// The journal for a prepared rollback, with the identities of the files as they are now.
@@ -353,15 +381,18 @@ enum BackupRollback {
         StateMove(from: "backups/\(dataFrom)/\(data)", to: "runtime/\(data)", identity: copy))
     }
     let replacesData = prepared.decision.dataFrom != nil
+    let createdAt = ISO8601DateFormatter().string(from: now)
+    // The replaced state's pool is the current one; the restored root's matches it unless
+    // its data disk copy is restored with it.
     let record = UpgradeBackupRecord(
-      id: id, createdAt: ISO8601DateFormatter().string(from: now),
+      id: id, createdAt: createdAt,
       upgradeClass: replacesData ? .migrating : .reversible,
       fromCatalogId: prepared.current.catalogId, toCatalogId: prepared.entry.record?.fromCatalogId,
       rootIncusPackage: prepared.current.incusPackage,
       rootIncusPackageSource: prepared.current.incusPackageSource, dataCopy: replacesData,
-      poolGuid: prepared.entry.record?.poolGuid ?? "", macusPackage: macusPackage,
+      poolGuid: prepared.currentPool ?? "", macusPackage: macusPackage,
       operation: UpgradeBackupRecord.rollbackOperation, restoredFrom: prepared.entry.id,
-      dataFrom: prepared.decision.dataFrom)
+      dataFrom: prepared.decision.dataFrom, dataCopiedAt: replacesData ? createdAt : nil)
     return RollbackIntent(
       id: id, source: prepared.entry.id, restoreData: prepared.decision.data,
       dataFrom: prepared.decision.dataFrom, step: .journaled, moves: moves, record: record)
@@ -462,9 +493,37 @@ enum RollbackJournal {
 
   /// Reverses every move by identity, restores the records the rollback replaced and removes
   /// the new backup, which then holds only copies of those records. A file in neither place
-  /// it could be stops the undo with everything preserved.
-  static func undo(_ intent: RollbackIntent, paths: RuntimePaths) throws {
+  /// it could be stops the undo with everything preserved. The restore is journaled before
+  /// the removal, so a repeated undo never reads a partly removed backup.
+  static func undo(_ intent: RollbackIntent, paths: RuntimePaths, hook: UpgradeHook? = nil)
+    throws
+  {
+    var intent = intent
     let target = paths.backup(intent.id)
+    let hasTarget = try PrivateFile.isOwnedDirectory(target)
+    if intent.step != .undone {
+      try putBack(intent, target: target, hasTarget: hasTarget, paths: paths)
+      intent.step = .undone
+      try save(intent, paths: paths)
+      try hook?("undo_restored")
+    }
+    if hasTarget {
+      for name in UpgradeJournal.disks + [BackupCatalog.dataName] {
+        guard try FileIdentity.of(target.appendingPathComponent(name)) == nil else {
+          throw RuntimeError(
+            .io, "backups/\(intent.id)/\(name) remains after the undo; every file was preserved")
+        }
+      }
+      try FileManager.default.removeItem(at: target)
+      try PrivateFile.sync(paths.backupsDirectory)
+    }
+    try FileManager.default.removeItem(at: paths.rollbackIntent)
+    try PrivateFile.sync(paths.directory)
+  }
+
+  private static func putBack(
+    _ intent: RollbackIntent, target: URL, hasTarget: Bool, paths: RuntimePaths
+  ) throws {
     for move in intent.moves.reversed() {
       let from = try resolve(move.from, paths: paths)
       let to = try resolve(move.to, paths: paths)
@@ -479,21 +538,8 @@ enum RollbackJournal {
       try PrivateFile.sync(from.deletingLastPathComponent())
       try PrivateFile.sync(to.deletingLastPathComponent())
     }
-    let hasTarget = try PrivateFile.isOwnedDirectory(target)
     // The copies are complete once the moves began; before that nothing was replaced.
     if hasTarget, intent.step >= .moving { try restoreRecords(from: target, paths: paths) }
-    if hasTarget {
-      for name in UpgradeJournal.disks + [BackupCatalog.dataName] {
-        guard try FileIdentity.of(target.appendingPathComponent(name)) == nil else {
-          throw RuntimeError(
-            .io, "backups/\(intent.id)/\(name) remains after the undo; every file was preserved")
-        }
-      }
-      try FileManager.default.removeItem(at: target)
-      try PrivateFile.sync(paths.backupsDirectory)
-    }
-    try FileManager.default.removeItem(at: paths.rollbackIntent)
-    try PrivateFile.sync(paths.directory)
   }
 
   private static func copyRecords(from directory: URL, guest: URL, into backup: URL) throws {

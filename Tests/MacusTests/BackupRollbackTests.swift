@@ -241,7 +241,8 @@ private func backupID(_ offset: TimeInterval) -> String {
 
 /// A committed backup of root `name`, as an earlier upgrade would have left it.
 private func writeBackup(
-  _ fixture: UpgradeFixture, id: String, root name: String, package: String?, data: String?
+  _ fixture: UpgradeFixture, id: String, root name: String, package: String?, data: String?,
+  pool: String = poolGuid
 ) throws {
   let paths = fixture.paths
   if !(try PrivateFile.isOwnedDirectory(paths.backupsDirectory)) {
@@ -270,7 +271,7 @@ private func writeBackup(
         id: id, createdAt: "created-\(name)", upgradeClass: data == nil ? .reversible : .migrating,
         fromCatalogId: "app-\(name)", toCatalogId: "app-next", rootIncusPackage: package,
         rootIncusPackageSource: package == nil ? nil : GuestRecord.healthSource,
-        dataCopy: data != nil, poolGuid: poolGuid, macusPackage: "test")),
+        dataCopy: data != nil, poolGuid: pool, macusPackage: "test")),
     to: directory.appendingPathComponent("backup.json"))
 }
 
@@ -575,4 +576,192 @@ func daemonStartUndoesAnInterruptedRollback(point: String) async throws {
   _ = try fixture.service(UpgradeVM())
   #expect(!exists(fixture.paths.guestRecord))
   #expect(exists(fixture.paths.backup(id).appendingPathComponent("failed/guest-record.json")))
+}
+
+// MARK: Review fixes
+
+@Test func rollbackNeverPairsARootWithAnotherPool() async throws {
+  // The runtime was deleted and created again at the same Incus package, so with a new pool.
+  let fixture = try UpgradeFixture()
+  defer { fixture.clean() }
+  try fixture.record(package: packageP)
+  let earlier = backupID(0)
+  let later = backupID(100)
+  try writeBackup(fixture, id: earlier, root: "A", package: packageP, data: nil, pool: "999")
+  // A later data copy at the root's package, but of the current pool, is no match either.
+  try writeBackup(fixture, id: later, root: "B", package: packageP, data: "data-new-pool")
+  let service = try fixture.service(UpgradeVM())
+  let listed = try await service.backups()
+  #expect(listed.map(\.id) == [earlier, later])
+  #expect(!listed[0].restorable)
+  #expect(
+    listed[0].refusal?.contains("owns pool 999, but the data disk holds pool \(poolGuid)") == true)
+  #expect(listed[1].restoreData == "kept")
+  let before = try fixture.snapshot()
+  let error = await #expect(throws: RuntimeError.self) {
+    _ = try await service.rollback(backupID: earlier, discardDataSinceUpgrade: true)
+  }
+  #expect(error?.message.contains("a pool it refuses") == true)
+  #expect(try fixture.snapshot() == before)
+  // A copy of the root's own pool is still used.
+  let own = backupID(200)
+  try writeBackup(fixture, id: own, root: "C", package: packageP, data: "data-999", pool: "999")
+  let paired = try await service.backups()
+  #expect(paired[0].restoreData == "later")
+  #expect(paired[0].dataFrom == own)
+}
+
+@Test func repeatedUndoAfterItsRestoreKeepsTheRestoredRecords() async throws {
+  let history = try History()
+  let fixture = history.fixture
+  defer { fixture.clean() }
+  let before = try fixture.snapshot()
+  let identities = try fixture.identities()
+  let service = try fixture.service(UpgradeVM()) { label in
+    if label == "rollback_recorded" { throw UpgradeInterruption() }
+  }
+  await #expect(throws: UpgradeInterruption.self) {
+    _ = try await service.rollback(backupID: history.b1, discardDataSinceUpgrade: true)
+  }
+  // The first undo stops once everything is put back, before the new backup is removed.
+  let first = try fixture.service(UpgradeVM()) { label in
+    if label == "undo_restored" { throw UpgradeInterruption() }
+  }
+  #expect(await first.status().state == .failed)
+  let intent = try #require(try RollbackJournal.load(paths: fixture.paths))
+  #expect(intent.step == .undone)
+  #expect(try fixture.snapshot() == before)
+  // Its removal got as far as the saved guest record before the daemon stopped again.
+  try FileManager.default.removeItem(
+    at: fixture.paths.backup(intent.id).appendingPathComponent("guest-record.json"))
+  let restarted = try fixture.service(UpgradeVM())
+  #expect(await restarted.status().state == .stopped)
+  #expect(try fixture.snapshot() == before)
+  #expect(try fixture.identities() == identities)
+  #expect(try history.backups() == [history.b1, history.b2])
+  #expect(!exists(fixture.paths.rollbackIntent))
+}
+
+@Test func discardWarningNamesWhenTheDataCopyWasTaken() async throws {
+  let fixture = try UpgradeFixture(target: packageQ)
+  defer { fixture.clean() }
+  try fixture.record(package: packageP)
+  let driver = UpgradeVM()
+  // The boot and checks after the copy take time; the backup record is written at the commit.
+  let service = try fixture.service(
+    driver,
+    hook: { label in
+      if label == "data_copy_written" { Thread.sleep(forTimeInterval: 1.1) }
+    })
+  let id = try await fixture.stage(try await service.upgradePlan())
+  await driver.set(
+    upgradeHealth(payload: fixture.targetPayload, appliance: fixture.entry.id, package: packageQ))
+  _ = try await service.upgrade(stagingID: id)
+  let record = try JSON.decoder().decode(
+    UpgradeBackupRecord.self,
+    from: Data(contentsOf: fixture.paths.backup(id).appendingPathComponent("backup.json")))
+  let copiedAt = try #require(record.dataCopiedAt)
+  #expect(copiedAt < record.createdAt)
+  #expect(try await service.backups().first { $0.id == id }?.discardsDataSince == copiedAt)
+  let error = await #expect(throws: RuntimeError.self) {
+    _ = try await service.rollback(backupID: id, discardDataSinceUpgrade: false)
+  }
+  #expect(error?.message.contains("taken at \(copiedAt)") == true)
+  let result = try await service.rollback(backupID: id, discardDataSinceUpgrade: true)
+  #expect(result.dataCopyCreatedAt == copiedAt)
+  // The state the rollback replaced holds a copy taken when that rollback ran.
+  let safety = try JSON.decoder().decode(
+    UpgradeBackupRecord.self,
+    from: Data(
+      contentsOf: fixture.paths.backup(result.safetyBackupId).appendingPathComponent(
+        "backup.json")))
+  #expect(safety.dataCopiedAt == safety.createdAt)
+  #expect(safety.poolGuid == poolGuid)
+}
+
+/// Lets a fake inventory reach the service it is read for.
+private final class ServiceBox: @unchecked Sendable {
+  var service: RuntimeService?
+}
+
+@Test func clientsAreClosedOutBeforeTheInventoryBaseline() async throws {
+  let fixture = try UpgradeFixture()
+  defer { fixture.clean() }
+  try fixture.record()
+  let driver = UpgradeVM()
+  await driver.setServesStreams(true)
+  await driver.set(upgradeHealth(payload: oldRevision, appliance: "alpine-3.24.2-lts-1"))
+  let box = ServiceBox()
+  let inventory = FakeInventory(onRead: {
+    guard let service = box.service, await service.status().state == .ready else { return }
+    // No client can reach Incus while the baseline is read.
+    let refused = await #expect(throws: RuntimeError.self) {
+      _ = try await service.openIncusStream()
+    }
+    #expect(refused?.message.contains("closed to clients") == true)
+    // The client connected earlier was ended: its guest end sees the close.
+    var byte: UInt8 = 0
+    let guest = await driver.guestEnds[0]
+    #expect(recv(guest.rawValue, &byte, 1, MSG_DONTWAIT) == 0)
+  })
+  let service = try fixture.service(driver, inventory: inventory)
+  box.service = service
+  _ = try await service.start()
+  let client = try await service.openIncusStream()
+  // The relay of that client ends when its guest stream is shut down.
+  let relay = Task {
+    var byte: UInt8 = 0
+    let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+    var closed = false
+    while !closed, ContinuousClock.now < deadline {
+      closed = recv(client.socket.rawValue, &byte, 1, MSG_DONTWAIT) == 0
+      if !closed { try? await Task.sleep(for: .milliseconds(5)) }
+    }
+    await client.release()
+    return closed
+  }
+  let id = try await fixture.stage(try await service.upgradePlan())
+  await driver.set(upgradeHealth(payload: fixture.targetPayload, appliance: fixture.entry.id))
+  let clock = ContinuousClock()
+  let started = clock.now
+  _ = try await service.upgrade(stagingID: id)
+  #expect(await relay.value)
+  // Running operations are waited for before the baseline, and the relay ended promptly.
+  #expect(await inventory.events == ["idle", "read", "read"])
+  #expect(clock.now - started < .seconds(4))
+  // Clients are served again once the upgrade ends.
+  let after = try await service.openIncusStream()
+  await after.release()
+}
+
+/// Operations listings, one per poll; the last one repeats.
+private final class OperationsScript: IncusQuerying, @unchecked Sendable {
+  private let lock = NSLock()
+  private var responses: [String]
+  private var count = 0
+  init(_ responses: [String]) { self.responses = responses }
+  var calls: Int { lock.withLock { count } }
+  func get(_ path: String) async throws -> Data {
+    #expect(path == IncusInventoryReader.operationsPath)
+    return lock.withLock {
+      count += 1
+      return Data((responses.count > 1 ? responses.removeFirst() : responses[0]).utf8)
+    }
+  }
+}
+
+@Test func inventoryBaselineWaitsForRunningTasks() async throws {
+  let task = #"{"running":[{"class":"task","description":"Deleting instance"}]}"#
+  let exec =
+    #"{"running":[{"class":"websocket","description":"Executing command"}],"success":[{"class":"task"}]}"#
+  let script = OperationsScript([task, task, exec])
+  try await IncusInventoryReader.awaitIdle(script, timeout: .seconds(5), poll: .milliseconds(1))
+  #expect(script.calls == 3)
+  #expect(try IncusInventoryReader.runningTasks(Data("null".utf8)).isEmpty)
+  let stuck = OperationsScript([task])
+  let error = await #expect(throws: RuntimeError.self) {
+    try await IncusInventoryReader.awaitIdle(
+      stuck, timeout: .milliseconds(20), poll: .milliseconds(1))
+  }
+  #expect(error?.message.contains("Deleting instance") == true)
 }
