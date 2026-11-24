@@ -240,6 +240,26 @@ private func service(_ driver: IdentityFakeVM, _ fixture: Fixture) throws -> Run
   #expect(record.incusPackageSource == "health")
 }
 
+@Test func repeatedStartRecordsALaterPackage() async throws {
+  let fixture = try Fixture()
+  defer { fixture.clean() }
+  let driver = IdentityFakeVM(health: zfsHealth(appliance: prebuilt.id, package: nil))
+  let runtime = try service(driver, fixture)
+  _ = try await runtime.start()
+  #expect(try GuestRecordStore.loadGuest(paths: fixture.paths)?.incusPackageSource == "catalog")
+  // The package appears, and a repeated start (the already-ready path) sees it first.
+  await driver.setHealth(zfsHealth(appliance: prebuilt.id, package: "7.0.1-r2"))
+  _ = try await runtime.start()
+  var record = try #require(try GuestRecordStore.loadGuest(paths: fixture.paths))
+  #expect(record.incusPackageSource == "health")
+  // A later status with the same health still leaves it recorded.
+  _ = await runtime.status()
+  record = try #require(try GuestRecordStore.loadGuest(paths: fixture.paths))
+  #expect(record.incusPackage == "7.0.1-r2")
+  #expect(record.incusPackageSource == "health")
+  #expect(await driver.startCount == 1)
+}
+
 @Test func recordedIncompatibleStateIsRefusedBeforeBoot() async throws {
   let fixture = try Fixture()
   defer { fixture.clean() }

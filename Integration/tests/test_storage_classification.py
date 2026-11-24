@@ -706,6 +706,41 @@ fi
                 for forbidden in ('e2fsck', 'resize2fs', 'mount -o'):
                     self.assertNotIn(forbidden, recorded)
 
+    def test_interrupted_adoption_resumes_on_the_next_start(self):
+        # The VM stopped after some identity files were written but before the record was removed.
+        for written in (('pool-guid',), ('pool-guid', 'layout'), ('pool-guid', 'layout', 'phase')):
+            with self.subTest(written=written), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                disk = self.adoptable(root)
+                identity = root / 'etc/tama-storage'
+                values = {'pool-guid': '120', 'layout': 'zfs-v1', 'phase': 'ready'}
+                for name in written:
+                    (identity / name).write_text(values[name] + '\n')
+                result, log, recorded = self.adopt(root, disk)
+                self.assertEqual(result.returncode, 0, log)
+                self.assertIn('TAMA_STORAGE_ADOPT_RESUMED', log)
+                self.assertIn('TAMA_STORAGE_ADOPTED 120', log)
+                self.assertIn('TAMA_STORAGE_ZFS_READY 120', log)
+                for name, value in values.items():
+                    self.assertEqual((identity / name).read_text().strip(), value)
+                self.assertFalse((identity / 'adopt').exists())
+                imports = [line for line in recorded.splitlines() if line.startswith('zpool import')]
+                self.assertEqual(imports, [f'zpool import -N -d {disk} 120'])
+                self.assertNotIn('zpool create', recorded)
+
+    def test_resumed_adoption_still_refuses_a_failed_check(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            disk = self.adoptable(root, database=False)
+            (root / 'etc/tama-storage/pool-guid').write_text('120\n')
+            result, log, recorded = self.adopt(root, disk)
+            self.assertNotEqual(result.returncode, 0, log)
+            self.assertIn('TAMA_STORAGE_ADOPT_RESUMED', log)
+            self.assertIn('metadata has no Incus database', log)
+            self.assertNotIn('TAMA_STORAGE_ZFS_READY', log)
+            self.assertTrue((root / 'etc/tama-storage/adopt').is_file())
+            self.assertFalse((root / 'etc/tama-storage/phase').exists())
+
     def test_root_identity_ignores_stale_adoption_record(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

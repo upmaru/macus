@@ -12,6 +12,8 @@ protocol UpgradeVolume: Sendable {
   func clone(_ source: URL, to destination: URL) throws
   /// A full copy that keeps holes, for a volume without clone support.
   func copy(_ source: URL, to destination: URL) throws
+  /// Puts a file's contents on stable storage (`F_FULLFSYNC`), not only in the drive cache.
+  func sync(_ file: URL) throws
 }
 
 struct HostVolume: UpgradeVolume {
@@ -40,6 +42,16 @@ struct HostVolume: UpgradeVolume {
     guard clonefile(source.path, destination.path, UInt32(CLONE_NOFOLLOW)) == 0 else {
       throw RuntimeError(
         .io, "Cannot clone \(source.lastPathComponent): \(String(cString: strerror(errno)))")
+    }
+  }
+
+  func sync(_ file: URL) throws {
+    let descriptor = open(file.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+    guard descriptor >= 0 else { throw RuntimeError(.io, "Cannot open \(file.lastPathComponent)") }
+    defer { close(descriptor) }
+    // F_FULLFSYNC can be unsupported (some network volumes); fsync is then the best available.
+    guard fcntl(descriptor, F_FULLFSYNC) == 0 || fsync(descriptor) == 0 else {
+      throw RuntimeError(.io, "Cannot sync \(file.lastPathComponent)")
     }
   }
 
