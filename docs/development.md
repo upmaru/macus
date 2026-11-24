@@ -507,7 +507,7 @@ Health also reports the guest's identity once Incus is ready. `guest_contract` i
 
 The daemon records what it observes from each ready guest in two files beside the disks, so they move with them; it is their only writer. `runtime/guest-record.json` holds the guest contract, payload revision, appliance ID, Incus package and its source, and the Macus package that observed them. Each ready replaces every field with what health reports, so a restored backup or an older guest cannot leave a stale value. The Incus package comes from health, or, when health lacks it, from the state's catalog entry if this package knows it and it is a prebuilt appliance verified against its package manifest at first boot; `server_version` is never used. A guest that answers health without the flow relay is recorded as contract 0. `runtime/storage-identity.json` holds the ZFS pool GUID and layout from a ready guest in phase `ready`, and is never replaced by a different GUID. Before booting, the daemon refuses a state whose recorded contract is below the minimum it serves, so `macus start` and `restart` fail with `conflict` without booting it; an unreadable or missing record is unknown and the guest is booted and probed. `runtime status` and `start` report `upgrade_available` when the recorded appliance or payload differs from the installed one.
 
-The daemon also holds the upgrade engine, which no command or route exposes yet. Planning (`RuntimeService.upgradePlan`) is read-only. A state is current when its catalog ID and recorded payload revision both match the installed package. Otherwise the plan:
+The daemon also holds the upgrade, rollback and backup engine, which no command or route exposes yet. Planning (`RuntimeService.upgradePlan`) is read-only. A state is current when its catalog ID and recorded payload revision both match the installed package. Otherwise the plan:
 - classifies the upgrade by full Incus package (exactly equal is reversible; newer or unknown is migrating; older, or equal in value but not in text, is refused);
 - names the pool from `storage-identity.json` or, for an older guest, the last `TAMA_STORAGE_ZFS_READY` line in `serial.log`, refusing ext4 or a state with neither;
 - requires free space for a fully allocated new root, plus the data disk's allocated size when the volume cannot clone it.
@@ -522,7 +522,20 @@ Execution (`RuntimeService.upgrade`):
 - boots under the `upgrade` operation, with the relay closed and force stop refused until commit;
 - requires a compatible guest reporting the same pool, then commits by recording the guest, writing `backup.json`, and removing the staging directory and the intent.
 
+The inventory check reads Incus through an internal relay stream (a socket pair joined to the guest by the same flow-controlled relay), so it works while the relay is closed to clients:
+- before the stop, a ready runtime's instances, default-pool volumes (without `image` volumes), managed networks and profiles are read per project; failing to read them refuses the upgrade with nothing changed;
+- after readiness, the new root must serve the same reads, and every earlier name must still be listed (new names are allowed);
+- a runtime that was not ready is not booted to take an inventory, so its comparison is skipped and the result says so;
+- both inventories are kept in the backup as `inventory-before.json` and `inventory-after.json`.
+
 Any failure after the intent stops the new root (graceful, then forced) and restores the previous files by identity. New files go to `backups/<id>/failed/`, and a migrated data disk is replaced by its copy. A daemon that starts with `upgrade.pending` does the same before it accepts anything. An unreadable intent, or a rollback that cannot place a file, preserves everything and refuses runtime changes until it is resolved by hand. Runtime reset never removes backups.
+
+Explicit rollback (`RuntimeService.rollback`) restores a named backup, or the latest one that still holds a root. A root never boots against data at a different Incus package:
+- the root alone is restored when its recorded package is known and equals the current data's;
+- otherwise the backup's own data copy is restored with it, or the earliest later backup's copy recorded at the root's package;
+- otherwise rollback is refused. Restoring a data copy requires the discard confirmation and names the copy's time.
+
+Rollback only renames, journaled in `STATE/rollback.pending` by device and inode. The state it replaces becomes a new backup (`operation: rollback`), so nothing is deleted and the rollback can be rolled back. A failed rename is undone at once, and an interrupted rollback is undone at the next daemon start. The runtime is left stopped. `RuntimeService.backups` lists every backup with its allocated size and whether it can be restored now. `pruneBackup` removes one only with confirmation and names the backups that would lose the data copy they depend on.
 
 A fatal listener failure exits the entire guest helper so OpenRC can restart it; transient accept failures retry. Guest health becomes available only after the relay listener starts.
 

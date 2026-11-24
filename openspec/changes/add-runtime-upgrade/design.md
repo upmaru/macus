@@ -136,6 +136,14 @@ Examples:
 
 After rollback the state matches the earlier package; with the current package installed, `start` will again report that an upgrade is required or available.
 
+Implementation choices for explicit rollback:
+- It only renames files. The root, firmware store, seed and, in cases 2 and 3, `data.raw` it replaces go into a new backup with `operation: rollback`, `restored_from` and `data_from`, beside copies of the records. Nothing is deleted, and the rollback can itself be rolled back under the same rules: its root's package is the one the data was at, and its data copy, when it has one, is at that package.
+- It leaves the runtime stopped. A ready runtime is stopped gracefully first, and a timeout moves nothing. `start` then boots the restored root normally, or refuses it before boot if its recorded contract is incompatible.
+- `STATE/rollback.pending` journals every rename with the file's device and inode before the first one. A failed rename is undone at once; an interrupted rollback is undone at the next daemon start, which restores the replaced records and removes the new backup. An unreadable journal preserves everything and refuses runtime changes, as for an upgrade.
+- The selected backup's directory is kept with whatever remains, such as its own data copy when case 1 left it unused, and lists as `restored`. A data copy restored from another backup is moved, so that backup lists without one. With no ID, rollback selects the latest backup that still holds a root.
+- The selected backup's guest record replaces the current one; a backup without one removes the current one, which describes another root.
+- Automatic rollback likewise removes a guest record written for the new root when the earlier state had none, moving it into `failed/`.
+
 ### 6. Safety copies
 
 - **Location:** `STATE/backups/<id>/`, private (0700), on the same volume as the disks by construction.
@@ -151,6 +159,12 @@ Before the stop, when the guest is ready, the daemon reads names only, per proje
 When the old guest cannot be queried (the pre-relay case), the comparison is skipped and the result says so. Pool identity and Incus readiness are still required, and the post-upgrade inventory is printed for the user to check.
 
 No instance is started, stopped or modified by the upgrade. Instances come back according to Incus's own autostart settings.
+
+Implementation choices:
+- The inventory is read only from a runtime that is `ready`. A stopped runtime is not booted on its old root to take one, so its comparison is skipped and the result says why. A ready guest whose inventory cannot be read refuses the upgrade before the stop, naming stopping the runtime as the way to upgrade without the comparison.
+- Volumes are compared as `type/name`, without `image` volumes, which Incus expires on its own schedule. Networks are the managed ones; unmanaged entries are the guest's interfaces.
+- After readiness the new root must serve the inventory, compared or not; otherwise verification fails and the upgrade is rolled back. Both inventories are written to the backup as `inventory-before.json` and `inventory-after.json`, and the result returns the current one.
+- The internal stream joins one end of a socket pair to the guest with the same flow-controlled relay that serves `incus.sock` clients, and sends one bounded HTTP request per stream.
 
 ### 8. Homebrew and documentation
 

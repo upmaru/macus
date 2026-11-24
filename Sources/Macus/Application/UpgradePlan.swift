@@ -91,26 +91,11 @@ enum UpgradePlanner {
     paths: RuntimePaths, catalog: ApplianceCatalogEntry, payloadRevision: String,
     volume: any UpgradeVolume
   ) throws -> UpgradePlan {
-    let record = try GuestRecordStore.loadGuest(paths: paths)
-    let journal = try BootstrapStore.loadJournal(paths.directory)
-    // A guest that predates identity reporting has a record without these fields: unknown.
-    let fromCatalog = record?.applianceId ?? journal?.catalogID
-    // The journal names the creation payload only while no guest has been recorded.
-    let fromPayload = record == nil ? journal?.payloadRevision : record?.payloadRevision
-    let recordedPackage: String?
-    let recordedSource: String?
-    if let package = record?.incusPackage {
-      recordedPackage = package
-      recordedSource = record?.incusPackageSource
-    } else if let package = GuestRecordStore.catalogPackage(
-      catalogID: fromCatalog, catalog: catalog)
-    {
-      recordedPackage = package
-      recordedSource = GuestRecord.catalogSource
-    } else {
-      recordedPackage = nil
-      recordedSource = nil
-    }
+    let recorded = try recordedState(paths: paths, catalog: catalog)
+    let fromCatalog = recorded.catalogId
+    let fromPayload = recorded.payloadRevision
+    let recordedPackage = recorded.incusPackage
+    let recordedSource = recorded.incusPackageSource
     let target = catalog.qualifiedPackages["incus"]
     var plan = UpgradePlan(
       current: fromCatalog == catalog.id && fromPayload == payloadRevision,
@@ -142,6 +127,37 @@ enum UpgradePlanner {
       )
     }
     return plan
+  }
+
+  struct RecordedState: Equatable {
+    var catalogId: String?
+    var payloadRevision: String?
+    var incusPackage: String?
+    var incusPackageSource: String?
+  }
+
+  /// The state's appliance, payload and Incus package as recorded: the daemon's guest record,
+  /// then the creation journal, then the catalog fallback for the package (decision 3).
+  static func recordedState(paths: RuntimePaths, catalog: ApplianceCatalogEntry) throws
+    -> RecordedState
+  {
+    let record = try GuestRecordStore.loadGuest(paths: paths)
+    let journal = try BootstrapStore.loadJournal(paths.directory)
+    // A guest that predates identity reporting has a record without these fields: unknown.
+    let catalogId = record?.applianceId ?? journal?.catalogID
+    // The journal names the creation payload only while no guest has been recorded.
+    var state = RecordedState(
+      catalogId: catalogId,
+      payloadRevision: record == nil ? journal?.payloadRevision : record?.payloadRevision)
+    if let package = record?.incusPackage {
+      state.incusPackage = package
+      state.incusPackageSource = record?.incusPackageSource
+    } else if let package = GuestRecordStore.catalogPackage(catalogID: catalogId, catalog: catalog)
+    {
+      state.incusPackage = package
+      state.incusPackageSource = GuestRecord.catalogSource
+    }
+    return state
   }
 
   /// Decision 4: exact equality is reversible; newer or unknown is migrating; older or an
@@ -255,5 +271,6 @@ public struct UpgradeResult: Codable, Sendable {
   public var toCatalogId: String
   public var poolGuid: String
   public var dataCopy: String
+  public var inventory: UpgradeInventoryOutcome
   public var status: RuntimeStatus
 }

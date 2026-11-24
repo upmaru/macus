@@ -25,6 +25,8 @@ public actor RuntimeService {
   private let volume: any UpgradeVolume
   /// Test seam: called at labelled points of an upgrade and its rollback.
   private let upgradeHook: UpgradeHook?
+  /// Reads the Incus inventory before and after an upgrade.
+  private let inventorySource: any IncusInventorySource
   /// The operation progress reports while a mutation runs, when it is not a plain start.
   private var operation: String?
   /// Set when an interrupted upgrade could not be rolled back at daemon start: every
@@ -40,7 +42,8 @@ public actor RuntimeService {
     catalog: ApplianceCatalogEntry = .current,
     payloadRevision: String = EmbeddedGuestPayload.revision,
     macusPackage: String? = BuildIdentity.current.version,
-    volume: any UpgradeVolume = HostVolume(), upgradeHook: UpgradeHook? = nil
+    volume: any UpgradeVolume = HostVolume(), upgradeHook: UpgradeHook? = nil,
+    inventory: any IncusInventorySource = RelayInventorySource()
   ) throws {
     self.driver = driver
     self.store = store
@@ -50,8 +53,9 @@ public actor RuntimeService {
     self.macusPackage = macusPackage
     self.volume = volume
     self.upgradeHook = upgradeHook
-    // An upgrade that did not commit is rolled back before anything else is accepted. The VM
-    // runs inside this process, so nothing is running yet.
+    self.inventorySource = inventory
+    // An upgrade or rollback that did not commit is undone before anything else is accepted.
+    // The VM runs inside this process, so nothing is running yet.
     var recovered: String?
     var failure: String?
     do {
@@ -62,6 +66,18 @@ public actor RuntimeService {
     } catch {
       failure =
         "An interrupted upgrade could not be rolled back automatically: \(error.localizedDescription) Runtime changes are refused until it is resolved."
+    }
+    if failure == nil {
+      do {
+        if let intent = try RollbackJournal.load(paths: store.paths) {
+          try RollbackJournal.undo(intent, paths: store.paths)
+          recovered =
+            "A rollback to backup \(intent.source) did not complete before the daemon stopped, so it was undone: the runtime is as it was before the rollback."
+        }
+      } catch {
+        failure =
+          "An interrupted rollback could not be undone automatically: \(error.localizedDescription) Runtime changes are refused until it is resolved."
+      }
     }
     if let failure {
       recoveryError = failure
@@ -249,6 +265,23 @@ public actor RuntimeService {
     next.applianceManifestPath = staged.manifest.path
     next.seedPath = staged.creationSeed.path
     try next.validate()
+    let open = internalIncusStream()
+    var before: IncusInventory?
+    var skipped: String?
+    if state == .ready, await driver.isRunning() {
+      bootPhase = "reading_inventory"
+      do {
+        before = try await inventorySource.read(open: open)
+      } catch {
+        throw RuntimeError(
+          .unavailable,
+          "The running guest's Incus inventory could not be read (\(error.localizedDescription)), so it could not be compared after the upgrade. Nothing was changed. To upgrade without the comparison, stop the runtime first."
+        )
+      }
+    } else {
+      skipped =
+        "The previous guest was not serving Incus to this host, so its inventory was not read and the comparison was skipped."
+    }
     if await driver.isRunning() {
       bootPhase = "stopping"
       do {
@@ -271,6 +304,11 @@ public actor RuntimeService {
     do {
       try upgradeHook?("journaled")
       try UpgradeJournal.createBackup(&intent, paths: paths, hook: upgradeHook)
+      if let before {
+        try PrivateFile.write(
+          try JSON.encoder().encode(before),
+          to: paths.backup(intent.backupId).appendingPathComponent(Self.inventoryBefore))
+      }
       if upgradeClass == .migrating {
         bootPhase = "copying_data"
         try UpgradeJournal.copyData(
@@ -295,6 +333,18 @@ public actor RuntimeService {
         next, deadline: deadline, operationGeneration: operationGeneration)
       bootPhase = "verifying"
       try Self.verifyUpgraded(health, poolGuid: storage.poolGuid)
+      let after: IncusInventory
+      do {
+        after = try await inventorySource.read(open: open)
+      } catch {
+        throw RuntimeError(
+          .unavailable,
+          "The new root did not serve the Incus API to this host: \(error.localizedDescription)")
+      }
+      try PrivateFile.write(
+        try JSON.encoder().encode(after),
+        to: paths.backup(intent.backupId).appendingPathComponent(Self.inventoryAfter))
+      if let before { try Self.verifyInventory(after, before: before) }
       intent.step = .verified
       try UpgradeJournal.save(intent, paths: paths)
       try upgradeHook?("verified")
@@ -315,12 +365,34 @@ public actor RuntimeService {
       return UpgradeResult(
         backupId: intent.backupId, upgradeClass: upgradeClass, fromCatalogId: plan.fromCatalogId,
         toCatalogId: catalog.id, poolGuid: storage.poolGuid, dataCopy: plan.dataCopy,
+        inventory: UpgradeInventoryOutcome(
+          compared: before != nil, skippedReason: skipped, current: after),
         status: snapshot())
     } catch let interruption as UpgradeInterruption {
       throw interruption
     } catch {
       throw await rollBackUpgrade(intent, value: next, reason: error)
     }
+  }
+
+  static let inventoryBefore = "inventory-before.json"
+  static let inventoryAfter = "inventory-after.json"
+
+  /// Every name Incus listed before the upgrade must still be listed. New names are allowed.
+  static func verifyInventory(_ after: IncusInventory, before: IncusInventory) throws {
+    let missing = after.missing(from: before)
+    guard !missing.isEmpty else { return }
+    let shown = missing.prefix(10).joined(separator: ", ")
+    let more = missing.count > 10 ? " and \(missing.count - 10) more" : ""
+    throw RuntimeError(
+      .unavailable, "Incus on the new root no longer lists \(shown)\(more).")
+  }
+
+  /// A stream to the guest's Incus relay port for the daemon's own reads. It does not depend
+  /// on the runtime being ready, so it works while the relay is closed to clients.
+  private func internalIncusStream() -> @Sendable () async throws -> GuestStream {
+    let driver = self.driver
+    return { try await driver.openStream(port: FlowRelayProtocol.port) }
   }
 
   private static func identity(_ url: URL) throws -> FileIdentity {
@@ -394,6 +466,125 @@ public actor RuntimeService {
       lastError = message
       return RuntimeError(.io, message)
     }
+  }
+
+  // MARK: Backups
+
+  /// Read-only: every backup with its size and whether it can be restored now.
+  public func backups() async throws -> [BackupSummary] {
+    let paths = store.paths
+    let catalog = self.catalog
+    return try await Task.detached {
+      let current = try UpgradePlanner.recordedState(paths: paths, catalog: catalog)
+      return try BackupCatalog.summaries(paths: paths, currentPackage: current.incusPackage)
+    }.value
+  }
+
+  /// Restores a backup's root, firmware store, seed and configuration, and a data disk copy
+  /// when the pairing rules require one. The state it replaces becomes a new backup, so
+  /// nothing is deleted and the rollback can itself be rolled back. The runtime is left
+  /// stopped.
+  public func rollback(backupID: String?, discardDataSinceUpgrade: Bool) async throws
+    -> BackupRollbackResult
+  {
+    try beginMutation()
+    let operationGeneration = generation
+    defer { if generation == operationGeneration { mutationActive = false } }
+    operation = "rollback"
+    defer { operation = nil }
+    let previous = try config()
+    let paths = store.paths
+    let catalog = self.catalog
+    let prepared = try await Task.detached {
+      try BackupRollback.prepare(
+        paths: paths, catalog: catalog, id: backupID, discardData: discardDataSinceUpgrade)
+    }.value
+    if await driver.isRunning() {
+      bootPhase = "stopping"
+      do {
+        _ = try await stopLocked(force: false)
+      } catch {
+        throw RuntimeError(
+          .timeout,
+          "The runtime did not stop within \(previous.shutdownTimeoutSeconds) s, so the rollback stopped before any disk was moved; the guest may still be running. Stop it with macus runtime stop --force first. \(error.localizedDescription)"
+        )
+      }
+    }
+    guestHealth = nil
+    startedAt = nil
+    bootPhase = "rolling_back"
+    var intent = try BackupRollback.intent(prepared, paths: paths, macusPackage: macusPackage)
+    try RollbackJournal.save(intent, paths: paths)
+    do {
+      try upgradeHook?("rollback_journaled")
+      try RollbackJournal.forward(&intent, paths: paths, hook: upgradeHook)
+    } catch let interruption as UpgradeInterruption {
+      throw interruption
+    } catch {
+      let detail = error.localizedDescription
+      do {
+        try RollbackJournal.undo(intent, paths: paths)
+      } catch let undoError {
+        let message =
+          "The rollback to backup \(prepared.entry.id) failed (\(detail)) and could not be undone automatically: \(undoError.localizedDescription) Runtime changes are refused until it is resolved."
+        recoveryError = message
+        state = .failed
+        lastError = message
+        throw RuntimeError(.io, message)
+      }
+      configuration = try? store.load()
+      state = .stopped
+      let message =
+        "The rollback to backup \(prepared.entry.id) did not complete: \(detail) The runtime was put back as it was before the rollback."
+      lastError = message
+      throw RuntimeError((error as? RuntimeError)?.code ?? .io, message)
+    }
+    configuration = try store.load()
+    state = .stopped
+    bootPhase = nil
+    lastError = nil
+    logger.notice(
+      "Rolled back to backup \(prepared.entry.id, privacy: .public); the replaced state is backup \(intent.id, privacy: .public)"
+    )
+    return BackupRollbackResult(
+      restoredBackupId: prepared.entry.id, safetyBackupId: intent.id,
+      restoreData: prepared.decision.data.rawValue, dataFrom: prepared.decision.dataFrom,
+      dataCopyCreatedAt: prepared.dataCopyCreatedAt,
+      rootIncusPackage: prepared.entry.record?.rootIncusPackage, status: snapshot())
+  }
+
+  /// Removes one backup. Without confirmation nothing is removed, and the refusal names the
+  /// backups that depend on its data copy.
+  public func pruneBackup(id: String, confirm: Bool) async throws -> BackupPruneResult {
+    try UpgradeID.validate(id)
+    try beginMutation()
+    let operationGeneration = generation
+    defer { if generation == operationGeneration { mutationActive = false } }
+    let paths = store.paths
+    let catalog = self.catalog
+    return try await Task.detached {
+      let all = try BackupCatalog.load(paths: paths)
+      guard let entry = all.first(where: { $0.id == id }) else {
+        throw RuntimeError(.notFound, "No backup \(id)")
+      }
+      let current = try UpgradePlanner.recordedState(paths: paths, catalog: catalog)
+      let breaks = BackupCatalog.breaks(
+        pruning: id, all: all, currentPackage: current.incusPackage)
+      let dependents =
+        breaks.isEmpty
+        ? ""
+        : " Backups \(breaks.joined(separator: ", ")) depend on its data disk copy and would no longer be restorable."
+      guard confirm else {
+        throw RuntimeError(
+          .invalidRequest,
+          "Pruning backup \(id) permanently removes it (\(entry.allocatedBytes) bytes allocated).\(dependents) Confirm to remove it; nothing was removed."
+        )
+      }
+      try FileManager.default.removeItem(at: paths.backup(id))
+      try PrivateFile.sync(paths.backupsDirectory)
+      return BackupPruneResult(
+        removed: id, allocatedBytes: entry.allocatedBytes, noLongerRestorable: breaks)
+    }.value
   }
 
   public func openIncusStream() async throws -> GuestStream {

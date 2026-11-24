@@ -6,13 +6,13 @@ import Testing
 
 // MARK: Fixtures
 
-private let oldRevision = String(repeating: "a", count: 64)
-private let poolGuid = "1234567890"
-private let oldRootBytes = Data("old-root".utf8)
-private let dataMarker = Data("migrated-by-new-root".utf8)
+let oldRevision = String(repeating: "a", count: 64)
+let poolGuid = "1234567890"
+let oldRootBytes = Data("old-root".utf8)
+let dataMarker = Data("migrated-by-new-root".utf8)
 
 /// A guest whose health and boot side effects the test controls.
-private actor UpgradeVM: VirtualMachineDriver {
+actor UpgradeVM: VirtualMachineDriver {
   var running = false
   var health: GuestHealth?
   var startCount = 0
@@ -77,7 +77,7 @@ private actor UpgradeVM: VirtualMachineDriver {
   var waiting: Bool { gate != nil }
 }
 
-private func health(
+func upgradeHealth(
   guid: String = poolGuid, payload: String?, appliance: String?, package: String? = "7.0.1-r2",
   flowRelay: Int? = FlowRelayProtocol.version, contract: Int? = 1
 ) -> GuestHealth {
@@ -88,8 +88,28 @@ private func health(
     storage: GuestStorageIdentity(backend: "zfs", poolGuid: guid, layout: "zfs-v1", phase: "ready"))
 }
 
+/// Inventories in the order the upgrade reads them; once the script is used up, every read
+/// returns `standard`.
+actor FakeInventory: IncusInventorySource {
+  static let standard = IncusInventory(projects: [
+    IncusProjectInventory(
+      name: "default", instances: ["web"], volumes: ["custom/data"], networks: ["incusbr0"],
+      profiles: ["default"])
+  ])
+  var script: [Result<IncusInventory, RuntimeError>]
+  var reads = 0
+  init(_ script: [Result<IncusInventory, RuntimeError>] = []) { self.script = script }
+  func read(open: @escaping @Sendable () async throws -> GuestStream) async throws
+    -> IncusInventory
+  {
+    reads += 1
+    guard !script.isEmpty else { return Self.standard }
+    return try script.removeFirst().get()
+  }
+}
+
 /// Free space and clone support under the test's control; copies are real.
-private struct TestVolume: UpgradeVolume {
+struct TestVolume: UpgradeVolume {
   var available: UInt64 = 1 << 50
   var cloning = true
   /// Reports clone support but fails the clone itself.
@@ -109,7 +129,7 @@ private struct TestVolume: UpgradeVolume {
 }
 
 /// An existing state of an older appliance, plus a target appliance this package knows.
-private struct UpgradeFixture {
+struct UpgradeFixture {
   let base: Fixture
   let entry: ApplianceCatalogEntry
   var paths: RuntimePaths { base.paths }
@@ -151,16 +171,18 @@ private struct UpgradeFixture {
       paths: paths)
     if storage {
       _ = try GuestRecordStore.recordStorage(
-        health(payload: payload, appliance: appliance), paths: paths)
+        upgradeHealth(payload: payload, appliance: appliance), paths: paths)
     }
   }
 
   func service(
-    _ driver: UpgradeVM, volume: TestVolume = TestVolume(), hook: UpgradeHook? = nil
+    _ driver: UpgradeVM, volume: TestVolume = TestVolume(),
+    inventory: FakeInventory = FakeInventory(), hook: UpgradeHook? = nil
   ) throws -> RuntimeService {
     try RuntimeService(
       driver: driver, store: StateStore(paths: paths), stallLimit: .seconds(300), catalog: entry,
-      payloadRevision: targetPayload, macusPackage: "test", volume: volume, upgradeHook: hook)
+      payloadRevision: targetPayload, macusPackage: "test", volume: volume, upgradeHook: hook,
+      inventory: inventory)
   }
 
   func plan(volume: TestVolume = TestVolume()) throws -> UpgradePlan {
@@ -205,7 +227,7 @@ extension GuestImageManager {
   }
 }
 
-private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
+func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
 
 // MARK: Incus direction (3.2)
 
@@ -418,7 +440,7 @@ private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath:
   let old = try fixture.identities()
   let oldConfig = try Data(contentsOf: fixture.paths.config)
   let driver = UpgradeVM()
-  await driver.set(health(payload: oldRevision, appliance: "alpine-3.24.2-lts-1"))
+  await driver.set(upgradeHealth(payload: oldRevision, appliance: "alpine-3.24.2-lts-1"))
   let service = try fixture.service(driver)
   _ = try await service.start()
   // Start rewrote the record from health; the backup must hold that one.
@@ -426,7 +448,7 @@ private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath:
   let plan = try await service.upgradePlan()
   #expect(plan.upgradeClass == .reversible)
   let id = try await fixture.stage(plan)
-  await driver.set(health(payload: fixture.targetPayload, appliance: fixture.entry.id))
+  await driver.set(upgradeHealth(payload: fixture.targetPayload, appliance: fixture.entry.id))
   let result = try await service.upgrade(stagingID: id)
   #expect(result.upgradeClass == .reversible)
   #expect(result.backupId == id)
@@ -471,7 +493,7 @@ private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath:
   let service = try fixture.service(driver)
   let id = try await fixture.stage(try await service.upgradePlan())
   await driver.set(
-    health(payload: fixture.targetPayload, appliance: fixture.entry.id, package: "7.0.2-r0"))
+    upgradeHealth(payload: fixture.targetPayload, appliance: fixture.entry.id, package: "7.0.2-r0"))
   await driver.setWritesData(
     true, backup: fixture.paths.backup(id).appendingPathComponent("data.raw"))
   let result = try await service.upgrade(stagingID: id)
@@ -496,7 +518,7 @@ private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath:
   let driver = UpgradeVM()
   let service = try fixture.service(driver)
   let id = try await fixture.stage(try await service.upgradePlan())
-  await driver.set(health(payload: fixture.targetPayload, appliance: fixture.entry.id))
+  await driver.set(upgradeHealth(payload: fixture.targetPayload, appliance: fixture.entry.id))
   await driver.hold()
   let upgrade = Task { try await service.upgrade(stagingID: id) }
   for _ in 0..<400 where !(await driver.waiting) { try await Task.sleep(for: .milliseconds(10)) }
@@ -519,7 +541,7 @@ private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath:
   defer { fixture.clean() }
   try fixture.record()
   let driver = UpgradeVM()
-  await driver.set(health(payload: oldRevision, appliance: "alpine-3.24.2-lts-1"))
+  await driver.set(upgradeHealth(payload: oldRevision, appliance: "alpine-3.24.2-lts-1"))
   let service = try fixture.service(driver)
   _ = try await service.start()
   let id = try await fixture.stage(try await service.upgradePlan())
@@ -559,7 +581,7 @@ private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath:
 
 // MARK: Rollback (3.5)
 
-private func expectRestored(
+func expectRestored(
   _ fixture: UpgradeFixture, before: [String: Data], identities: [FileIdentity?], id: String,
   migratedAside: Bool, written: Bool = true
 ) throws {
@@ -618,7 +640,8 @@ private func expectRestored(
   let service = try fixture.service(driver)
   let id = try await fixture.stage(try await service.upgradePlan())
   // Ready, but reporting another pool.
-  await driver.set(health(guid: "555", payload: fixture.targetPayload, appliance: fixture.entry.id))
+  await driver.set(
+    upgradeHealth(guid: "555", payload: fixture.targetPayload, appliance: fixture.entry.id))
   let error = await #expect(throws: RuntimeError.self) {
     _ = try await service.upgrade(stagingID: id)
   }
@@ -645,7 +668,7 @@ func daemonStartRollsBackAnInterruptedUpgrade(point: String) async throws {
   let identities = try fixture.identities()
   let driver = UpgradeVM()
   await driver.set(
-    health(payload: fixture.targetPayload, appliance: fixture.entry.id, package: "7.0.2-r0"))
+    upgradeHealth(payload: fixture.targetPayload, appliance: fixture.entry.id, package: "7.0.2-r0"))
   await driver.setWritesData(true, backup: nil)
   let service = try fixture.service(driver) { label in
     if label == point { throw UpgradeInterruption() }
@@ -667,7 +690,7 @@ func daemonStartRollsBackAnInterruptedUpgrade(point: String) async throws {
     written: index > booting)
   // Start is accepted again, on the previous root.
   let next = UpgradeVM()
-  await next.set(health(payload: oldRevision, appliance: "alpine-3.24.2-lts-1"))
+  await next.set(upgradeHealth(payload: oldRevision, appliance: "alpine-3.24.2-lts-1"))
   let again = try fixture.service(next)
   _ = try await again.start()
   #expect(await next.bootedRoots == [oldRootBytes])
@@ -722,7 +745,7 @@ func daemonStartRollsBackAnInterruptedUpgrade(point: String) async throws {
   let driver = UpgradeVM()
   let service = try fixture.service(driver)
   let id = try await fixture.stage(try await service.upgradePlan())
-  await driver.set(health(payload: fixture.targetPayload, appliance: fixture.entry.id))
+  await driver.set(upgradeHealth(payload: fixture.targetPayload, appliance: fixture.entry.id))
   _ = try await service.upgrade(stagingID: id)
   _ = try await service.stop()
   _ = try await service.delete(confirm: true)
@@ -771,7 +794,7 @@ func daemonStartRollsBackAnInterruptedUpgrade(point: String) async throws {
   #expect(plan.dataCopy == "full")
   let id = try await fixture.stage(plan)
   await driver.set(
-    health(payload: fixture.targetPayload, appliance: fixture.entry.id, package: "7.0.2-r0"))
+    upgradeHealth(payload: fixture.targetPayload, appliance: fixture.entry.id, package: "7.0.2-r0"))
   let result = try await service.upgrade(stagingID: id)
   #expect(result.dataCopy == "full")
   let copy = fixture.paths.backup(id).appendingPathComponent("data.raw")
@@ -829,7 +852,8 @@ func daemonStartRollsBackAnInterruptedUpgrade(point: String) async throws {
     let before = try fixture.snapshot()
     let driver = UpgradeVM()
     await driver.set(
-      health(payload: fixture.targetPayload, appliance: fixture.entry.id, package: "7.0.2-r0"))
+      upgradeHealth(
+        payload: fixture.targetPayload, appliance: fixture.entry.id, package: "7.0.2-r0"))
     let service = try fixture.service(
       driver, volume: TestVolume(available: available, cloneFails: true))
     let id = try await fixture.stage(try await service.upgradePlan())

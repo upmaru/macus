@@ -50,20 +50,31 @@ struct UpgradeIntent: Codable, Sendable, Equatable {
   var dataCopy: FileIdentity?
 }
 
-/// `backups/<id>/backup.json`, written when an upgrade commits.
+/// `backups/<id>/backup.json`, written when an upgrade or an explicit rollback commits. The
+/// backup holds the root that ran before it and, when `dataCopy`, a data disk copy taken after
+/// that root last stopped, so at the same Incus package.
 struct UpgradeBackupRecord: Codable, Sendable, Equatable {
   var schemaVersion = 1
   var id: String
   var createdAt: String
   var upgradeClass: UpgradeClass
+  /// The backed-up root's appliance, and the appliance that replaced it.
   var fromCatalogId: String?
-  var toCatalogId: String
+  var toCatalogId: String?
   /// The backed-up root's Incus package and its source; nil when unknown.
   var rootIncusPackage: String?
   var rootIncusPackageSource: String?
   var dataCopy: Bool
   var poolGuid: String
   var macusPackage: String?
+  /// `upgrade`, or `rollback` for the state an explicit rollback replaced.
+  var operation: String? = nil
+  /// For a rollback: the backup it restored, and the backup whose data copy it restored.
+  var restoredFrom: String? = nil
+  var dataFrom: String? = nil
+
+  static let upgradeOperation = "upgrade"
+  static let rollbackOperation = "rollback"
 }
 
 /// Thrown only by the test seam to simulate the daemon dying at a labelled point: the
@@ -286,6 +297,10 @@ enum UpgradeJournal {
       let savedGuest = backup.appendingPathComponent(guestRecordName)
       if try FileIdentity.of(savedGuest) != nil {
         try PrivateFile.write(try Data(contentsOf: savedGuest), to: paths.guestRecord)
+      } else if intent.step >= .booting, try FileIdentity.of(paths.guestRecord) != nil {
+        // The backup was complete before boot, so the previous state had no record: one
+        // now describes the new root and must not survive it.
+        try setAside(paths.guestRecord, as: guestRecordName)
       }
       // A rolled-back backup is a failure record, never a restorable backup.
       let committed = backup.appendingPathComponent(backupRecordName)

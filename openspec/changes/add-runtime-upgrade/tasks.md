@@ -22,8 +22,8 @@
 - [x] 3.4 Implement the journaled swap with recorded file identities, boot under the upgrade operation with the relay closed to clients, verification and commit with the fixture driver; verify the success path, that `efi.bin` is recreated and that the relay is refused to clients until commit.
 - [x] 3.5 Implement automatic rollback and daemon-start resolution of `upgrade.pending`; verify tests that interrupt after each journal step and in the middle of the swap renames, after a passed verification before commit, an unreadable journal, a failed boot and a failed verification, each ending in the previous disks and configuration.
 - [x] 3.6 Implement the `clonefile(2)` data copy with the full-copy fallback and space check; verify on a clone-capable and a non-clone fixture path.
-- [ ] 3.7 Implement the inventory read and comparison through an internal relay stream; verify preserved, missing-name, added-name and unreachable-guest cases.
-- [ ] 3.8 Implement explicit rollback with the pairing rules and the discard confirmation; verify root-only rollback, a backup with an unknown root package and its own data copy, rollback across multiple upgrades (reversible A to B, migrating B to C, then rollback to A restores the B to C data copy), refusal when the matching data copy was pruned, and the prune warning for a dependent backup.
+- [x] 3.7 Implement the inventory read and comparison through an internal relay stream; verify preserved, missing-name, added-name and unreachable-guest cases.
+- [x] 3.8 Implement explicit rollback with the pairing rules and the discard confirmation; verify root-only rollback, a backup with an unknown root package and its own data copy, rollback across multiple upgrades (reversible A to B, migrating B to C, then rollback to A restores the B to C data copy), refusal when the matching data copy was pruned, and the prune warning for a dependent backup.
 
 ## 4. API, client and server
 

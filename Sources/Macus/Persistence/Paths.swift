@@ -20,6 +20,8 @@ public struct RuntimePaths: Sendable {
   }
   /// Durable intent of an upgrade that has not committed.
   public var upgradeIntent: URL { directory.appendingPathComponent("upgrade.pending") }
+  /// Durable intent of an explicit rollback that has not committed.
+  public var rollbackIntent: URL { directory.appendingPathComponent("rollback.pending") }
   /// Upgrade safety copies, private and on the same volume as the disks.
   public var backupsDirectory: URL {
     directory.appendingPathComponent("backups", isDirectory: true)
