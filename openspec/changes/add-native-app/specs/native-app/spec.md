@@ -131,7 +131,7 @@ The application SHALL let the owner open an interactive shell in a running insta
 
 ### Requirement: Access log view
 
-The application SHALL show the selected state's gateway access records, newest last, and follow new records across rotation. It SHALL read the owner-private log files directly after the same ownership validation as the CLI, without contacting the server, and SHALL offer filtering by path, caller, outcome and protocol. Memory used for records SHALL be bounded. Records of a newer schema version SHALL be shown from the fields the application knows.
+The application SHALL show the selected state's gateway access records, newest last. It SHALL read history from the owner-private log files after the same ownership validation as the CLI. While joined to the live channel's access topic it SHALL take new records from that topic; otherwise it SHALL follow the files across rotation. A record received from both SHALL be shown once. It SHALL offer filtering by path, caller, outcome and protocol. Memory used for records SHALL be bounded. Records of a newer schema version SHALL be shown from the fields the application knows.
 
 #### Scenario: Server stopped
 
@@ -142,6 +142,11 @@ The application SHALL show the selected state's gateway access records, newest l
 
 - **WHEN** a client uses the gateway while the access log is visible
 - **THEN** its record appears when the exchange ends
+
+#### Scenario: No duplicate
+
+- **WHEN** a record arrives on the access topic and is also read from the log file
+- **THEN** it is shown once
 
 #### Scenario: Unsafe log directory
 

@@ -19,6 +19,9 @@ Planning only. All tasks remain unchecked until implementation and their specifi
 - [ ] 2.7 Refuse every client event other than join, leave and heartbeat on all channels. Verify nothing is dispatched.
 - [ ] 2.8 Verify under load that a slow or stalled live subscriber does not delay relayed HTTP, WebSocket or raw exchanges, and log observer start and stop with the subscribing certificate.
 
+- [ ] 2.9 Add `id` (`BOOT-SEQ`) to the access record in `Macus.Proxy.AccessLog` and document it with the record's other keys; if `add-gateway-access-log` is still open, make the change there. Verify uniqueness across restarts, ordering within a run, and that the redaction test still passes.
+- [ ] 2.10 Add the `access` channel: owner-local credential only, broadcast from the telemetry handler with the documented keys only, the 200-record ring for the join reply, batching (200 records or 100 ms) and disconnection of a subscriber over its queue bound. Verify refusal for a trusted certificate and for a non-local bearer credential, the pushed record equal to the written line, the same redaction, and with a stalled subscriber that exchanges keep their responses and timing bounds and the log is still written.
+
 ## 3. Runtime state stream in the Swift daemon
 
 - [ ] 3.1 Add `GET /v1/runtime/events` to the private control API: full status on connect, one line per `RuntimeState` transition, a keep-alive comment every 30 s, at most 8 readers. Verify each transition is emitted once, the reader bound, release of a disconnected reader, and that the route is absent from the public `/runtime` API.
@@ -47,7 +50,7 @@ Planning only. All tasks remain unchecked until implementation and their specifi
 ## 7. Access log
 
 - [ ] 7.1 After `add-gateway-access-log` is implemented, confirm its reader is public API of `Macus` (ownership validation, archives oldest first, follow across rotation); if it is CLI-private, move it there in that change.
-- [ ] 7.2 Add the log model: initial 5,000 records, follow, 50,000-row bound, filters, caller naming from gateway trust, `dropped_before` rows, tolerance of a newer `v` and of malformed lines. Verify each, including no duplicate or lost record across a rotation.
+- [ ] 7.2 Add the log model: initial 5,000 records from the files, live records from the `access` topic while joined and from following the files otherwise, merging by `id`, 50,000-row bound, filters, caller naming from gateway trust, `dropped_before` rows, tolerance of a newer `v` and of malformed lines. Verify each, including no duplicate or lost record across a rotation, a join during a burst, a rejoin after a disconnect and records without an `id`.
 - [ ] 7.3 Add the Access Log view. Verify a missing file shows an explained empty table and an unsafe directory shows an error and no records.
 
 ## 8. Packaging and documentation
@@ -58,6 +61,6 @@ Planning only. All tasks remain unchecked until implementation and their specifi
 
 ## 9. Hardware acceptance (opt-in)
 
-- [ ] 9.1 On an isolated state directory with its own `INCUS_CONF`, run `macus start`, launch a container and a VM, start a listed agent program in the container, then open the app with that state. Record: the overview, connection by explicit action, both instances listed and updating when one is stopped with `incus`, the agent shown with its working directory and disappearing when it exits, a shell session with resize, removal of its certificate with `incus config trust remove` returning the app to unconnected, and that quitting the app leaves the runtime and instances running. Preserve Incus data on failure.
+- [ ] 9.1 On an isolated state directory with its own `INCUS_CONF`, run `macus start`, launch a container and a VM, start a listed agent program in the container, then open the app with that state. Record: the overview, connection by explicit action, both instances listed and updating when one is stopped with `incus`, the agent shown with its working directory and disappearing when it exits, a shell session with resize, the app's shell session appearing in the access log view as its exchange ends, removal of its certificate with `incus config trust remove` returning the app to unconnected, and that quitting the app leaves the runtime and instances running. Preserve Incus data on failure.
 - [ ] 9.2 On the same state, record that restarting the runtime is shown in the overview as it happens, that the in-instance observer process is gone after the Processes view is closed, and that `incus exec`, an SFTP mount and `incus file push` behave as before while two live subscribers are connected.
 - [ ] 9.3 With the server stopped, record that the access log is still shown and the overview reports the server as not running; then start the server and record that the app connects without being restarted.

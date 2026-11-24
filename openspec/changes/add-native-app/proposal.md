@@ -13,14 +13,14 @@ This change reverses a standing rule. `AGENTS.md` says never to introduce GUI re
 
 ## What Changes
 
-- **A live channel on the gateway.** The server mounts one Phoenix Channels socket at `/live`. Topics carry runtime state, the instance list and one instance's processes and resource use. Each source is observed once by the server and published on `Macus.PubSub`; observation runs only while a topic has subscribers. The channel is read-only: it accepts no client event that changes anything.
-- **The channel uses the gateway's existing credentials.** The `runtime` topic needs a bearer credential with `runtime.read`, as `/runtime` does. Topics that carry Incus data need a client certificate in gateway trust, as native `/1.0` does. Revocation closes the socket within the existing bound. No new scope or credential type.
+- **A live channel on the gateway.** The server mounts one Phoenix Channels socket at `/live`. Topics carry runtime state, the instance list, one instance's processes and resource use, and gateway access records as they are written. Each source is observed once by the server and published on `Macus.PubSub`; observation runs only while a topic has subscribers. The channel is read-only: it accepts no client event that changes anything.
+- **The channel uses the gateway's existing credentials.** The `runtime` topic needs a bearer credential with `runtime.read`, as `/runtime` does. Topics that carry Incus data need a client certificate in gateway trust, as native `/1.0` does. The `access` topic needs the owner-local credential, so it is readable by exactly who can read the log file. Revocation closes the socket within the existing bound. No new scope or credential type.
 - **The Swift daemon announces state changes.** A private streaming route on `runtime.sock` emits runtime state transitions, so the server does not sample status.
 - **An optional `Macus.app`.** A SwiftUI application for macOS 15+, built from this SwiftPM package as a separate product. It is a client only: it never links Virtualization.framework, never owns the VM or a launchd job, and quitting it changes nothing.
 - **The app does not poll.** Overview, instance list and process views are driven by channel pushes. It reconnects when the server publishes its endpoint, not on a timer.
 - **It has its own gateway identity.** The app generates its own key and certificate and enrolls it through the existing single-use bound enrollment token, after the owner confirms once. The owner can revoke it without affecting the `incus` CLI.
 - **Inside an instance.** A live process list with known agent programs grouped first, with their working directory, age and resource use; and an interactive terminal over the native exec WebSocket.
-- **Access log.** A live, filterable table over the access log files, readable while the server is stopped.
+- **Access log.** A live, filterable table. Live rows come from the `access` topic; history, and everything while the server is stopped, comes from the log files. Each record gains an `id` so the two are merged without duplicates.
 - **Read-only in this change.** The app does not start, stop, create, delete or configure instances, and does not start, stop, reset or upgrade the runtime. The terminal is the one place the owner can act, and what they do there is their own Incus exec session.
 - **Project rules updated.** `AGENTS.md`, `openspec/config.yaml` and `service-delivery` state the new boundary: headless runtime and installation, optional client application.
 
@@ -38,8 +38,8 @@ This change reverses a standing rule. `AGENTS.md` says never to introduce GUI re
 
 ## Impact
 
-- **Depends on** `add-elixir-server` (gateway, trust, enrollment; implemented, unarchived) and `add-gateway-access-log` (the log and its Swift reader). The access log view cannot be implemented before the latter; everything else can.
-- **Server:** `MacusWeb.LiveSocket` and channels for `runtime`, `instances` and `instance:*`; `Macus.Live` observers (runtime stream reader, Incus events subscriber, per-instance process stream) under a supervisor that starts them on first subscriber and stops them after the last; registration with the stream revocation watchers. No new dependency: Phoenix Channels and PubSub ship with Phoenix.
+- **Depends on** `add-elixir-server` (gateway, trust, enrollment; implemented, unarchived) and `add-gateway-access-log` (the log and its Swift reader). The access log view and the `access` topic cannot be implemented before the latter; everything else can. This change adds one key, `id`, to that change's record.
+- **Server:** `MacusWeb.LiveSocket` and channels for `runtime`, `instances`, `instance:*` and `access`; an `id` on each access record and its publication from `Macus.Proxy.AccessLog`; `Macus.Live` observers (runtime stream reader, Incus events subscriber, per-instance process stream) under a supervisor that starts them on first subscriber and stops them after the last; registration with the stream revocation watchers. No new dependency: Phoenix Channels and PubSub ship with Phoenix.
 - **Swift daemon:** `GET /v1/runtime/events` on `runtime.sock`, and `Macus.Runtime.Client` support for reading it.
 - **Swift package:** two new targets. `MacusAppCore` (models, channel client, native transport, log tailing; no SwiftUI) and `MacusApp` (SwiftUI executable). One new dependency, SwiftTerm, used only by `MacusApp`. The `Macus` library exposes what the app reuses as public API; `Macus` and `macus` gain no UI code or dependency.
 - **Packaging:** a script assembles and ad-hoc signs `Macus.app` from the SwiftPM build. The Homebrew formula is unchanged and does not install the app. A cask, Developer ID signing and notarization remain future scope.

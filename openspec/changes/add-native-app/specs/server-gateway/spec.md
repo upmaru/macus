@@ -4,7 +4,7 @@
 
 ### Requirement: Live observation channel
 
-The server SHALL expose one Phoenix Channels WebSocket at `/live` on its authenticated gateway, in addition to `/runtime`, native Incus paths and `/mcp`. Its topics SHALL publish runtime status, the instance list across projects, and one instance's processes, addresses and resource use. A join SHALL reply with the current value and later changes SHALL be pushed. Payloads SHALL carry a schema version. Long polling MUST NOT be offered. Requests to `/live` are not native Incus exchanges.
+The server SHALL expose one Phoenix Channels WebSocket at `/live` on its authenticated gateway, in addition to `/runtime`, native Incus paths and `/mcp`. Its topics SHALL publish runtime status, the instance list across projects, one instance's processes, addresses and resource use, and gateway access records. A join SHALL reply with the current value and later changes SHALL be pushed. Payloads SHALL carry a schema version. Long polling MUST NOT be offered. Requests to `/live` are not native Incus exchanges.
 
 #### Scenario: Runtime transition
 
@@ -23,12 +23,17 @@ The server SHALL expose one Phoenix Channels WebSocket at `/live` on its authent
 
 ### Requirement: Live channel authorization
 
-A connection to the live channel SHALL require a valid bearer credential, a client certificate in gateway trust, or both, and SHALL be refused otherwise before any topic is joined. The bearer credential MUST NOT be accepted from the request URL. The runtime topic SHALL require a bearer credential with the `runtime.read` scope. Topics that carry Incus data SHALL require a trusted client certificate and MUST NOT be opened by a bearer credential alone. Authorization SHALL be decided at join, before the join can cause backend access. Revoking the credential or certificate SHALL close the connection within the gateway's documented revocation bound.
+A connection to the live channel SHALL require a valid bearer credential, a client certificate in gateway trust, or both, and SHALL be refused otherwise before any topic is joined. The bearer credential MUST NOT be accepted from the request URL. The runtime topic SHALL require a bearer credential with the `runtime.read` scope. Topics that carry Incus data SHALL require a trusted client certificate and MUST NOT be opened by a bearer credential alone. The access topic SHALL require the owner-local credential of the selected state and MUST NOT be opened by a trusted certificate or by any other bearer credential. Authorization SHALL be decided at join, before the join can cause backend access. Revoking the credential or certificate SHALL close the connection within the gateway's documented revocation bound.
 
 #### Scenario: Bearer without certificate
 
 - **WHEN** a client with a valid `runtime.read` bearer credential and no trusted certificate joins the instances topic
 - **THEN** the join is refused and no Incus request is made
+
+#### Scenario: Remote client and access records
+
+- **WHEN** a client with a trusted certificate and a `runtime.read` bearer credential that is not the owner-local one joins the access topic
+- **THEN** the join is refused and it receives no access record
 
 #### Scenario: Unauthenticated connect
 
@@ -72,3 +77,22 @@ The server SHALL observe each source once regardless of the number of subscriber
 
 - **WHEN** a client joins an instance topic while the maximum number of instances is already watched
 - **THEN** the join is refused with a stable reason and existing subscriptions continue
+
+### Requirement: Live access records
+
+Every access record SHALL carry an identifier that is unique across server restarts and orders the records of one server run. The server SHALL publish each record on the live channel's access topic when the exchange ends, with exactly the fields of the stored record and under the same redaction. A join SHALL reply with a bounded number of the most recent records, and pushes SHALL be batched. Publishing MUST NOT delay, fail or change any exchange or the writing of the log; a subscriber that cannot keep up SHALL be disconnected.
+
+#### Scenario: Record pushed
+
+- **WHEN** a client lists instances through the gateway while an owner-local subscriber is joined to the access topic
+- **THEN** the subscriber is pushed that exchange's record with the same identifier and fields as the line written to the log
+
+#### Scenario: Same redaction
+
+- **WHEN** an Incus server opens an operation WebSocket with its secret in the query
+- **THEN** the pushed record contains neither the query nor the secret
+
+#### Scenario: Slow subscriber
+
+- **WHEN** a subscriber stops reading while requests continue
+- **THEN** relayed requests complete with unchanged responses and timing bounds, records are still written to the log, and the subscriber is disconnected

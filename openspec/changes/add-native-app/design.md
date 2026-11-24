@@ -65,6 +65,7 @@ The first draft of this design had the app poll `/runtime/status` every 5 s, ref
 | `runtime` | current status | `status` on every state transition | Swift runtime state stream (decision 5) |
 | `instances` | all instances, all projects | `upsert`, `remove` | one Incus events subscription held by the server |
 | `instance:PROJECT:NAME` | latest process and resource snapshot, or why none | `snapshot`, `unavailable` | one streaming exec per watched instance (decision 7) |
+| `access` | the most recent 200 records | `records` (a batch) | the access log's telemetry handler (decision 9) |
 
 Payloads are versioned with `v`, like the access log. Uptime is not pushed: the status carries the start time and the client counts.
 
@@ -85,6 +86,7 @@ The gateway already has two rules: runtime requests need a scoped bearer credent
 - **Connect** accepts a bearer credential, a trusted client certificate, or both. The bearer token travels in the WebSocket subprotocol header through Phoenix's `auth_token` option, never in the URL. The certificate is the TLS peer certificate from `peer_data`. A connection with neither valid is refused before any topic exists.
 - **`runtime`** requires a bearer credential with `runtime.read`.
 - **`instances`** and **`instance:*`** require a certificate in gateway trust. A bearer credential alone does not open them, exactly as it does not open `/1.0`.
+- **`access`** requires the owner-local credential: the bearer credential whose principal is `macus-local-cli`, which `macus start` writes to the 0600 `STATE/server/local-cli.token`. Access records name every caller and every path, and today only the owner of the state directory can read them. Whoever can read that token can read the log file, so this rule opens the records to nobody new. A trusted certificate or any other bearer credential, including one with `runtime.read`, is refused: a remote client must not learn what other callers do.
 - **Revocation.** The socket registers its bearer credential with `Macus.Auth.Streams` and its certificate with the proxy's trust revocation, so removing either closes the socket within the existing documented bound.
 
 Observers read Incus through the server's own client on `incus.sock`, as `/mcp` execution does. That is why authorization is checked at join, before a subscriber can cause any backend access.
@@ -131,9 +133,22 @@ A `NavigationSplitView` with three sidebar entries.
 
 One state directory per window: the default, or `--state-dir DIR`, or the one picked in Settings. The CLI's ownership checks apply unchanged because the same functions are called.
 
-### 9. Access log view
+### 9. Access log: a topic for live records, the files for history
 
-The app reads the files: it works when the server is stopped, which a channel cannot. Following is driven by file-system events, so it is not polling either. It uses the reader `add-gateway-access-log` adds for `macus server logs` (ownership validation, archives oldest first, follow across rotation), which that change must expose from the `Macus` library rather than keep private to the CLI.
+**Record identity.** To merge a pushed record with the same record read from a file, each record needs an identity. `Macus.Proxy.AccessLog` adds `"id": "BOOT-SEQ"` to every record: `BOOT` is a random 64-bit value chosen when the server starts, in hex, and `SEQ` is a counter from 1. Adding a key keeps the log's schema version at 1, as `add-gateway-access-log` defines. Within one boot, `SEQ` orders records and a gap shows a dropped one.
+
+**Publishing.** The telemetry handler that formats the line also broadcasts the same map, with exactly the documented keys and nothing else, on `Macus.PubSub`. A broadcast is a message send: it does not wait for a subscriber or for the disk, so the access log's rule that recording never holds up an exchange is kept. A small server process keeps the last 200 records in memory for the join reply and coalesces pushes into batches of at most 200 records or 100 ms, so a burst of requests is one frame, not hundreds. A subscriber whose outbound queue passes a bound is disconnected and can rejoin; it never slows the handler.
+
+The topic is published from the handler, not from the file, so a record dropped by the file writer under overload can still be pushed. The app shows it; the file remains the durable record.
+
+**The app.** The files remain necessary: they hold history and they work when the server is stopped, which a channel cannot. So the view has two inputs and one table keyed by `id`:
+
+- On open it loads history from the files.
+- While joined to `access`, new rows come from the topic, and the join reply's 200 records close the gap between the file read and the join. Duplicates are dropped by `id`.
+- While not joined (server stopped, or the socket is down), it follows the files with a file-system event source. Neither path is polling.
+- A record with no `id` (written before this change) can only come from a file and is keyed by its position.
+
+For the files it uses the reader `add-gateway-access-log` adds for `macus server logs` (ownership validation, archives oldest first, follow across rotation), which that change must expose from the `Macus` library rather than keep private to the CLI.
 
 - Loads the most recent 5,000 records and follows new ones. The oldest rows are discarded past 50,000.
 - Columns: time, caller, method, path, status, outcome, duration, bytes in/out. Caller is a short fingerprint, replaced by a name when it is the app's own or matches a gateway trust entry.
@@ -151,7 +166,7 @@ The live channel ships with the server release whether or not anyone builds the 
 
 ### 11. Concurrency and testing
 
-- **Server:** `Phoenix.ChannelTest` for connect and join authorization (each credential combination against each topic), rejection of client events, payload shapes, revocation closing the socket, observers starting on first join and stopping after the last, the snapshot parser, and every bound. Observers take their source as a behaviour so tests feed them fixtures.
+- **Server:** `Phoenix.ChannelTest` for connect and join authorization (each credential combination against each topic, including `access` refused to every credential but the owner-local one), rejection of client events, payload shapes, revocation closing the socket, observers starting on first join and stopping after the last, the snapshot parser, and every bound. Observers take their source as a behaviour so tests feed them fixtures.
 - **Swift daemon:** the events route emits on each transition, enforces its reader bound and releases a reader that disconnects.
 - **App:** view models are `@MainActor @Observable`; clients are actors or `Sendable` structs behind protocols. `MacusAppCore` tests cover discovery failures, enrollment, the channel protocol (join, reply, heartbeat, rejoin), reduction of `upsert`/`remove`/`snapshot` pushes, agent matching, exec framing and log tailing across rotation. A test asserts the app schedules no repeating timer for data.
 
@@ -164,13 +179,15 @@ The live channel ships with the server release whether or not anyone builds the 
 - **Server-side observation acts with the server's Incus access.** A subscriber causes an exec in an instance. Mitigation: only a trusted certificate can join those topics, which already permits exec; the script is fixed; watched instances are bounded.
 - **Process observation is still sampling.** It is one loop per watched instance instead of one request per client per interval, and it stops with the last subscriber, but a 2 s loop runs in the instance while someone is watching.
 - **The sampling exec is not in the gateway access log**, because it does not pass through the gateway. Mitigation: the server logs when an instance observer starts and stops, and for which certificate.
+- **Two inputs to one table.** The access view merges a topic and files. Mitigation: one key (`id`), one rule (first seen wins), and tests for join during a burst, rejoin after a gap and rotation.
+- **Coupling to an unarchived change.** The `id` key is added to a record defined by `add-gateway-access-log`. Mitigation: it is one additive key under that change's own versioning rule; task 2.9 lands it there if that change is still open.
 - **SwiftTerm is a new dependency.** Pinned exactly, linked only into `MacusApp`.
 - **Ad-hoc signing.** Gatekeeper will not open a copied build without the owner's override. Documented; the supported path in this change is building locally.
 - **Rule reversal invites scope growth.** The `native-app` spec states the read-only boundary as a requirement, so a workload or lifecycle control needs its own change.
 
 ## Open Questions
 
-- **An `access` topic.** The server could publish each access record as it is written. The file is still needed for history and for a stopped server, so the app would have to merge two sources without duplicates, which needs a sequence number in the record. Left out until the record has one.
+- **Remote readers of `access`.** The topic is owner-local. Letting a remote operator follow access records would need a new bearer scope and its own review.
 - **Runtime start/stop in the app.** Left out. `start` activates launchd jobs and may bootstrap; it deserves its own change with its own confirmation rules.
 - **Menu bar status item.** Cheap once the `runtime` topic exists; left out to keep the first version to one window.
 - **Other subscribers.** `macus runtime status --watch` and a central connector could use the same topics. Not in this change.
