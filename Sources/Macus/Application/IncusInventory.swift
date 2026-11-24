@@ -67,12 +67,21 @@ protocol IncusQuerying: Sendable {
 /// Reads the inventory through a guest stream opener. Production reads Incus over an
 /// internal relay stream; tests substitute their own source.
 protocol IncusInventorySource: Sendable {
+  /// Returns once Incus runs no background task, so a read is not taken mid-change.
+  func awaitIdle(open: @escaping @Sendable () async throws -> GuestStream) async throws
   func read(open: @escaping @Sendable () async throws -> GuestStream) async throws
     -> IncusInventory
 }
 
+extension IncusInventorySource {
+  func awaitIdle(open: @escaping @Sendable () async throws -> GuestStream) async throws {}
+}
+
 struct RelayInventorySource: IncusInventorySource {
   var timeout = 30
+  func awaitIdle(open: @escaping @Sendable () async throws -> GuestStream) async throws {
+    try await IncusInventoryReader.awaitIdle(RelayIncusQuery(open: open, timeout: timeout))
+  }
   func read(open: @escaping @Sendable () async throws -> GuestStream) async throws
     -> IncusInventory
   {
@@ -83,6 +92,37 @@ struct RelayInventorySource: IncusInventorySource {
 enum IncusInventoryReader {
   /// The pool bootstrap creates on `tama-data/workloads`.
   static let pool = "default"
+
+  static let operationsPath = "/1.0/operations?all-projects=true&recursion=1"
+
+  /// Polls until no task operation runs in any project. Websocket operations, such as an
+  /// exec session whose client was closed out, are not waited for.
+  static func awaitIdle(
+    _ query: any IncusQuerying, timeout: Duration = .seconds(60),
+    poll: Duration = .milliseconds(500)
+  ) async throws {
+    let deadline = ContinuousClock.now.advanced(by: timeout)
+    while true {
+      let running = try runningTasks(try await query.get(operationsPath))
+      if running.isEmpty { return }
+      guard ContinuousClock.now < deadline else {
+        throw RuntimeError(
+          .unavailable,
+          "Incus is still running \(running.count) operation(s): \(running.prefix(3).joined(separator: "; "))"
+        )
+      }
+      try await Task.sleep(for: poll)
+    }
+  }
+
+  /// The descriptions of running task operations in an operations listing's metadata.
+  static func runningTasks(_ metadata: Data) throws -> [String] {
+    let object = try JSONSerialization.jsonObject(with: metadata, options: [.fragmentsAllowed])
+    let running = (object as? [String: Any])?["running"] as? [[String: Any]] ?? []
+    return running.filter { $0["class"] as? String == "task" }.map {
+      $0["description"] as? String ?? "task"
+    }
+  }
 
   static func read(_ query: any IncusQuerying) async throws -> IncusInventory {
     let projectURLs = try decodeURLs(try await query.get("/1.0/projects"))

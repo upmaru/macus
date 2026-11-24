@@ -53,9 +53,20 @@ actor UpgradeVM: VirtualMachineDriver {
   func requestStop() async throws { if shutdownWorks { running = false } }
   func forceStop() async throws { if forceStopWorks { running = false } }
   func isRunning() async -> Bool { running }
+  /// When set, each stream is one end of a socket pair whose other end is kept here.
+  var servesStreams = false
+  var guestEnds: [SocketDescriptor] = []
   func openStream(port: UInt32) async throws -> GuestStream {
-    throw RuntimeError(.unavailable, "No stream in fake")
+    guard servesStreams else { throw RuntimeError(.unavailable, "No stream in fake") }
+    var pair: [Int32] = [-1, -1]
+    guard socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0 else {
+      throw RuntimeError(.io, "socketpair")
+    }
+    let near = try SocketDescriptor(pair[0])
+    guestEnds.append(try SocketDescriptor(pair[1]))
+    return GuestStream(socket: near) {}
   }
+  func setServesStreams(_ value: Bool) { servesStreams = value }
   func health() async throws -> GuestHealth {
     healthCalls += 1
     guard running, let health else { throw RuntimeError(.unavailable, "not ready") }
@@ -100,11 +111,25 @@ actor FakeInventory: IncusInventorySource {
   ])
   var script: [Result<IncusInventory, RuntimeError>]
   var reads = 0
-  init(_ script: [Result<IncusInventory, RuntimeError>] = []) { self.script = script }
+  /// `idle` and `read`, in the order the upgrade asked for them.
+  var events: [String] = []
+  let onRead: (@Sendable () async -> Void)?
+  init(
+    _ script: [Result<IncusInventory, RuntimeError>] = [],
+    onRead: (@Sendable () async -> Void)? = nil
+  ) {
+    self.script = script
+    self.onRead = onRead
+  }
+  func awaitIdle(open: @escaping @Sendable () async throws -> GuestStream) async throws {
+    events.append("idle")
+  }
   func read(open: @escaping @Sendable () async throws -> GuestStream) async throws
     -> IncusInventory
   {
     reads += 1
+    events.append("read")
+    if let onRead { await onRead() }
     guard !script.isEmpty else { return Self.standard }
     return try script.removeFirst().get()
   }

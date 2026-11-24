@@ -29,6 +29,11 @@ public actor RuntimeService {
   private let inventorySource: any IncusInventorySource
   /// The operation progress reports while a mutation runs, when it is not a plain start.
   private var operation: String?
+  /// Set while an upgrade reads its inventory baseline and replaces the root, so no client
+  /// request changes what the comparison expects. Open client streams are tracked to be ended.
+  private var clientsClosed = false
+  private var clientStreams: [Int: SocketDescriptor] = [:]
+  private var nextClientStream = 0
   /// Set when an interrupted upgrade could not be rolled back at daemon start: every
   /// mutation is refused until it is resolved by hand.
   private var recoveryError: String?
@@ -73,7 +78,7 @@ public actor RuntimeService {
     if failure == nil {
       do {
         if let intent = try RollbackJournal.load(paths: store.paths) {
-          try RollbackJournal.undo(intent, paths: store.paths)
+          try RollbackJournal.undo(intent, paths: store.paths, hook: upgradeHook)
           recovered =
             "A rollback to backup \(intent.source) did not complete before the daemon stopped, so it was undone: the runtime is as it was before the rollback."
         }
@@ -274,9 +279,14 @@ public actor RuntimeService {
     let open = internalIncusStream()
     var before: IncusInventory?
     var skipped: String?
+    // Clients are closed out before the baseline and until the upgrade ends; operations Incus
+    // already accepted finish before the baseline is read.
+    await closeClientAccess()
+    defer { clientsClosed = false }
     if state == .ready, await driver.isRunning() {
       bootPhase = "reading_inventory"
       do {
+        try await inventorySource.awaitIdle(open: open)
         before = try await inventorySource.read(open: open)
       } catch {
         throw RuntimeError(
@@ -316,8 +326,11 @@ public actor RuntimeService {
           to: paths.backup(intent.backupId).appendingPathComponent(Self.inventoryBefore))
       }
       var dataCopy = plan.dataCopy
+      var dataCopiedAt: String?
       if upgradeClass == .migrating {
         bootPhase = "copying_data"
+        // The guest is stopped, so the copy holds the data as of now, not as of the commit.
+        dataCopiedAt = ISO8601DateFormatter().string(from: Date())
         dataCopy = try UpgradeJournal.copyData(
           &intent, paths: paths, method: plan.dataCopy, volume: volume, hook: upgradeHook)
       }
@@ -363,7 +376,8 @@ public actor RuntimeService {
         upgradeClass: upgradeClass, fromCatalogId: plan.fromCatalogId, toCatalogId: catalog.id,
         rootIncusPackage: plan.recordedIncusPackage,
         rootIncusPackageSource: plan.recordedIncusPackageSource,
-        dataCopy: intent.dataCopy != nil, poolGuid: storage.poolGuid, macusPackage: macusPackage)
+        dataCopy: intent.dataCopy != nil, poolGuid: storage.poolGuid, macusPackage: macusPackage,
+        dataCopiedAt: intent.dataCopy == nil ? nil : dataCopiedAt)
       try UpgradeJournal.commit(intent, record: record, paths: paths, hook: upgradeHook)
       // Only now is the relay served to the server and clients.
       guestHealth = health
@@ -536,7 +550,7 @@ public actor RuntimeService {
     } catch {
       let detail = error.localizedDescription
       do {
-        try RollbackJournal.undo(intent, paths: paths)
+        try RollbackJournal.undo(intent, paths: paths, hook: upgradeHook)
       } catch let undoError {
         let message =
           "The rollback to backup \(prepared.entry.id) failed (\(detail)) and could not be undone automatically: \(undoError.localizedDescription) Runtime changes are refused until it is resolved."
@@ -582,7 +596,8 @@ public actor RuntimeService {
       }
       let current = try UpgradePlanner.recordedState(paths: paths, catalog: catalog)
       let breaks = BackupCatalog.breaks(
-        pruning: id, all: all, currentPackage: current.incusPackage)
+        pruning: id, all: all, currentPackage: current.incusPackage,
+        currentPool: BackupCatalog.currentPool(paths: paths))
       let dependents =
         breaks.isEmpty
         ? ""
@@ -634,7 +649,36 @@ public actor RuntimeService {
 
   public func openIncusStream() async throws -> GuestStream {
     guard state == .ready else { throw RuntimeError(.unavailable, "Incus is not ready") }
-    return try await driver.openStream(port: FlowRelayProtocol.port)
+    guard !clientsClosed else { throw Self.closedToClients }
+    let stream = try await driver.openStream(port: FlowRelayProtocol.port)
+    guard !clientsClosed else {
+      stream.socket.shutdown()
+      await stream.release()
+      throw Self.closedToClients
+    }
+    nextClientStream += 1
+    let id = nextClientStream
+    clientStreams[id] = stream.socket
+    return GuestStream(socket: stream.socket) {
+      await self.endClientStream(id)
+      await stream.release()
+    }
+  }
+
+  static let closedToClients = RuntimeError(
+    .unavailable, "Incus is closed to clients while the runtime appliance is upgraded")
+
+  private func endClientStream(_ id: Int) { clientStreams[id] = nil }
+
+  /// Refuses new client streams and ends the open ones, then waits briefly for their relays
+  /// to finish.
+  private func closeClientAccess() async {
+    clientsClosed = true
+    for socket in clientStreams.values { socket.shutdown() }
+    let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+    while !clientStreams.isEmpty, ContinuousClock.now < deadline {
+      try? await Task.sleep(for: .milliseconds(20))
+    }
   }
 
   /// Guest bridges are installed once at first boot, so an older appliance keeps serving

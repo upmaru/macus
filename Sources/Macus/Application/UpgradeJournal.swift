@@ -72,6 +72,12 @@ struct UpgradeBackupRecord: Codable, Sendable, Equatable {
   /// For a rollback: the backup it restored, and the backup whose data copy it restored.
   var restoredFrom: String? = nil
   var dataFrom: String? = nil
+  /// When the data disk copy was taken, after the root stopped: the copy holds nothing
+  /// written later. Nil in records written before it was kept.
+  var dataCopiedAt: String? = nil
+
+  /// The time the data disk copy holds the data of; nil without a copy.
+  var dataTakenAt: String? { dataCopy ? (dataCopiedAt ?? createdAt) : nil }
 
   static let upgradeOperation = "upgrade"
   static let rollbackOperation = "rollback"

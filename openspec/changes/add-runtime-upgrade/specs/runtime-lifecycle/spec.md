@@ -87,7 +87,7 @@ Upgrade SHALL compare the target appliance's full Incus package version, includi
 
 ### Requirement: Upgrade safety copies and rollback
 
-Upgrade SHALL keep the previous root disk, firmware store, seed and configuration, and any data disk copy, in a private backup inside the state directory. It SHALL record durable intent, including the identity of every file it will move, before moving any disk. If the new root does not reach verified readiness, or the operation is interrupted before it commits at any step, the runtime SHALL be restored to its previous disks and configuration before any other mutation is accepted, and the failure SHALL be reported with its code. An unreadable intent record MUST preserve all files and require explicit recovery. Backups MUST NOT be removed automatically, including by runtime reset. An explicit rollback SHALL restore a named backup. Each backup SHALL record the Incus package of its root, which may be unknown, and whether it holds a data disk copy; a backup's own data disk copy is at its root's package. Rollback MUST NOT boot a restored root against a data disk at a different Incus package. It SHALL restore the root alone only when the root's package is known and equals the current data's recorded package; otherwise it SHALL restore the backup's own data disk copy, or, when the backup has none and its root's package is known, the earliest later backup's data disk copy recorded at that package, and SHALL be refused unchanged when neither exists. Restoring a data disk copy SHALL require a separate confirmation that data written since that copy is discarded.
+Upgrade SHALL keep the previous root disk, firmware store, seed and configuration, and any data disk copy, in a private backup inside the state directory. It SHALL record durable intent, including the identity of every file it will move, before moving any disk. If the new root does not reach verified readiness, or the operation is interrupted before it commits at any step, the runtime SHALL be restored to its previous disks and configuration before any other mutation is accepted, and the failure SHALL be reported with its code. An unreadable intent record MUST preserve all files and require explicit recovery. Backups MUST NOT be removed automatically, including by runtime reset. An explicit rollback SHALL restore a named backup. Each backup SHALL record the Incus package of its root, which may be unknown, its pool identity, and whether it holds a data disk copy and when that copy was taken; a backup's own data disk copy is at its root's package and pool. Rollback MUST NOT boot a restored root against a data disk at a different Incus package or holding a different pool. It SHALL restore the root alone only when the root's package is known and equals the current data's recorded package and its pool equals the current pool; otherwise it SHALL restore the backup's own data disk copy, or, when the backup has none and its root's package is known, the earliest later backup's data disk copy recorded at that package and pool, and SHALL be refused unchanged when neither exists. Restoring a data disk copy SHALL require a separate confirmation that data written since that copy was taken is discarded.
 
 #### Scenario: New root fails to become ready
 
@@ -129,6 +129,11 @@ Upgrade SHALL keep the previous root disk, firmware store, seed and configuratio
 - **WHEN** the selected root's Incus package differs from the current data's, the backup has no data disk copy and no later copy at that package remains
 - **THEN** rollback is refused and nothing changes
 
+#### Scenario: Backup of another pool
+
+- **WHEN** the selected root's pool differs from the current data disk's pool and no data disk copy of the root's pool remains
+- **THEN** rollback is refused and nothing changes, even when the Incus packages are equal
+
 #### Scenario: Root-only rollback
 
 - **WHEN** the selected root's Incus package is known and equals the current data's recorded package
@@ -141,7 +146,7 @@ Upgrade SHALL keep the previous root disk, firmware store, seed and configuratio
 
 ### Requirement: Post-upgrade verification
 
-Before committing, upgrade SHALL require live Incus readiness and a guest-reported pool identity equal to the recorded one. When the previous guest could be queried, upgrade SHALL read the names of instances, default-pool volumes, networks and profiles through the Incus API before the stop and again after readiness, and SHALL fail verification if any earlier name is missing. When the previous guest could not be queried, the result SHALL state that the comparison was skipped.
+Before committing, upgrade SHALL require live Incus readiness and a guest-reported pool identity equal to the recorded one. Before reading the earlier names, upgrade SHALL close the Incus relay to clients, ending open client streams, and SHALL wait until Incus runs no task operation; the relay SHALL stay closed to clients until the upgrade ends. When the previous guest could be queried, upgrade SHALL read the names of instances, default-pool volumes, networks and profiles through the Incus API before the stop and again after readiness, and SHALL fail verification if any earlier name is missing. When the previous guest could not be queried, the result SHALL state that the comparison was skipped.
 
 #### Scenario: Inventory preserved
 
