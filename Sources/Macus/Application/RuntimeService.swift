@@ -247,6 +247,8 @@ public actor RuntimeService {
         let live = try? await driver.health()
         if let live, live.protocolVersion == 1, live.servesFlowRelay {
           try Task.checkCancellation()
+          // As in refresh(): a field such as the Incus package can appear after first ready.
+          if live != guestHealth { recordReady(live) }
           guestHealth = live
           return snapshot()
         }
