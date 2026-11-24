@@ -72,6 +72,12 @@ struct UpgradeBackupRecord: Codable, Sendable, Equatable {
   /// For a rollback: the backup it restored, and the backup whose data copy it restored.
   var restoredFrom: String? = nil
   var dataFrom: String? = nil
+  /// When the data disk copy was taken, after the root stopped: the copy holds nothing
+  /// written later. Nil in records written before it was kept.
+  var dataCopiedAt: String? = nil
+
+  /// The time the data disk copy holds the data of; nil without a copy.
+  var dataTakenAt: String? { dataCopy ? (dataCopiedAt ?? createdAt) : nil }
 
   static let upgradeOperation = "upgrade"
   static let rollbackOperation = "rollback"
@@ -149,11 +155,14 @@ enum UpgradeJournal {
   }
 
   /// A migrating upgrade copies the data disk into the backup before the new root boots. The
-  /// copy appears under its final name only when complete.
+  /// copy appears under its final name only when complete and on stable storage. Returns the
+  /// method actually used: a failed clone falls back to a full copy.
+  @discardableResult
   static func copyData(
     _ intent: inout UpgradeIntent, paths: RuntimePaths, method: String,
     volume: any UpgradeVolume, hook: UpgradeHook?
-  ) throws {
+  ) throws -> String {
+    var used = method
     let backup = paths.backup(intent.backupId)
     let partial = backup.appendingPathComponent("data.raw.partial")
     let final = backup.appendingPathComponent("data.raw")
@@ -173,11 +182,14 @@ enum UpgradeJournal {
           )
         }
         try volume.copy(paths.dataDisk, to: partial)
+        used = UpgradePlan.fullCopy
       }
     } else {
       try volume.copy(paths.dataDisk, to: partial)
     }
     guard chmod(partial.path, 0o600) == 0 else { throw RuntimeError(.io, "Cannot secure copy") }
+    // Its contents, not only the rename: the new guest writes the original disk next.
+    try volume.sync(partial)
     try hook?("data_copy_written")
     try PrivateFile.move(partial, to: final)
     try PrivateFile.sync(backup)
@@ -185,6 +197,7 @@ enum UpgradeJournal {
     intent.step = .dataCopied
     try save(intent, paths: paths)
     try hook?("data_copied")
+    return used
   }
 
   /// Moves the old root, firmware store and seed into the backup and the staged root and seed

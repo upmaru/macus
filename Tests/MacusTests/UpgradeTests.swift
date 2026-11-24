@@ -17,6 +17,7 @@ actor UpgradeVM: VirtualMachineDriver {
   var health: GuestHealth?
   var startCount = 0
   var shutdownWorks = true
+  var forceStopWorks = true
   /// Root disk contents at each boot, to tell the old root from the new one.
   var bootedRoots: [Data] = []
   /// Whether the backup's data copy existed when each boot began.
@@ -68,11 +69,22 @@ actor UpgradeVM: VirtualMachineDriver {
     }
   }
   func requestStop() async throws { if shutdownWorks { running = false } }
-  func forceStop() async throws { running = false }
+  func forceStop() async throws { if forceStopWorks { running = false } }
   func isRunning() async -> Bool { running }
+  /// When set, each stream is one end of a socket pair whose other end is kept here.
+  var servesStreams = false
+  var guestEnds: [SocketDescriptor] = []
   func openStream(port: UInt32) async throws -> GuestStream {
-    throw RuntimeError(.unavailable, "No stream in fake")
+    guard servesStreams else { throw RuntimeError(.unavailable, "No stream in fake") }
+    var pair: [Int32] = [-1, -1]
+    guard socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0 else {
+      throw RuntimeError(.io, "socketpair")
+    }
+    let near = try SocketDescriptor(pair[0])
+    guestEnds.append(try SocketDescriptor(pair[1]))
+    return GuestStream(socket: near) {}
   }
+  func setServesStreams(_ value: Bool) { servesStreams = value }
   func health() async throws -> GuestHealth {
     healthCalls += 1
     guard running, let health else { throw RuntimeError(.unavailable, "not ready") }
@@ -84,6 +96,7 @@ actor UpgradeVM: VirtualMachineDriver {
   func setBootSerial(_ value: String?) { bootSerial = value }
   func setRunning(_ value: Bool) { running = value }
   func setShutdownWorks(_ value: Bool) { shutdownWorks = value }
+  func setForceStopWorks(_ value: Bool) { forceStopWorks = value }
   func setWritesData(_ value: Bool, backup: URL?) {
     writesData = value
     backupData = backup
@@ -118,14 +131,36 @@ actor FakeInventory: IncusInventorySource {
   ])
   var script: [Result<IncusInventory, RuntimeError>]
   var reads = 0
-  init(_ script: [Result<IncusInventory, RuntimeError>] = []) { self.script = script }
+  /// `idle` and `read`, in the order the upgrade asked for them.
+  var events: [String] = []
+  let onRead: (@Sendable () async -> Void)?
+  init(
+    _ script: [Result<IncusInventory, RuntimeError>] = [],
+    onRead: (@Sendable () async -> Void)? = nil
+  ) {
+    self.script = script
+    self.onRead = onRead
+  }
+  func awaitIdle(open: @escaping @Sendable () async throws -> GuestStream) async throws {
+    events.append("idle")
+  }
   func read(open: @escaping @Sendable () async throws -> GuestStream) async throws
     -> IncusInventory
   {
     reads += 1
+    events.append("read")
+    if let onRead { await onRead() }
     guard !script.isEmpty else { return Self.standard }
     return try script.removeFirst().get()
   }
+}
+
+/// Files the volume was asked to put on stable storage, with whether each existed then.
+final class SyncLog: @unchecked Sendable {
+  private let lock = NSLock()
+  private var entries: [String] = []
+  func add(_ name: String) { lock.withLock { entries.append(name) } }
+  var names: [String] { lock.withLock { entries } }
 }
 
 /// Free space and clone support under the test's control; copies are real.
@@ -134,6 +169,7 @@ struct TestVolume: UpgradeVolume {
   var cloning = true
   /// Reports clone support but fails the clone itself.
   var cloneFails = false
+  var synced: SyncLog? = nil
   func availableBytes(at directory: URL) throws -> UInt64 { available }
   func supportsCloning(at directory: URL) throws -> Bool { cloning }
   func allocatedBytes(of file: URL) throws -> UInt64 { try HostVolume().allocatedBytes(of: file) }
@@ -145,6 +181,10 @@ struct TestVolume: UpgradeVolume {
   }
   func copy(_ source: URL, to destination: URL) throws {
     try HostVolume().copy(source, to: destination)
+  }
+  func sync(_ file: URL) throws {
+    synced?.add(file.lastPathComponent)
+    try HostVolume().sync(file)
   }
 }
 
@@ -532,6 +572,104 @@ func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.pat
   #expect(try GuestRecordStore.loadGuest(paths: fixture.paths)?.incusPackage == "7.0.2-r0")
 }
 
+@Test func dataCopyIsSyncedBeforeItIsRecordedAndTheNewRootBoots() async throws {
+  for cloning in [true, false] {
+    let fixture = try UpgradeFixture(target: "7.0.2-r0")
+    defer { fixture.clean() }
+    try fixture.record()
+    let driver = UpgradeVM()
+    let log = SyncLog()
+    let service = try fixture.service(
+      driver, volume: TestVolume(cloning: cloning, synced: log),
+      hook: { label in
+        // The contents are synced while the copy still has its partial name.
+        if label == "data_copy_written" { #expect(log.names == ["data.raw.partial"]) }
+      })
+    let id = try await fixture.stage(try await service.upgradePlan())
+    await driver.set(
+      upgradeHealth(
+        payload: fixture.targetPayload, appliance: fixture.entry.id, package: "7.0.2-r0"))
+    let result = try await service.upgrade(stagingID: id)
+    #expect(result.dataCopy == (cloning ? UpgradePlan.cloneCopy : UpgradePlan.fullCopy))
+    #expect(log.names == ["data.raw.partial"])
+  }
+}
+
+@Test func failedRecordWriteAtCommitRollsTheUpgradeBack() async throws {
+  let fixture = try UpgradeFixture()
+  defer { fixture.clean() }
+  try fixture.record()
+  let before = try fixture.snapshot()
+  let identities = try fixture.identities()
+  let driver = UpgradeVM()
+  let record = fixture.paths.guestRecord.path
+  // The verified guest's record cannot replace the old one; the first rollback step frees it.
+  let service = try fixture.service(
+    driver,
+    hook: { label in
+      if label == "verified" { #expect(chflags(record, UInt32(UF_IMMUTABLE)) == 0) }
+      if label == "rollback:root.raw" { #expect(chflags(record, 0) == 0) }
+    })
+  defer { _ = chflags(record, 0) }
+  let id = try await fixture.stage(try await service.upgradePlan())
+  await driver.set(upgradeHealth(payload: fixture.targetPayload, appliance: fixture.entry.id))
+  let error = await #expect(throws: RuntimeError.self) {
+    _ = try await service.upgrade(stagingID: id)
+  }
+  #expect(error?.message.contains("previous root and configuration were restored") == true)
+  try expectRestored(
+    fixture, before: before, identities: identities, id: id, migratedAside: false)
+  // Never committed with a record that still names the old appliance.
+  #expect(try GuestRecordStore.loadGuest(paths: fixture.paths)?.payloadRevision == oldRevision)
+}
+
+@Test func unstoppableNewRootRefusesChangesUntilAForcedStopRollsBack() async throws {
+  let fixture = try UpgradeFixture()
+  defer { fixture.clean() }
+  try fixture.record()
+  let before = try fixture.snapshot()
+  let identities = try fixture.identities()
+  let driver = UpgradeVM()
+  let service = try fixture.service(driver)
+  let id = try await fixture.stage(try await service.upgradePlan())
+  // The new root reports another pool and then cannot be stopped at all.
+  await driver.set(
+    upgradeHealth(guid: "555", payload: fixture.targetPayload, appliance: fixture.entry.id))
+  await driver.setShutdownWorks(false)
+  await driver.setForceStopWorks(false)
+  let error = await #expect(throws: RuntimeError.self) {
+    _ = try await service.upgrade(stagingID: id)
+  }
+  #expect(error?.message.contains("could not be stopped") == true)
+  #expect(error?.message.contains("macus runtime stop --force") == true)
+  #expect(exists(fixture.paths.upgradeIntent))
+  #expect(await driver.running)
+  // The uncommitted root is neither served nor replaced.
+  for attempt in ["start", "stop", "plan", "restart"] {
+    await #expect(throws: RuntimeError.self, "\(attempt)") {
+      switch attempt {
+      case "start": _ = try await service.start()
+      case "stop": _ = try await service.stop(force: false)
+      case "plan": _ = try await service.upgradePlan()
+      default: _ = try await service.restart()
+      }
+    }
+  }
+  await #expect(throws: RuntimeError.self) { _ = try await service.openIncusStream() }
+  #expect(await driver.startCount == 1)
+  // A forced stop that still fails changes nothing.
+  await #expect(throws: RuntimeError.self) { _ = try await service.stop(force: true) }
+  #expect(exists(fixture.paths.upgradeIntent))
+  // Once the guest can be stopped, the forced stop finishes the rollback.
+  await driver.setForceStopWorks(true)
+  let status = try await service.stop(force: true)
+  #expect(status.state == .stopped)
+  #expect(status.lastError?.contains("previous root and configuration were restored") == true)
+  try expectRestored(
+    fixture, before: before, identities: identities, id: id, migratedAside: false)
+  _ = try await service.upgradePlan()
+}
+
 @Test func relayStaysClosedUntilTheUpgradeCommits() async throws {
   let fixture = try UpgradeFixture()
   defer { fixture.clean() }
@@ -911,6 +1049,8 @@ func daemonStartRollsBackAnInterruptedUpgrade(point: String) async throws {
     if available > GuestImageManager.minimumRootBytes + 1 {
       let result = try await service.upgrade(stagingID: id)
       #expect(result.status.state == .ready)
+      // The method actually used, not the planned clone.
+      #expect(result.dataCopy == UpgradePlan.fullCopy)
       #expect(exists(fixture.paths.backup(id).appendingPathComponent("data.raw")))
     } else {
       let error = await #expect(throws: RuntimeError.self) {

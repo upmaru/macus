@@ -64,6 +64,8 @@ private struct UpgradeSession {
     let planned = try await request("POST", "/runtime/upgrade/plan")
     let plan = try JSON.decoder().decode(UpgradePlan.self, from: planned.body)
     let planObject = try jsonObject(planned.body)
+    let entry = dependencies.catalog
+    try Self.requireThisPackage(plan, entry: entry, payload: EmbeddedGuestPayload.revision)
     if plan.current {
       if json {
         streams.writeOutput(try jsonText(["upgraded": false, "plan": planObject]))
@@ -89,13 +91,6 @@ private struct UpgradeSession {
     }
     // Shown before anything is downloaded or stopped.
     if !json { presentation.upgradePlan(plan) }
-    let entry = dependencies.catalog
-    guard plan.toCatalogId == entry.id else {
-      throw RuntimeError(
-        .conflict,
-        "The runtime service plans an upgrade to \(plan.toCatalogId), but this macus installs \(entry.id). Restart the runtime service from this package (macus runtime stop, then macus runtime upgrade); nothing was changed."
-      )
-    }
     if !json { presentation.text("\nDownloading and verifying \(terminalSafe(entry.id))…\n") }
     let cache = try await ApplianceAcquisition(downloader: dependencies.downloader).materialize(
       entry: entry, directory: directory, budget: budget, now: dependencies.now
@@ -108,8 +103,7 @@ private struct UpgradeSession {
       presentation.text(
         "Stopping the runtime and booting \(terminalSafe(entry.id)); every workload restarts…\n")
     }
-    let body = try JSONSerialization.data(withJSONObject: ["staging_id": stagingID])
-    let upgraded = try await request("POST", "/runtime/upgrade", body)
+    let upgraded = try await dispatch(stagingID: stagingID, paths: paths)
     let result = try jsonObject(upgraded.body)
     if json {
       streams.writeOutput(try jsonText(["upgraded": true, "plan": planObject, "result": result]))
@@ -138,6 +132,41 @@ private struct UpgradeSession {
     } else {
       presentation.rollbackResult(result, directory: directory)
     }
+  }
+
+  /// A runtime service left running from another package plans with its own appliance and
+  /// payload, so its answer, current or not, says nothing about this package's.
+  static func requireThisPackage(_ plan: UpgradePlan, entry: ApplianceCatalogEntry, payload: String)
+    throws
+  {
+    guard plan.toCatalogId == entry.id, plan.toPayloadRevision == payload else {
+      throw RuntimeError(
+        .conflict,
+        "The runtime service plans with appliance \(terminalSafe(plan.toCatalogId)) and guest payload \(terminalSafe(plan.toPayloadRevision)), but this macus installs \(entry.id) with guest payload \(payload): it runs from another package. Restart the runtime service from this package (macus runtime stop, then macus runtime upgrade); nothing was changed."
+      )
+    }
+  }
+
+  /// Hands the staged upgrade to the runtime service. The staging is removed when the request
+  /// certainly never reached it; once it may have, the runtime service owns it.
+  private func dispatch(stagingID: String, paths: RuntimePaths) async throws
+    -> LocalHTTPResponse
+  {
+    var undelivered = true
+    defer { if undelivered { UpgradeStaging.discard(stagingID, paths: paths) } }
+    let body = try JSONSerialization.data(withJSONObject: ["staging_id": stagingID])
+    let endpoint = try GatewayEndpoint.discover(stateDirectory: directory)
+    let timeout = try budget.remainingSeconds(at: dependencies.now())
+    let response: LocalHTTPResponse
+    do {
+      response = try await dependencies.gateway.request(
+        endpoint, method: "POST", path: "/runtime/upgrade", body: body, timeout: timeout)
+    } catch {
+      undelivered = HTTPSGatewayClient.neverConnected(error)
+      throw error
+    }
+    undelivered = HTTPSGatewayClient.notDispatched(response)
+    return try requireGatewaySuccess(response)
   }
 
   private func request(_ method: String, _ path: String, _ body: Data = Data()) async throws

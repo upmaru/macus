@@ -486,11 +486,11 @@ private final class StartContext: @unchecked Sendable {
       // The connection to the server was lost, so Swift may have accepted the boot. It is never
       // sent again: the guest keeps booting (expected reboot included) and readiness is
       // observed through the gateway once it answers again.
-      try await awaitReadyAfterLostStart(paths)
+      let upgradeAvailable = try await awaitReadyAfterLostStart(paths)
       let capabilities = try await liveCapabilities(paths)
       emit(.provisioning, .complete)
       emit(.readiness, .complete)
-      return (capabilities, nil)
+      return (capabilities, upgradeAvailable)
     }
     let started = try requireGatewaySuccess(response)
     let capabilities = try await liveCapabilities(paths)
@@ -687,7 +687,9 @@ private final class StartContext: @unchecked Sendable {
   /// After the start request's connection was lost: waits, within the budget, for the gateway to
   /// report the runtime ready. A gateway that is restarting or a Swift service it cannot reach yet
   /// is waited for; a runtime that is no longer starting is reported, and the boot is not retried.
-  private func awaitReadyAfterLostStart(_ paths: RuntimePaths) async throws {
+  /// Waits for the boot that may already have been accepted, and returns the ready status's
+  /// `upgrade_available`, as a completed start request would.
+  private func awaitReadyAfterLostStart(_ paths: RuntimePaths) async throws -> Bool? {
     emit(.provisioning, .active, detail: "reconnecting to the Macus server")
     while dependencies.now() < budget.deadline {
       try Task.checkCancellation()
@@ -705,7 +707,7 @@ private final class StartContext: @unchecked Sendable {
       if (200...299).contains(response.status), let object = try? jsonObject(response.body) {
         switch jsonString(object["state"]) {
         case "ready":
-          return
+          return object["upgrade_available"] as? Bool
         case "starting":
           break
         case let state:
