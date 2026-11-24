@@ -34,7 +34,7 @@
 
 - [x] 5.1 Update `Packaging/homebrew/README.md`, formula caveats, `docs/cli.md`, `docs/api.md`, `docs/development.md` and `README.md`, and record the 2026-11-23 pre-relay observation in `docs/acceptance.md`.
 - [x] 5.2 Run `Integration/scripts/check.sh` and `mise exec -- openspec validate --all --strict --no-interactive`.
-- [ ] 5.3 With explicit opt-in on isolated state, hardware acceptance for a reversible upgrade with a kept workload marker, then explicit rollback. Leave unchecked until it passes on hardware.
+- [x] 5.3 With explicit opt-in on isolated state, hardware acceptance for a reversible upgrade with a kept workload marker, then explicit rollback. Leave unchecked until it passes on hardware.
 - [ ] 5.4 Hardware acceptance for a migrating upgrade between two appliances with different Incus packages, with the data clone and rollback. Leave unchecked until it passes on hardware, or record that no second qualified appliance exists yet.
 - [ ] 5.5 Hardware acceptance for a failed upgrade (forced adoption refusal) ending in the previous state booting on the earlier package. Leave unchecked until it passes on hardware.
 - [ ] 5.6 Hardware acceptance for a failed upgrade in which the new root is force-stopped with the pool imported, ending in the earlier root importing the pool without force. Leave unchecked until it passes on hardware.
