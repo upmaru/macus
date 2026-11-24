@@ -28,6 +28,7 @@ actor UpgradeVM: VirtualMachineDriver {
   var healthCalls = 0
   /// What the guest reports once it boots next, as a new root would.
   var nextBootHealth: GuestHealth?
+  var bootSerial: String?
 
   func capabilities() async -> HostCapabilities {
     HostCapabilities(supported: true, nestedVirtualization: true)
@@ -49,6 +50,17 @@ actor UpgradeVM: VirtualMachineDriver {
     if !FileManager.default.fileExists(atPath: paths.efiStore.path) {
       try Data("new-efi".utf8).write(to: paths.efiStore)
     }
+    if let bootSerial {
+      // The guest's console line for this boot, as VZ appends it to serial.log.
+      if !FileManager.default.fileExists(atPath: paths.serialLog.path) {
+        try Data().write(to: paths.serialLog)
+      }
+      let serial = try FileHandle(forWritingTo: paths.serialLog)
+      try serial.seekToEnd()
+      try serial.write(contentsOf: Data(bootSerial.utf8))
+      try serial.close()
+      self.bootSerial = nil
+    }
     if writesData {
       let handle = try FileHandle(forWritingTo: paths.dataDisk)
       try handle.write(contentsOf: dataMarker)
@@ -69,6 +81,7 @@ actor UpgradeVM: VirtualMachineDriver {
   }
   func set(_ value: GuestHealth?) { health = value }
   func setAfterBoot(_ value: GuestHealth?) { nextBootHealth = value }
+  func setBootSerial(_ value: String?) { bootSerial = value }
   func setRunning(_ value: Bool) { running = value }
   func setShutdownWorks(_ value: Bool) { shutdownWorks = value }
   func setWritesData(_ value: Bool, backup: URL?) {
@@ -611,6 +624,35 @@ func expectRestored(
   } else {
     #expect(now[3] == identities[3])
   }
+}
+
+@Test func refusedAdoptionRollsBackAndNamesOnlyStart() async throws {
+  let fixture = try UpgradeFixture()
+  defer { fixture.clean() }
+  try fixture.record()
+  let before = try fixture.snapshot()
+  let identities = try fixture.identities()
+  let driver = UpgradeVM()
+  let service = try fixture.service(driver)
+  let id = try await fixture.stage(try await service.upgradePlan())
+  // The new root refuses the named pool, as on hardware with a wrong GUID (task 5.5).
+  await driver.setBootSerial("MACUS_OBSERVATION v1 stage=failed code=storage_adoption_refused\n")
+  let error = await #expect(throws: RuntimeError.self) {
+    _ = try await service.upgrade(stagingID: id)
+  }
+  let message = error?.message ?? ""
+  #expect(message.contains("code storage_adoption_refused"))
+  #expect(
+    message.contains("previous root and configuration were restored and the runtime is stopped"))
+  #expect(message.hasSuffix("Run macus start to boot the previous root."))
+  // The guest was already stopped and its root restored: no forced stop to suggest.
+  #expect(!message.contains("stop --force"))
+  #expect(!message.contains(RuntimeService.bootFailureRecovery))
+  try expectRestored(
+    fixture, before: before, identities: identities, id: id, migratedAside: false)
+  #expect(await service.status().state == .stopped)
+  #expect(await service.status().lastError == message)
+  #expect(!(await driver.running))
 }
 
 @Test func failedBootRestoresThePreviousStateWithTheDataCopy() async throws {

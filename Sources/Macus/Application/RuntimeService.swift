@@ -465,7 +465,7 @@ public actor RuntimeService {
         intent.upgradeClass == .migrating && intent.step >= .booting
         ? ", and the data disk was replaced by its copy" : ""
       let message =
-        "The upgrade did not complete: \(detail) The previous root and configuration were restored\(data); diagnostics are in backups/\(intent.backupId)/failed."
+        "The upgrade did not complete: \(Self.withoutBootFailureRecovery(detail)) The previous root and configuration were restored\(data) and the runtime is stopped; diagnostics are in backups/\(intent.backupId)/failed and serial.log. Run macus start to boot the previous root."
       lastError = message
       return RuntimeError((reason as? RuntimeError)?.code ?? .unavailable, message)
     } catch {
@@ -624,10 +624,18 @@ public actor RuntimeService {
     "This runtime's appliance guest was recorded with contract \(contract), below the contract \(GuestContract.minimum) this Macus requires, so it was not booted. \(upgradeRemedy); runtime data was kept."
   }
 
+  /// What to do after a failed boot that left the guest as it was. An upgrade that rolled back
+  /// has already stopped the guest and restored the previous root, so it drops this advice.
+  static let bootFailureRecovery =
+    "Disks and Incus data were kept. Inspect serial.log, then run macus runtime stop --force and macus start."
+
+  static func withoutBootFailureRecovery(_ detail: String) -> String {
+    detail.replacingOccurrences(of: " \(bootFailureRecovery)", with: "")
+  }
+
   static func guestFailure(_ observation: GuestObservation, hostRestarted: Bool) -> RuntimeError {
     let code = observation.code ?? "unknown"
-    let recovery =
-      "Disks and Incus data were kept. Inspect serial.log, then run macus runtime stop --force and macus start."
+    let recovery = bootFailureRecovery
     guard code == GuestObservation.incusCrashed else {
       return RuntimeError(
         .unavailable, "The guest reported a boot failure (code \(code)). \(recovery)")
@@ -642,7 +650,7 @@ public actor RuntimeService {
   static func stalled(phase: String?, after limit: Duration) -> RuntimeError {
     RuntimeError(
       .timeout,
-      "The guest stopped making progress after the \(phase ?? "unknown") stage: no Incus health and no serial output for \(limit.components.seconds) s. Disks and Incus data were kept. Inspect serial.log, then run macus runtime stop --force and macus start."
+      "The guest stopped making progress after the \(phase ?? "unknown") stage: no Incus health and no serial output for \(limit.components.seconds) s. \(bootFailureRecovery)"
     )
   }
 

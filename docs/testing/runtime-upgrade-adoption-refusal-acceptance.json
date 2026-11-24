@@ -92,7 +92,7 @@
     }
   ],
   "findings": [
-    "The failure message appends the generic boot-failure remedy, 'Inspect serial.log, then run macus runtime stop --force and macus start', although automatic rollback has already stopped the runtime and restored the previous root. Only 'macus start' is needed.",
+    "The failure message appends the generic boot-failure remedy, 'Inspect serial.log, then run macus runtime stop --force and macus start', although automatic rollback has already stopped the runtime and restored the previous root. Only 'macus start' is needed. Fixed after this run: the message now drops that remedy, says the runtime is stopped and ends with 'Run macus start to boot the previous root.' (unit test refusedAdoptionRollsBackAndNamesOnlyStart); the hardware run was not repeated with the new wording.",
     "The rolled-back backup keeps the rejected 4 GiB root under failed/ until it is pruned; nothing removes it automatically, as designed."
   ],
   "not_covered": [
