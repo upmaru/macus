@@ -30,6 +30,9 @@ public actor RuntimeService {
   /// Set when an interrupted upgrade could not be rolled back at daemon start: every
   /// mutation is refused until it is resolved by hand.
   private var recoveryError: String?
+  /// A failed upgrade whose new root could not be stopped. Every mutation is refused except an
+  /// explicit forced stop, which rolls the upgrade back once the guest is down.
+  private var unstoppedUpgrade: UpgradeIntent?
 
   public init(driver: any VirtualMachineDriver, store: StateStore) throws {
     try self.init(driver: driver, store: store, stallLimit: .seconds(300))
@@ -175,6 +178,9 @@ public actor RuntimeService {
     )
   }
   public func stop(force: Bool = false) async throws -> RuntimeStatus {
+    if force, !mutationActive, let intent = unstoppedUpgrade {
+      return try await finishUnstoppedUpgrade(intent)
+    }
     if force, mutationActive, state == .starting, let startingTask {
       // Emergency stop owns the mutation gate after cancelling the boot task.
       generation &+= 1
@@ -271,9 +277,10 @@ public actor RuntimeService {
     do {
       try upgradeHook?("journaled")
       try UpgradeJournal.createBackup(&intent, paths: paths, hook: upgradeHook)
+      var dataCopy = plan.dataCopy
       if upgradeClass == .migrating {
         bootPhase = "copying_data"
-        try UpgradeJournal.copyData(
+        dataCopy = try UpgradeJournal.copyData(
           &intent, paths: paths, method: plan.dataCopy, volume: volume, hook: upgradeHook)
       }
       try GuestImageManager.prepareRoot(staged.root)
@@ -298,7 +305,9 @@ public actor RuntimeService {
       intent.step = .verified
       try UpgradeJournal.save(intent, paths: paths)
       try upgradeHook?("verified")
-      recordReady(health)
+      // Unlike ordinary readiness, a commit needs the record: without it the next plan would
+      // still describe the old appliance and offer the same upgrade again.
+      try writeReadyRecords(health)
       let record = UpgradeBackupRecord(
         id: intent.backupId, createdAt: ISO8601DateFormatter().string(from: Date()),
         upgradeClass: upgradeClass, fromCatalogId: plan.fromCatalogId, toCatalogId: catalog.id,
@@ -314,7 +323,7 @@ public actor RuntimeService {
       logger.notice("Upgrade \(intent.backupId, privacy: .public) committed")
       return UpgradeResult(
         backupId: intent.backupId, upgradeClass: upgradeClass, fromCatalogId: plan.fromCatalogId,
-        toCatalogId: catalog.id, poolGuid: storage.poolGuid, dataCopy: plan.dataCopy,
+        toCatalogId: catalog.id, poolGuid: storage.poolGuid, dataCopy: dataCopy,
         status: snapshot())
     } catch let interruption as UpgradeInterruption {
       throw interruption
@@ -368,8 +377,12 @@ public actor RuntimeService {
     startedAt = nil
     let detail = reason.localizedDescription
     guard !(await driver.isRunning()) else {
+      // The journal stays: the uncommitted root must never be served or replaced, so every
+      // runtime change but a forced stop is refused until the rollback runs.
       let message =
-        "The upgrade failed (\(detail)) and the new root could not be stopped, so nothing was rolled back yet. The daemon rolls the upgrade back when it next starts."
+        "The upgrade failed (\(detail)) and the new root could not be stopped, so nothing was rolled back yet. Runtime changes are refused until it is: run macus runtime stop --force, which rolls the upgrade back once the guest stops, or restart the runtime service, which rolls it back when it starts."
+      unstoppedUpgrade = intent
+      recoveryError = message
       state = .failed
       lastError = message
       return RuntimeError(.unavailable, message)
@@ -394,6 +407,38 @@ public actor RuntimeService {
       lastError = message
       return RuntimeError(.io, message)
     }
+  }
+
+  /// The explicit forced stop of a failed upgrade's new root, then the rollback it waited for.
+  private func finishUnstoppedUpgrade(_ intent: UpgradeIntent) async throws -> RuntimeStatus {
+    mutationActive = true
+    defer { mutationActive = false }
+    if await driver.isRunning() { try await driver.forceStop() }
+    guard !(await driver.isRunning()) else {
+      throw RuntimeError(
+        .unavailable,
+        "The failed upgrade's new root is still running after a forced stop; nothing was rolled back. Restart the runtime service to roll the upgrade back."
+      )
+    }
+    startedAt = nil
+    do {
+      let current = try UpgradeJournal.load(paths: store.paths) ?? intent
+      try UpgradeJournal.rollback(current, paths: store.paths, hook: upgradeHook)
+    } catch {
+      let message =
+        "The failed upgrade's new root was stopped, but the upgrade could not be rolled back: \(error.localizedDescription) Runtime changes are refused until it is resolved."
+      unstoppedUpgrade = nil
+      recoveryError = message
+      lastError = message
+      throw RuntimeError(.io, message)
+    }
+    unstoppedUpgrade = nil
+    recoveryError = nil
+    configuration = try store.load()
+    state = .stopped
+    lastError =
+      "The failed upgrade's new root was stopped and the previous root and configuration were restored; diagnostics are in backups/\(intent.backupId)/failed."
+    return snapshot()
   }
 
   public func openIncusStream() async throws -> GuestStream {
@@ -781,6 +826,15 @@ public actor RuntimeService {
   /// health. Failures are logged and never fail readiness: the post-boot probe still guards
   /// an unknown or stale record.
   private func recordReady(_ health: GuestHealth) {
+    do {
+      try writeReadyRecords(health)
+    } catch {
+      logger.error("Cannot record guest identity: \(error.localizedDescription, privacy: .public)")
+    }
+  }
+
+  /// The guest and storage identity records for a guest that answered health.
+  private func writeReadyRecords(_ health: GuestHealth) throws {
     let paths = store.paths
     do {
       let previous = recordedGuest()
@@ -798,8 +852,6 @@ public actor RuntimeService {
           "Guest reports pool \(reported, privacy: .public), but this state records pool \(recorded, privacy: .public); the record was kept"
         )
       }
-    } catch {
-      logger.error("Cannot record guest identity: \(error.localizedDescription, privacy: .public)")
     }
   }
 
