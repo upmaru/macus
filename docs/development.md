@@ -371,6 +371,20 @@ It creates the workload with `incus create` and `incus start` rather than `incus
 
 Every child process gets an empty stdin, because `incus snapshot create` and `incus create` read YAML from a stdin that is not a terminal. If a command stalls anyway, the report keeps its `--debug` log, a goroutine dump and a TLS probe of the gateway.
 
+## Access log acceptance runner
+
+`Integration/scripts/access-log-acceptance.py` (`add-gateway-access-log` task 5.1) runs against a state that `start-acceptance.py` already started, with that run's installed pair, isolated `INCUS_CONF` and remote. It refuses to run without `--opt-in` and refuses the ordinary state and client configuration.
+
+```bash
+python3 Integration/scripts/access-log-acceptance.py --opt-in \
+  --state-dir /tmp/macus-accept --prefix "$(brew --prefix macus)" \
+  --incus-conf "$INCUS_CONF_FROM_START_REPORT" --incus "$(command -v incus)" --remote macus \
+  --url https://127.0.0.1:PORT --certificate "$INCUS_CONF_FROM_START_REPORT/servercerts/macus.crt" \
+  --report "$PWD/.integration/access-log-acceptance.json"
+```
+
+Through the standard client it runs `incus list`, `launch`, `exec`, `file push` and an SFTP listener mount read with `sftp`, then sends one request from an untrusted certificate carrying a marked bearer value, query and header. It then reads the log with `macus server logs` and requires one record per exchange with the expected caller, status, outcome and bytes, streams recorded at their end, ids from one boot without a gap, 0600 files in a 0700 directory, only the documented keys, and none of the marked values. It creates one throwaway instance and leaves it and the runtime in place.
+
 ## Restart acceptance runner
 
 `Integration/scripts/restart-acceptance.py` (task 11.4) restarts only the server job of a state that `start-acceptance.py` started and `workload-acceptance.py` gave a kept workload. It takes the same arguments as the workload runner (without `--image`) and has the same opt-in steps: nothing without `--opt-in`, the pair and path checks without `--hardware`, and no restart until the client's remote is proved to be this state's endpoint.
