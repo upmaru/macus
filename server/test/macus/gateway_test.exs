@@ -671,7 +671,7 @@ defmodule Macus.GatewayTest do
       advertised = Jason.decode!(body)["metadata"]["api_extensions"]
 
       # The shared gateway serves only the configured extensions it
-      # implements; opsmaru_incus 0.2.9 implements every configured one.
+      # implements; opsmaru_incus 0.2.10 implements every configured one.
       supported = Opsmaru.Incus.Gateway.Identity.supported_extensions()
       assert configured -- supported == []
       assert advertised == configured
