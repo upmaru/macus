@@ -206,8 +206,11 @@ def execute(arguments, env, report, timeout=1800):
 def ensure_marker(incus, instance, env, report, state):
     token = hashlib.sha256(str(state).encode()).hexdigest()
     key = "user.macus.homebrew-acceptance"
-    instances = json.loads(execute([incus, "list", instance, "--format=json"], env, report))
-    matches = [value for value in instances if value.get("name") == "macus-brew-marker"]
+    # `incus list` takes the remote alone ("remote:"), then filters; "remote:name" is read as a
+    # filter on the default remote, which an isolated client configuration does not have.
+    remote, _, name = instance.partition(":")
+    instances = json.loads(execute([incus, "list", remote + ":", "--format=json"], env, report))
+    matches = [value for value in instances if value.get("name") == name]
     if matches:
         if len(matches) != 1 or matches[0].get("config", {}).get(key) != token:
             raise ValueError("Refusing an unrelated existing marker instance")

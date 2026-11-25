@@ -36,6 +36,7 @@ class HomebrewAcceptanceTests(unittest.TestCase):
         with patch.object(acceptance, 'execute', side_effect=[json.dumps([value]), '']) as command:
             acceptance.ensure_marker('/incus', 'macus-brew:macus-brew-marker', {}, {}, state)
             calls = [args.args[0] for args in command.call_args_list]
+            self.assertEqual(calls[0], ['/incus', 'list', 'macus-brew:', '--format=json'])
             self.assertFalse(any('launch' in call for call in calls))
             self.assertEqual(calls[-1][1], 'exec')
         value['config'] = {}
