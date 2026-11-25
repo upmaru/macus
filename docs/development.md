@@ -58,7 +58,7 @@ mise exec -- mix test
 
 `server/mix.lock` records released dependencies, including Phoenix 1.8.17,
 Plug.Cowboy 2.9.0, Cowboy 2.21.0, Mint 1.11.0, TamaMCP 0.2.1,
-`opsmaru_incus` 0.2.9 and `tama_dex` 0.1.0 (which brings the exqlite SQLite
+`opsmaru_incus` 0.2.10 and `tama_dex` 0.1.0 (which brings the exqlite SQLite
 NIF). All dependencies are released Hex packages; Hex is the
 only distribution route for `opsmaru_incus`, so builds never use a Git revision
 or sibling path for it. Macus's own scaffold has no Ecto, HTML,
@@ -370,6 +370,20 @@ The runner never stops, restarts or force-stops the VM. The only thing it delete
 It creates the workload with `incus create` and `incus start` rather than `incus launch`. The client always sends `"start": true`, and it starts the instance a second time unless the server advertises `instance_create_start`. Before `opsmaru_incus` 0.2.7 the gateway didn't advertise it, so `incus launch` reported "already running" after the container had started ([opsmaru-incus#88](https://github.com/upmaru/opsmaru-incus/issues/88)). Macus now advertises it, but the runner keeps `create` and `start` so its evidence stays comparable with the 11.3 run, which used a pair built with 0.2.6.
 
 Every child process gets an empty stdin, because `incus snapshot create` and `incus create` read YAML from a stdin that is not a terminal. If a command stalls anyway, the report keeps its `--debug` log, a goroutine dump and a TLS probe of the gateway.
+
+## Access log acceptance runner
+
+`Integration/scripts/access-log-acceptance.py` (`add-gateway-access-log` task 5.1) runs against a state that `start-acceptance.py` already started, with that run's installed pair, isolated `INCUS_CONF` and remote. It refuses to run without `--opt-in` and refuses the ordinary state and client configuration. Before sending anything it also refuses unless the remote's address and `--url` both equal the `url` in the state's `server/endpoint.json`.
+
+```bash
+python3 Integration/scripts/access-log-acceptance.py --opt-in \
+  --state-dir /tmp/macus-accept --prefix "$(brew --prefix macus)" \
+  --incus-conf "$INCUS_CONF_FROM_START_REPORT" --incus "$(command -v incus)" --remote macus \
+  --url https://127.0.0.1:PORT --certificate "$INCUS_CONF_FROM_START_REPORT/servercerts/macus.crt" \
+  --report "$PWD/.integration/access-log-acceptance.json"
+```
+
+Through the standard client it runs `incus list`, `launch`, `exec`, `file push` and an SFTP listener mount read with `sftp`, then sends one request from an untrusted certificate carrying a marked bearer value, query and header. It then reads the log with `macus server logs` and requires one record per exchange with the expected caller, status, outcome and bytes, streams recorded at their end, ids from one boot without a gap, 0600 files in a 0700 directory, only the documented keys, and none of the marked values. It creates one throwaway instance and leaves it and the runtime in place.
 
 ## Restart acceptance runner
 
