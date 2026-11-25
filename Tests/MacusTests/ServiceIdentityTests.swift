@@ -570,7 +570,7 @@ final class PairFixture: @unchecked Sendable {
   /// Any command, with this pair's launchd, gateway and build in place of the host's.
   func run(
     _ arguments: [String], capture: StartCapture = StartCapture(),
-    catalog: ApplianceCatalogEntry? = nil
+    catalog: ApplianceCatalogEntry? = nil, configure: (inout StartupOverrides) -> Void = { _ in }
   ) async -> Int32 {
     var overrides = tools.overrides(
       downloader: downloader, launchControl: launch, agents: agents)
@@ -578,6 +578,7 @@ final class PairFixture: @unchecked Sendable {
     overrides.gateway = probe
     overrides.build = build
     overrides.catalog = catalog
+    configure(&overrides)
     let executable = self.executable
     overrides.executablePath = { executable }
     return await MacusCLI.run(

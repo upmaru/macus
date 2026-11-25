@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// `macus runtime upgrade` and `macus runtime upgrade --rollback`.
@@ -6,54 +7,82 @@ enum RuntimeUpgradeAction: Sendable, Equatable {
   case rollback(id: String?, discardData: Bool)
 }
 
-private struct SilentProgressSink: StartupProgressSink {
-  func emit(_ event: StartupProgressEvent) {}
-}
-
 /// Upgrade and rollback first activate the runtime and server jobs without booting, as start
 /// does, so a state start refused can still be repaired. Everything after that goes through
 /// the public API; the client only downloads the appliance and stages it inside the state.
-/// It never runs a package manager or changes the installed package.
+/// It never runs a package manager or changes the installed package. Progress is start's: the
+/// same sink, stages and `--progress` rendering on stderr.
 func runRuntimeUpgrade(
-  _ action: RuntimeUpgradeAction, directory: URL, timeout: Int, json: Bool,
-  environment: [String: String], transport: any LocalHTTPTransport,
+  _ action: RuntimeUpgradeAction, progress: ProgressSelection = .auto, directory: URL,
+  timeout: Int, json: Bool, environment: [String: String], transport: any LocalHTTPTransport,
   gateway: any GatewayTransport, runner: any LocalCommandRunner, streams: MacusStreams,
   overrides: StartupOverrides
 ) async throws {
   let launchctl = try FixtureSeam.path(
     FixtureSeam.launchctlVariable, environment: environment, stateDirectory: directory,
     kind: .executable)
+  let stderrIsTTY = overrides.stderrIsTTY ?? streams.stderrIsTTY
+  let rendering = ProgressRenderer.resolve(
+    selection: progress, stderrIsTTY: stderrIsTTY, term: overrides.term ?? environment["TERM"],
+    json: json)
+  var progressEnvironment = environment
+  if let term = overrides.term { progressEnvironment["TERM"] = term }
+  if json { progressEnvironment["NO_COLOR"] = "1" }
+  let terminal = MacusTerminal(
+    descriptor: STDERR_FILENO, isTTY: rendering == .animated,
+    environment: progressEnvironment, width: overrides.terminalWidth, write: streams.writeError)
+  let sink = TerminalProgressSink(
+    rendering: rendering, operation: action.progressOperation, environment: progressEnvironment,
+    stderrIsTTY: stderrIsTTY, width: { terminal.size()?.columns }, write: streams.writeError)
+  sink.startRefreshing()
+  defer { sink.cleanup() }
+  // An interrupt still ends the command at once, as it always has; the animated display
+  // first gives the terminal its cursor back.
+  let restore =
+    overrides.installSignals && rendering == .animated ? InterruptRestoresTerminal(sink) : nil
+  defer { restore?.cancel() }
+  let request = StartupRequest(
+    stateDirectory: directory, remote: MacusCLI.defaultRemoteName, setDefault: false,
+    incusOverride: nil, timeout: timeout, environment: environment)
+  let now = overrides.now ?? { ContinuousClock.now }
+  let steps = UpgradeSteps(
+    sink: sink, action: action, operationID: request.operationID, started: now(), now: now)
   // The daemon plans against the appliance this executable ships, so the client stages the
   // same one, never a draft qualification catalog.
   let dependencies = startupDependencies(
     environment: environment, transport: transport, gateway: gateway, runner: runner,
-    overrides: overrides, launchctl: launchctl, downloader: nil, catalog: nil,
-    sink: SilentProgressSink())
+    overrides: overrides, launchctl: launchctl, downloader: nil, catalog: nil, sink: steps)
   let budget = StartupBudget(seconds: timeout, now: dependencies.now())
   let purpose: String
   switch action {
   case .upgrade(let dryRun): purpose = dryRun ? "the upgrade dry run" : "the upgrade"
   case .rollback: purpose = "the rollback"
   }
-  let request = StartupRequest(
-    stateDirectory: directory, remote: MacusCLI.defaultRemoteName, setDefault: false,
-    incusOverride: nil, timeout: timeout, environment: environment)
-  let services = try await StartupCoordinator(dependencies: dependencies).activate(
-    request, purpose: purpose)
-  defer { services.release() }
   let presentation = HumanPresentation(streams: streams, environment: environment)
-  let session = UpgradeSession(
-    directory: directory, budget: budget, dependencies: dependencies, json: json,
-    environment: environment, streams: streams, presentation: presentation)
-  switch action {
-  case .upgrade(let dryRun):
-    try await session.upgrade(
-      dryRun: dryRun, paths: services.paths, runtimeTarget: services.runtimeTarget)
-  case .rollback(let id, let discardData): try await session.rollback(id: id, discard: discardData)
+  do {
+    let services = try await StartupCoordinator(dependencies: dependencies).activate(
+      request, purpose: purpose)
+    defer { services.release() }
+    let session = UpgradeSession(
+      action: action, directory: directory, budget: budget, dependencies: dependencies,
+      json: json, environment: environment, streams: streams, presentation: presentation,
+      sink: sink, steps: steps, separatesSteps: rendering != .none)
+    switch action {
+    case .upgrade(let dryRun):
+      try await session.upgrade(
+        dryRun: dryRun, paths: services.paths, runtimeTarget: services.runtimeTarget)
+    case .rollback(let id, let discardData):
+      try await session.rollback(id: id, discard: discardData)
+    }
+  } catch {
+    steps.fail(error)
+    await sink.finish()
+    throw error
   }
 }
 
 private struct UpgradeSession {
+  let action: RuntimeUpgradeAction
   let directory: URL
   let budget: StartupBudget
   let dependencies: StartupDependencies
@@ -61,15 +90,22 @@ private struct UpgradeSession {
   let environment: [String: String]
   let streams: MacusStreams
   let presentation: HumanPresentation
+  let sink: TerminalProgressSink
+  let steps: UpgradeSteps
+  let separatesSteps: Bool
 
   func upgrade(dryRun: Bool, paths: RuntimePaths, runtimeTarget: String?) async throws {
+    steps.begin(.upgradePlan)
     let planned = try await request("POST", "/runtime/upgrade/plan")
     let plan = try JSON.decoder().decode(UpgradePlan.self, from: planned.body)
     let planObject = try jsonObject(planned.body)
     let entry = dependencies.catalog
     try Self.requireThisPackage(
       plan, entry: entry, payload: EmbeddedGuestPayload.revision, runtimeTarget: runtimeTarget)
+    steps.complete(.upgradePlan)
     if plan.current {
+      sink.narrow(to: 3)
+      await sink.finish(ready: true, connected: true)
       if json {
         streams.writeOutput(try jsonText(["upgraded": false, "plan": planObject]))
       } else {
@@ -81,6 +117,7 @@ private struct UpgradeSession {
       return
     }
     if dryRun {
+      await sink.finish(ready: true, connected: true)
       if json {
         streams.writeOutput(
           try jsonText(["dry_run": true, "upgraded": false, "plan": planObject]))
@@ -92,22 +129,28 @@ private struct UpgradeSession {
       }
       return
     }
-    // Shown before anything is downloaded or stopped.
-    if !json { presentation.upgradePlan(plan) }
-    if !json { presentation.text("\nDownloading and verifying \(terminalSafe(entry.id))…\n") }
+    // Shown before anything is downloaded or stopped, between the steps.
+    if !json {
+      await sink.settle()
+      presentation.upgradePlan(plan)
+      // The steps that follow start below the table, on the progress stream.
+      if separatesSteps { streams.writeError("\n") }
+    }
+    steps.begin(.acquisition)
     let cache = try await ApplianceAcquisition(downloader: dependencies.downloader).materialize(
       entry: entry, directory: directory, budget: budget, now: dependencies.now
-    ) { _, _ in }
-    if !json { presentation.text("Staging the new root and upgrade seed…\n") }
+    ) { completed, total in
+      steps.download(completed: completed, total: total)
+    }
+    steps.finishAcquisition()
+    steps.begin(.upgradeStaging)
     let stagingID = try await UpgradeStaging.stage(
       plan: plan, cache: cache, entry: entry, paths: paths, runner: dependencies.runner,
       timeout: try budget.remainingSeconds(at: dependencies.now()), environment: environment)
-    if !json {
-      presentation.text(
-        "Stopping the runtime and booting \(terminalSafe(entry.id)); every workload restarts…\n")
-    }
+    steps.complete(.upgradeStaging)
     let upgraded = try await dispatch(stagingID: stagingID, paths: paths)
     let result = try jsonObject(upgraded.body)
+    await sink.finish(ready: true, connected: true)
     if json {
       streams.writeOutput(try jsonText(["upgraded": true, "plan": planObject, "result": result]))
     } else {
@@ -124,14 +167,12 @@ private struct UpgradeSession {
     }
     let body = object.isEmpty ? Data() : try JSONSerialization.data(withJSONObject: object)
     // The runtime service checks the backup before it stops anything, and a refusal leaves
-    // the runtime as it was, so this line promises no stop.
-    if !json {
-      presentation.text(
-        "Checking \(id.map { "backup \(terminalSafe($0))" } ?? "the latest backup"); the runtime is stopped only if it can be restored…\n"
-      )
-    }
-    let response = try await request("POST", "/runtime/upgrade/rollback", body)
+    // the runtime as it was, so the stop step appears only once the service reports it.
+    let response = try await serviceOperation(
+      "/runtime/upgrade/rollback", body: body,
+      detail: id.map { "backup \(terminalSafe($0))" } ?? "the latest backup")
     let result = try jsonObject(response.body)
+    await sink.finish(ready: true, connected: true)
     if json {
       streams.writeOutput(try jsonText(result))
     } else {
@@ -171,14 +212,65 @@ private struct UpgradeSession {
     let timeout = try budget.remainingSeconds(at: dependencies.now())
     let response: LocalHTTPResponse
     do {
-      response = try await dependencies.gateway.request(
-        endpoint, method: "POST", path: "/runtime/upgrade", body: body, timeout: timeout)
+      response = try await serviceOperation("/runtime/upgrade", body: body) {
+        try await dependencies.gateway.request(
+          endpoint, method: "POST", path: "/runtime/upgrade", body: body, timeout: timeout)
+      }
     } catch {
       undelivered = HTTPSGatewayClient.neverConnected(error)
       throw error
     }
     undelivered = HTTPSGatewayClient.notDispatched(response)
     return try requireGatewaySuccess(response)
+  }
+
+  /// Runs the request the runtime service carries out, advancing its steps from the phases
+  /// `GET /runtime/progress` reports meanwhile. The steps resolve only with its answer.
+  private func serviceOperation(
+    _ path: String, body: Data, detail: String? = nil,
+    send: (() async throws -> LocalHTTPResponse)? = nil
+  ) async throws -> LocalHTTPResponse {
+    let before = try? await progress()
+    steps.beginDispatch(runtimeWasStopped: before?.stopped == true, detail: detail)
+    let steps = self.steps
+    let poll = Task {
+      while !Task.isCancelled {
+        if let observed = try? await progress() {
+          steps.observe(
+            operation: observed.operation, phase: observed.phase,
+            expectedReboot: observed.expectedReboot)
+        }
+        try? await Task.sleep(for: .seconds(1))
+      }
+    }
+    defer { poll.cancel() }
+    do {
+      let response: LocalHTTPResponse
+      if let send {
+        response = try await send()
+      } else {
+        response = try await request("POST", path, body)
+      }
+      steps.closeDispatch(succeeded: (200...299).contains(response.status))
+      return response
+    } catch {
+      steps.closeDispatch(succeeded: false)
+      throw error
+    }
+  }
+
+  private func progress() async throws -> (
+    operation: String?, phase: String?, expectedReboot: Bool, stopped: Bool
+  ) {
+    let response = try await gatewayRequest(
+      "GET", "/runtime/progress", directory: directory, timeout: 5,
+      transport: dependencies.gateway)
+    let object = try jsonObject(response.body)
+    return (
+      jsonString(object["operation"]), jsonString(object["phase"]),
+      jsonBool(object["expected_reboot"]) == true,
+      ["stopped", "absent"].contains(jsonString(object["state"]))
+    )
   }
 
   private func request(_ method: String, _ path: String, _ body: Data = Data()) async throws
@@ -188,6 +280,32 @@ private struct UpgradeSession {
       method, path, body, directory: directory,
       timeout: try budget.remainingSeconds(at: dependencies.now()),
       transport: dependencies.gateway)
+  }
+}
+
+/// Gives the terminal its cursor back on SIGINT or SIGTERM, then ends the process with that
+/// signal as the default disposition would have.
+private final class InterruptRestoresTerminal: @unchecked Sendable {
+  private var sources: [DispatchSourceSignal] = []
+  init(_ sink: TerminalProgressSink) {
+    let queue = DispatchQueue(label: "macus.upgrade.signals")
+    for number in [SIGINT, SIGTERM] {
+      signal(number, SIG_IGN)
+      let source = DispatchSource.makeSignalSource(signal: number, queue: queue)
+      source.setEventHandler {
+        sink.cleanup()
+        signal(number, SIG_DFL)
+        raise(number)
+      }
+      source.resume()
+      sources.append(source)
+    }
+  }
+  func cancel() {
+    for source in sources { source.cancel() }
+    sources.removeAll()
+    signal(SIGINT, SIG_DFL)
+    signal(SIGTERM, SIG_DFL)
   }
 }
 
