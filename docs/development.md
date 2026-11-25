@@ -373,7 +373,7 @@ Every child process gets an empty stdin, because `incus snapshot create` and `in
 
 ## Access log acceptance runner
 
-`Integration/scripts/access-log-acceptance.py` (`add-gateway-access-log` task 5.1) runs against a state that `start-acceptance.py` already started, with that run's installed pair, isolated `INCUS_CONF` and remote. It refuses to run without `--opt-in` and refuses the ordinary state and client configuration.
+`Integration/scripts/access-log-acceptance.py` (`add-gateway-access-log` task 5.1) runs against a state that `start-acceptance.py` already started, with that run's installed pair, isolated `INCUS_CONF` and remote. It refuses to run without `--opt-in` and refuses the ordinary state and client configuration. Before sending anything it also refuses unless the remote's address and `--url` both equal the `url` in the state's `server/endpoint.json`.
 
 ```bash
 python3 Integration/scripts/access-log-acceptance.py --opt-in \

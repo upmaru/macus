@@ -79,6 +79,20 @@ def main():
         return code
 
     evidence = {}
+
+    # Nothing is sent until the client's remote and --url are this state's own
+    # gateway: a stale remote would create the instance on another host.
+    endpoint = json.loads((Path(a.state_dir) / "server" / "endpoint.json").read_text())
+    remotes = run("incus remote list", [a.incus, "remote", "list", "--format", "json"],
+                  timeout=60, check=False)
+    entry = json.loads(remotes.stdout).get(a.remote, {}) if remotes.returncode == 0 else {}
+    addresses = entry.get("Addrs") or ([entry["Addr"]] if entry.get("Addr") else [])
+    if addresses != [endpoint["url"]] or a.url != endpoint["url"]:
+        failures.append(f"remote {a.remote} is {addresses} and --url is {a.url}, "
+                        f"not this state's {endpoint['url']}")
+        finish(1)
+        raise SystemExit("Refusing: the client's remote or --url is not this state's gateway")
+
     before, _ = logs()
     evidence["records_before"] = len(before)
 
