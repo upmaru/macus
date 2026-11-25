@@ -84,6 +84,8 @@ public enum MacusCLI {
       return 130
     } catch is ReportedDiagnosis {
       return 1
+    } catch is FollowInterrupted {
+      return 130
     } catch let error as RuntimeError {
       emit(
         error, json: json, streams: streams, environment: environment,
@@ -168,6 +170,10 @@ public enum MacusCLI {
         It expires after 1 hour by default and at most 30 days. It is never printed.
       server trust token list         List enrollment tokens and their redemption.
       server trust token revoke ID    Refuse an unredeemed enrollment token.
+      server logs [--lines N] [--follow] [--json]
+        Print recent gateway access records from STATE/logs/gateway-access.log, newest last
+        (50 by default, N from 1 to 100000). --follow keeps printing across rotation until
+        interrupted; --json prints the stored lines unchanged. Works while the server is stopped.
 
     Common examples:
       macus start
@@ -182,12 +188,15 @@ public enum MacusCLI {
       macus server token issue --principal laptop --scope incus.read --output ~/macus.token
       macus server trust token issue --name laptop --address macus.example.net:8443 \\
         --server-certificate ~/gateway.crt --output ~/laptop.trust-token
+      macus server logs --lines 200
 
     Options:
       --json            Machine results on stdout, errors on stderr.
       --progress auto|plain|none    Startup progress on stderr.
       --state-dir ABSOLUTE_PATH    Select existing or isolated state.
       --timeout SECONDS           Set a bounded deadline.
+      --lines N                   Records server logs prints (1...100000, default 50).
+      --follow                    Keep printing new server logs records until interrupted.
 
     start is the high-level first-use command. It prepares the pinned appliance,
     activates the per-user runtime and server jobs when needed, creates an absent
@@ -238,7 +247,8 @@ public enum MacusCLI {
     certificate naming that host.
     --progress auto animates only on an interactive terminal; plain and JSON avoid cursor
     escapes. --progress none suppresses progress. Exit status is 0 on success, 1 on
-    operational failure, 2 on invalid arguments and 130 when start is interrupted.
+    operational failure, 2 on invalid arguments and 130 when start or server logs --follow
+    is interrupted.
 
     """
   }
@@ -272,6 +282,7 @@ private enum Command {
     name: String, addresses: [String], serverCertificate: String, expiresIn: Int, output: String)
   case serverTrustTokenList
   case serverTrustTokenRevoke(id: String)
+  case serverLogs(lines: Int, follow: Bool)
 }
 
 private struct Invocation {
@@ -291,7 +302,7 @@ private func requestsJSON(_ arguments: [String]) -> Bool {
       || token == "--scope" || token == "--expires-in" || token == "--output"
       || token == "--name" || token == "--address" || token == "--server-certificate"
       || token == "--bind-address" || token == "--port" || token == "--advertised-url"
-      || token == "--certificate-file" || token == "--key-file"
+      || token == "--certificate-file" || token == "--key-file" || token == "--lines"
     {
       index += 2
       continue
@@ -314,7 +325,7 @@ private func defaultTimeout(_ command: Command) -> Int {
   case .runtimeBackups: MacusCLI.readOnlyTimeout
   case .capabilities, .runtimeStatus, .doctor, .serverConfigShow, .serverConfigSet,
     .serverConfigReset, .serverTokenIssue, .serverTokenList, .serverTokenRevoke,
-    .serverTrustTokenIssue, .serverTrustTokenList, .serverTrustTokenRevoke:
+    .serverTrustTokenIssue, .serverTrustTokenList, .serverTrustTokenRevoke, .serverLogs:
     MacusCLI.readOnlyTimeout
   }
 }
@@ -342,6 +353,8 @@ private func parse(_ arguments: [String]) throws -> Invocation {
   var addresses: [String] = []
   var serverCertificate: String?
   var gateway = GatewayConfigurationChange()
+  var lines: Int?
+  var follow = false
   var positionals: [String] = []
   func value(for flag: String) throws -> String {
     guard index + 1 < arguments.count, !arguments[index + 1].hasPrefix("-") else {
@@ -478,6 +491,19 @@ private func parse(_ arguments: [String]) throws -> Invocation {
         throw UsageError(message: "--key-file requires an absolute path")
       }
       gateway.keyFile = raw
+    case "--lines":
+      guard lines == nil else { throw UsageError(message: "Duplicate --lines") }
+      let raw = try value(for: "--lines")
+      guard raw.utf8.count <= 6, raw.utf8.allSatisfy({ (48...57).contains($0) }),
+        let parsed = Int(raw), (1...GatewayAccessLog.maxLines).contains(parsed)
+      else {
+        throw UsageError(
+          message: "--lines must be an integer from 1 to \(GatewayAccessLog.maxLines)")
+      }
+      lines = parsed
+    case "--follow":
+      guard !follow else { throw UsageError(message: "Duplicate --follow") }
+      follow = true
     default:
       if token.hasPrefix("-") { throw UsageError(message: "Unknown flag \(token)") }
       positionals.append(token)
@@ -578,6 +604,8 @@ private func parse(_ arguments: [String]) throws -> Invocation {
   } else if positionals.count == 5, positionals.prefix(4) == ["server", "trust", "token", "revoke"]
   {
     command = .serverTrustTokenRevoke(id: positionals[4])
+  } else if positionals == ["server", "logs"] {
+    command = .serverLogs(lines: lines ?? GatewayAccessLog.defaultLines, follow: follow)
   } else if positionals == ["list"] || positionals.first == "show" {
     throw UsageError(
       message:
@@ -644,6 +672,12 @@ private func parse(_ arguments: [String]) throws -> Invocation {
       )
     }
   }
+  if lines != nil || follow {
+    if case .serverLogs = command {
+    } else {
+      throw UsageError(message: "--lines and --follow are only valid with server logs")
+    }
+  }
   if expiresIn != nil || output != nil {
     switch command {
     case .serverTokenIssue, .serverTrustTokenIssue: break
@@ -657,7 +691,7 @@ private func parse(_ arguments: [String]) throws -> Invocation {
   switch command {
   case .serverConfigShow, .serverConfigSet, .serverConfigReset, .serverTokenIssue,
     .serverTokenList, .serverTokenRevoke, .serverTrustTokenIssue, .serverTrustTokenList,
-    .serverTrustTokenRevoke:
+    .serverTrustTokenRevoke, .serverLogs:
     // Local administration has no request deadline to bound.
     guard timeout == nil else {
       throw UsageError(message: "server commands do not accept --timeout")
@@ -785,6 +819,10 @@ private func execute(
   case .serverTrustTokenRevoke(let id):
     try ServerAdministration.revokeTrustToken(
       id: id, directory: directory, json: json, streams: streams, presentation: presentation)
+  case .serverLogs(let lines, let follow):
+    try await ServerAdministration.logs(
+      lines: lines, follow: follow, json: json, directory: directory, streams: streams,
+      installSignals: overrides.installSignals)
   }
 }
 

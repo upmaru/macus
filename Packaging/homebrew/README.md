@@ -154,7 +154,8 @@ Upgrade, rollback and removal keep the selected state, which lives outside the k
 - runtime disks and settings: `STATE/runtime/root.raw`, `data.raw`, `efi.bin` and `STATE/config.json`, with every guest workload;
 - appliance backups in `STATE/backups/`, and the guest and storage identity records in `STATE/runtime/`;
 - server credentials and trust: `STATE/server/gateway.crt` and `gateway.key` (clients keep their pinned certificate), `gateway.json`, `bearer-tokens.json`, `local-cli.token`, `trusted-certificates.json` and the enrollment token records;
-- the standard Incus client configuration and its `macus` remote.
+- the standard Incus client configuration and its `macus` remote;
+- the logs in `STATE/logs`: `service.*.log`, `server.*.log` and the gateway access log `gateway-access.log` with its rotated archives `gateway-access.log.0` to `.4`.
 
 A reinstall followed by `macus start` serves the same gateway identity and the same credentials. To discard them, remove those files deliberately; no package command does it.
 
