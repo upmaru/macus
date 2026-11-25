@@ -109,6 +109,8 @@ macus --state-dir /absolute/selected/state start
 
 The server plist records the package's source revision (`MACUS_EXPECTED_REVISION`), so after a package change `start` refuses the old one as a conflict instead of replacing it. Start writes a new one for the installed revision. The Swift job's plist names the stable `opt/macus/bin/macus` and stays valid across versions; start bootstraps it again unchanged. An older plist that names a versioned keg path is a conflict: after stop and unload, remove that owned plist too. Registration replacement is never implicit.
 
+A package from before the Macus server registered `macus` as a direct-socket remote (`unix://…/incus.sock`). `start` refuses it as a conflict rather than changing it. Remove it yourself (`incus remote remove macus`) or choose another name with `--remote`, then run `start` again.
+
 #### Upgrade the appliance
 
 `start` on the new package checks the state's recorded appliance before booting. It continues and reports that an upgrade is available when the appliance or guest payload is older but still served. It fails with `conflict`, before booting, when the new package can no longer serve that guest. A state with no record yet is booted, probed, and stopped gracefully with `unavailable` if its guest is incompatible. In every case both jobs stay registered and the disks are kept. Then:

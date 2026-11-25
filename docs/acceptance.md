@@ -192,6 +192,43 @@ The `recover-incus-boot-crash` change passed [opt-in hardware acceptance](testin
 
 Two fixes came out of the run and were verified on the same appliance: the evidence now copies the start of the last Go crash dump, which a plain tail cut off, and a guard that gives up zaps the dead incusd so OpenRC's shutdown no longer fails at incusd. Even then, the export failed. A diagnostic shutdown hook showed incusd's tmpfs mounts (`devices`, `shmounts`, `guestapi`) and an orphaned `dnsmasq` holding its lease file under `/var/lib/incus`. Storage stop now releases those when incusd's daemon is gone and retries. On the next 3-crash run, the recovery shutdown terminated `dnsmasq`, unmounted the three tmpfs mounts and exported the pool (`TAMA_ZFS_EXPORT_OK`, no OpenRC stop errors), and start was ready in 93 s. A plain graceful stop still exported on the first attempt with nothing released. **Deviation:** later guard revisions were copied into the provisioned guest by sha256 rather than provisioned on a second fresh state. The hook, its counter and the helper container were removed, `conf.d` was restored, a clean boot was ready in 37 s, and the isolated agent was unloaded.
 
+## Installed two-component package — 2026-11-23
+
+Task 4.2 of `add-homebrew-tap` passed [opt-in hardware acceptance](testing/homebrew-two-component-hardware-acceptance.json) from the Homebrew-installed two-component package on ARM64 macOS 27.0.1.
+
+**Candidate.** The candidate was built from `develop` at `ac86fe90f4fd54cadedd569d3ade170b2152ddee`:
+
+- version `0.0.0-dev.20261123073709.ac86fe90f4fd`, Macus 0.1.0;
+- opsmaru_incus 0.2.9, with cassette `e95571af…`;
+- ERTS 15.2.7.12.
+
+`candidate.py` built it through Homebrew from source, uninstalled that test keg, and then poured the `arm64_golden_gate` bottle `00f64875…` from the local tap. The package report recorded `poured-bottle`, a verified signature and virtualization entitlement, system-only linkage, no runtime dependencies, no Homebrew service, and a passive install.
+
+**Run.** `start-acceptance.py --opt-in --hardware` ran from outside the checkout against the installed `opt/macus` pair. It used a fresh short isolated state, its own `INCUS_CONF`, remote `macus-brew-42`, and hashed labels for both jobs.
+
+**First use.** The runner downloaded the 785 MiB appliance in 60 s, and Incus was ready at 66 s. The serial log showed `stage=image state=verified`, then storage, Incus and ready. The prebuilt LTS image booted `6.18.62-0-lts` directly, so its reboot allowance stayed available. The guest ran Incus 7.0.1 on Alpine 3.24.4 with ZFS, `lxc` and `qemu`.
+
+**Repeated start.** The second start was ready again with the same runtime and server PIDs.
+
+**Client and isolation.**
+
+- The standard Incus 7.5.1 client was trusted over native HTTPS. `incus list` exited 0, and the default remote was unchanged.
+- The runtime job ran `opt/macus/bin/macus serve`, and the server job ran `opt/macus/libexec/macus/bin/macus start` from the keg's bundled ERTS. No process came from the checkout.
+- The server opened one loopback listener.
+- Public runtime control returned 200 for status and start-when-ready, and 403 for a stop with a read-only token.
+- The default jobs and endpoint did not change during the run.
+
+All 14 checks passed. The isolated runtime was then stopped, both of its jobs were unloaded, and its state was retained.
+
+**Upgrade from an earlier package (not 4.3 evidence).** The machine's default state had been created on 2026-11-04 by the Swift-only candidate `64a2ec08`. After the run, that state was started on this package. Two things failed:
+
+- `start` refused the earlier direct-socket `macus` remote as a conflict. With the user's approval, that remote was removed.
+- `start` then booted the existing VM and stopped with `unavailable`, because its guest bridge predates the flow-controlled relay. The disks were kept.
+
+With the user's approval, the old state was moved aside intact and a fresh default state was started on the package. The [pre-relay observation](#pre-relay-state-on-a-later-package--2026-11-23-utc) below records that state in detail; `macus runtime upgrade` from the add-runtime-upgrade change now handles such a guest, and [the candidate documentation](../Packaging/homebrew/README.md#upgrade) describes the remote step.
+
+Task 4.3 is still open: upgrading between two server-era revisions with marker persistence, then removal.
+
 ## Pre-relay state on a later package — 2026-11-23 UTC
 
 This is an observation, not acceptance. It motivated the [add-runtime-upgrade change](../openspec/changes/add-runtime-upgrade/proposal.md).
