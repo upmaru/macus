@@ -328,6 +328,7 @@ private struct History {
   }
   #expect(refused?.message.contains("--discard-data-since-upgrade") == true)
   #expect(refused?.message.contains("created-B") == true)
+  #expect(refused?.message.contains("copy from backup \(history.b2) taken at") == true)
   #expect(try fixture.snapshot() == before)
 
   let result = try await service.rollback(backupID: history.b1, discardDataSinceUpgrade: true)
@@ -667,6 +668,9 @@ func daemonStartUndoesAnInterruptedRollback(point: String) async throws {
     _ = try await service.rollback(backupID: id, discardDataSinceUpgrade: false)
   }
   #expect(error?.message.contains("taken at \(copiedAt)") == true)
+  // The backup's own copy: the backup is named once.
+  #expect(error?.message.components(separatedBy: id).count == 2)
+  #expect(error?.message.contains("restores the data disk copy taken at") == true)
   let result = try await service.rollback(backupID: id, discardDataSinceUpgrade: true)
   #expect(result.dataCopyCreatedAt == copiedAt)
   // The state the rollback replaced holds a copy taken when that rollback ran.

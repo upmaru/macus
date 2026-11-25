@@ -321,6 +321,12 @@ private func refusedState(_ fixture: UpgradeFixture) async throws -> (UpgradeVM,
   #expect(await pair.run(["runtime", "upgrade", "--rollback", backupID], capture: refused) == 1)
   #expect(refused.error.contains("--discard-data-since-upgrade"))
   #expect(try Data(contentsOf: fixture.paths.rootDisk) != oldRootBytes)
+  // The refusal stops nothing, and the progress line never claimed it would.
+  #expect(await service.status().state == .ready)
+  #expect(!refused.output.contains("Stopping"))
+  #expect(
+    refused.output.contains(
+      "Checking backup \(backupID); the runtime is stopped only if it can be restored"))
   let restored = StartCapture()
   #expect(
     await pair.run(

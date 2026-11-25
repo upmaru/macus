@@ -228,3 +228,24 @@ Task 5.5 of `add-runtime-upgrade` passed [opt-in hardware acceptance](testing/ru
 - **Earlier package:** the real record was restored. The develop package was reinstalled into the same prefix (same binary SHA-256 as in 5.3) after unloading both jobs and removing the server plist. `macus start` was ready in 42 s with the server job registered for the develop revision. Both containers ran and every marker was intact. The develop package ignores the guest record, storage identity and `backups/` that this change adds.
 
 **Finding:** the failure message ended with the generic boot-failure remedy (`macus runtime stop --force`, then `macus start`), although automatic rollback had already stopped the runtime. After this run the message was changed to drop that remedy, say the runtime is stopped and end with `Run macus start to boot the previous root.`; `refusedAdoptionRollsBackAndNamesOnlyStart` covers it. The hardware run used the earlier wording and was not repeated. The new root never imported the pool in this run, so a forced stop with the pool imported remains task 5.6. The state directory is retained, the develop package is installed in its prefix, and both of its jobs are unloaded.
+
+## Migrating runtime upgrade — 2026-11-25 UTC
+
+Task 5.4 of `add-runtime-upgrade` is [blocked](testing/runtime-upgrade-migrating-acceptance.json): no second appliance with a different Incus package exists. The catalog's only qualified entry is `alpine-3.24.2-lts-1` (Incus `7.0.1-r2`). The draft `alpine-3.24.2-stable-1`, which is unqualified, ships the same `incus-7.0.1-r2` and changes only the kernel and ZFS module, which the design classifies as reversible. The task stays open until an appliance with another Incus package is qualified.
+
+A substitute run on the retained isolated state (`/tmp/macus-r53`) exercised the migrating path with `56a2513` installed. That state was on the develop root with its workload markers.
+
+- **Forced class:** with the runtime ready, the recorded Incus package in `runtime/guest-record.json` was changed to `7.0.0-r2`. The dry run then planned a migrating upgrade (`7.0.0-r2` to `7.0.1-r2`) that named the data clone, and it changed nothing.
+- **Upgrade:** upgraded in 50 s, with the inventory compared. The live `data.raw` kept its inode, and the backup holds a clonefile copy with a new inode. `data_copied_at` (08:28:23Z) precedes the backup's `created_at` (08:28:55Z). The old root, firmware store and seed moved into the backup by inode. The guest record came from health (`7.0.1-r2`, payload `50670a7d…`). Every marker was intact.
+- **Rollback:** a token written to the custom volume after the upgrade, plus a new volume, stood for later writes. Without `--discard-data-since-upgrade`, rollback was refused with `conflict`: the error named the copy time, nothing changed, and the runtime stayed ready. With the flag, it was restored in 7 s. The data disk is the clone's inode, the original root, firmware store and seed inodes are back, and the migrated data and new root were kept as safety backup `20261125T082933Z-63eb2a91`.
+- **Restored state:** `macus start` was ready. Both containers ran. The pre-upgrade markers, including a token written just before the upgrade, were intact, and the post-upgrade token and volume were gone. The host went into clamshell sleep for 295 s during this start; the boot resumed after wake, and without the sleep the start took about 34 s.
+
+**Not covered:** an Incus database migration, since both roots ran `7.0.1-r2`.
+
+**Findings:**
+- On a refused rollback, the client printed `Stopping the runtime to restore the latest backup…` before the request, although nothing is stopped.
+- When the copy is the backup's own, the refusal named that backup twice.
+
+Both were fixed after this run. The client now prints `Checking the latest backup; the runtime is stopped only if it can be restored…`, and the refusal names a second backup only when the copy comes from a later one (`copy from backup Y taken at …`). `migratingUpgradeShowsWhatHappensBeforeTheStopAndRollbackNeedsTheDiscardFlag`, `discardWarningNamesWhenTheDataCopyWasTaken` and `rollbackAcrossALaterMigrationUsesTheLaterDataCopy` cover the fixes. The hardware run used the earlier wording and was not repeated.
+
+The state directory is retained, `56a2513` is installed in its prefix, and both jobs are unloaded.

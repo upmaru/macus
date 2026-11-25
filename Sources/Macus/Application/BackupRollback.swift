@@ -328,9 +328,11 @@ enum BackupRollback {
       all.first { $0.id == source }?.record?.dataTakenAt
     }
     if decision.data != .kept, !discardData {
+      // A later backup's copy is named; the selected backup's own is not named twice.
+      let origin = decision.dataFrom.flatMap { $0 == selected.id ? nil : " from backup \($0)" }
       throw RuntimeError(
         .conflict,
-        "Rolling back to backup \(selected.id) restores the data disk copy taken at \(copyTime ?? "an unrecorded time") (backup \(decision.dataFrom ?? selected.id)); everything written to the data disk since then is discarded. Confirm with --discard-data-since-upgrade. Nothing was changed."
+        "Rolling back to backup \(selected.id) restores the data disk copy\(origin ?? "") taken at \(copyTime ?? "an unrecorded time"); everything written to the data disk since then is discarded. Confirm with --discard-data-since-upgrade. Nothing was changed."
       )
     }
     let directory = paths.backup(selected.id)

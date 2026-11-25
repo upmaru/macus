@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "change": "add-runtime-upgrade",
+  "task": "5.4",
+  "status": "blocked",
+  "recorded_at": "2026-11-25T08:40:00+00:00",
+  "blocked_reason": "No second appliance with a different Incus package exists. The catalog has one qualified entry, alpine-3.24.2-lts-1 (incus 7.0.1-r2). The only other appliance build, the draft release alpine-3.24.2-stable-1 (static build evidence only, unqualified), ships the same incus-7.0.1-r2 and differs in its kernel (7.1.5-0-stable) and ZFS module, which the design classifies as reversible. Task 5.4 stays open until an appliance with another Incus package is qualified.",
+  "substitute": {
+    "status": "passed",
+    "scenario": "Migrating upgrade between the same appliance, forced by a recorded Incus package older than the catalog's, with the data clone, a refused rollback without the discard flag, a rollback restoring the data copy, and the restored state booting",
+    "method": "With the runtime ready, incus_package in runtime/guest-record.json was changed from 7.0.1-r2 to 7.0.0-r2, written atomically at mode 0600. The planner reads the record on every plan, so the upgrade classified as migrating.",
+    "covers": [
+      "migrating classification and plan wording",
+      "clonefile copy of data.raw into the backup before the first boot of the new root, with data_copied_at recorded",
+      "client close-out and the idle-task wait before the inventory baseline (feature/upgrade-rollback 3f30d4e)",
+      "rollback refused without --discard-data-since-upgrade, naming the copy time, changing nothing",
+      "rollback restoring the data copy and the old root, keeping the migrated state as a safety backup with its data",
+      "post-upgrade writes discarded, pre-upgrade writes kept"
+    ],
+    "does_not_cover": [
+      "An Incus database schema migration: both roots ran incus 7.0.1-r2, so the copied database was never migrated.",
+      "A package rollback to an earlier build after the state rollback."
+    ]
+  },
+  "package": {
+    "commit": "56a2513d1ef4b85aec56bf221096eaa53ddb17ad",
+    "branch": "feature/upgrade-docs",
+    "macus_binary_sha256": "d6775ba7625e77b836ddf1b775b2b9ccd9699600f99a717a75ad79aacc9c7cb0",
+    "guest_payload_revision": "50670a7d91d1e1d21a545aa622f388bf203552061dd6d4b02930de23a5e32f3b",
+    "build": "release, Packaging/install-local.sh into the isolated prefix, ad hoc virtualization signing",
+    "package_change": "from develop (ac86fe9, left by task 5.5): both jobs already unloaded, removal of the server plist only, install-local.sh of 56a2513 into the same prefix, then macus start"
+  },
+  "host": {
+    "model": "Mac16,5",
+    "chip": "Apple M4 Max",
+    "memory_gib": 64,
+    "architecture": "arm64",
+    "macos": "27.0.1 (26A434)",
+    "virtualization": "Apple Virtualization.framework",
+    "incus_client": "7.5.1",
+    "state_volume_free_before_upgrade_gib": 26.3
+  },
+  "isolation": {
+    "state_dir": "/tmp/macus-r53 (retained from tasks 5.3 and 5.5, on the develop root)",
+    "prefix": "/tmp/mcx-r53",
+    "incus_conf": "the isolated temporary directory from task 5.3; every incus and macus start command exported it",
+    "remote": "macus-r53",
+    "service_label": "com.upmaru.macus.228c94a474c5",
+    "server_label": "com.upmaru.macus.server.228c94a474c5",
+    "default_jobs_and_client_config_touched": false,
+    "other_acceptance_state_touched": false,
+    "services_unloaded_after_run": true,
+    "state_dir_retained": true
+  },
+  "workload_markers": {
+    "retained": "from task 5.3: r53-marker /root/marker and /mnt/vol/marker (token 1), /mnt/vol/marker2 (token 2), r53-proj-c /root/marker in project r53, profile r53-profile user.r53=marker",
+    "before_upgrade": "a new random token in /mnt/vol/marker3",
+    "after_upgrade": "a new random token in /mnt/vol/marker4 and a new custom volume r54-post (64 MiB)"
+  },
+  "steps": [
+    {
+      "name": "start_on_upgrading_package",
+      "result": "ready",
+      "seconds": 38,
+      "checks": {
+        "upgrade_available_reported": true,
+        "instances_running": true,
+        "all_markers_intact": true,
+        "guest_record_incus_package": "7.0.1-r2 (catalog)"
+      }
+    },
+    {
+      "name": "dry_run_with_forged_package",
+      "result": "planned",
+      "checks": {
+        "class": "migrating (Incus 7.0.0-r2 to 7.0.1-r2)",
+        "pool_identity_source": "health",
+        "data_copy_named": "The data disk is cloned into it first, because Incus will migrate its database.",
+        "space_needed_gib": 12.0,
+        "state_and_backup_entries_unchanged": true,
+        "runtime_still_ready": true
+      }
+    },
+    {
+      "name": "upgrade",
+      "result": "upgraded",
+      "seconds": 50,
+      "backup_id": "20261125T082807Z-016337e3",
+      "checks": {
+        "inventory_compared": true,
+        "inventory": "default: 1 instance, 2 volumes, 1 network, 2 profiles; r53: 1 instance, 1 volume, 1 network, 2 profiles",
+        "live_data_disk_inode_unchanged": true,
+        "data_clone_in_backup_with_new_inode": true,
+        "data_copied_at_before_created_at": "2026-11-25T08:28:23Z before 2026-11-25T08:28:55Z",
+        "old_root_efi_seed_moved_into_backup_by_inode": true,
+        "backup_record": "upgrade_class migrating, data_copy true, root_incus_package 7.0.0-r2, pool_guid 3952008500462468296",
+        "guest_record_from_health": "contract 1, payload 50670a7d…, incus 7.0.1-r2",
+        "no_staging_or_intent_left": true,
+        "instances_running": true,
+        "all_markers_intact": true,
+        "backup_listing": "upgrade (migrating), data disk copy yes, 4.1 GiB, restorable with a data disk copy; discards data written since 2026-11-25T08:28:23Z (needs --discard-data-since-upgrade)"
+      }
+    },
+    {
+      "name": "rollback_without_discard",
+      "result": "refused",
+      "exit_status": 1,
+      "checks": {
+        "error_code": "conflict",
+        "names_copy_time": true,
+        "nothing_changed": true,
+        "no_new_backup": true,
+        "runtime_still_ready": true
+      }
+    },
+    {
+      "name": "rollback_with_discard",
+      "result": "restored",
+      "seconds": 7,
+      "safety_backup_id": "20261125T082933Z-63eb2a91",
+      "checks": {
+        "rule": "own data copy (backup Incus package 7.0.0-r2 differs from the current 7.0.1-r2)",
+        "data_disk_is_the_clone_inode": true,
+        "original_root_efi_seed_inodes_restored": true,
+        "guest_record_restored_from_backup": true,
+        "migrated_data_and_new_root_kept_in_safety_backup": true,
+        "safety_backup_record": "operation rollback, data_copy true, data_from and restored_from 20261125T082807Z-016337e3",
+        "runtime_left_stopped": true
+      }
+    },
+    {
+      "name": "start_restored_state",
+      "result": "ready",
+      "seconds": 329,
+      "seconds_excluding_host_sleep": 34,
+      "checks": {
+        "instances_running": true,
+        "pre_upgrade_markers_intact": true,
+        "post_upgrade_marker_discarded": true,
+        "post_upgrade_volume_discarded": true,
+        "upgrade_available_reported": true
+      },
+      "note": "The host entered clamshell sleep from 15:30:06 to 15:35:01 +0700 (pmset log, 295 s) during this start; the server log has no entries in that window. The boot resumed after wake and completed without intervention."
+    }
+  ],
+  "findings": [
+    "Rollback without --discard-data-since-upgrade prints 'Stopping the runtime to restore the latest backup…' before the refusal, although the runtime is never stopped (it stays ready). Fixed after this run: the line now reads 'Checking the latest backup; the runtime is stopped only if it can be restored…' (unit test migratingUpgradeShowsWhatHappensBeforeTheStopAndRollbackNeedsTheDiscardFlag); the hardware run was not repeated with the new wording.",
+    "When the data copy is the backup's own, the refusal names the backup twice: 'Rolling back to backup X restores the data disk copy taken at T (backup X)'. Fixed after this run: a second backup is named only when the copy comes from a later one, as 'the data disk copy from backup Y taken at T' (unit tests discardWarningNamesWhenTheDataCopyWasTaken and rollbackAcrossALaterMigrationUsesTheLaterDataCopy).",
+    "After the rollback, start re-observed the restored develop root from the catalog and recorded incus 7.0.1-r2, replacing the forged 7.0.0-r2 from the backup. The safety backup therefore lists as restorable root only. That matches this run's real package. With two appliances of different IDs, the catalog would not know the old appliance and the restored record's package would become unknown; nothing here exercised that."
+  ],
+  "not_covered": [
+    "A real Incus database migration between two qualified appliances (task 5.4 proper).",
+    "A forced stop of the new root with the pool imported (task 5.6).",
+    "A pre-relay state upgrade and its discard rollback (task 5.7)."
+  ]
+}

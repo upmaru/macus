@@ -120,9 +120,11 @@ private struct UpgradeSession {
       object["confirm"] = "discard-data"
     }
     let body = object.isEmpty ? Data() : try JSONSerialization.data(withJSONObject: object)
+    // The runtime service checks the backup before it stops anything, and a refusal leaves
+    // the runtime as it was, so this line promises no stop.
     if !json {
       presentation.text(
-        "Stopping the runtime to restore \(id.map { "backup \(terminalSafe($0))" } ?? "the latest backup")…\n"
+        "Checking \(id.map { "backup \(terminalSafe($0))" } ?? "the latest backup"); the runtime is stopped only if it can be restored…\n"
       )
     }
     let response = try await request("POST", "/runtime/upgrade/rollback", body)
