@@ -34,7 +34,7 @@ paths, binary streaming and upgrades remain native, with only the documented
 gateway identity/trust exceptions. Typed-client parity has separate upstream
 inventory evidence; proxy breadth is not client-port evidence.
 
-`server/mix.lock` locks `:opsmaru_incus` 0.2.9 from Hex, which delivers the
+`server/mix.lock` locks `:opsmaru_incus` 0.2.10 from Hex, which delivers the
 client, gateway, composite/native operations and their release cassette. Every Incus operation Macus
 exposes is backed by the library's behavioural evidence, while its Go
 declaration ledger still reports `complete_port=false`, so no complete Go

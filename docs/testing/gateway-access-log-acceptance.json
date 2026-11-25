@@ -1,0 +1,137 @@
+{
+  "task": "add-gateway-access-log 5.1",
+  "recorded_at": "2026-11-24T18:52:39.992116+00:00",
+  "commit": "1514bab167952bf6f3114c2500b387dc5d2ced4c",
+  "scope": "Opt-in hardware acceptance of the gateway access log: the installed pair on isolated state, credentials, INCUS_CONF, gateway port and service labels",
+  "start_acceptance": {
+    "hardware_ran": true,
+    "guest_verified": true,
+    "success": true,
+    "state_dir": "/private/tmp/macus-al",
+    "prefix": "/private/tmp/mcx-al",
+    "service_label": "com.upmaru.macus.f88e6295f2c5",
+    "server_label": "com.upmaru.macus.server.f88e6295f2c5",
+    "gateway_port": 60586
+  },
+  "opsmaru_incus": "0.2.10",
+  "passed": true,
+  "failures": [],
+  "steps": [
+    {
+      "step": "server logs --json",
+      "exit": 0,
+      "seconds": 0.01
+    },
+    {
+      "step": "incus list",
+      "exit": 0,
+      "seconds": 0.05
+    },
+    {
+      "step": "incus launch",
+      "exit": 0,
+      "seconds": 0.68
+    },
+    {
+      "step": "incus exec",
+      "exit": 0,
+      "seconds": 0.15
+    },
+    {
+      "step": "incus file push",
+      "exit": 0,
+      "seconds": 0.08
+    },
+    {
+      "step": "incus exec sha256",
+      "exit": 0,
+      "seconds": 0.15
+    },
+    {
+      "step": "sftp ls over the mount",
+      "exit": 0,
+      "seconds": 0.06
+    },
+    {
+      "step": "incus file mount --listen",
+      "exit": -15
+    },
+    {
+      "step": "server logs --json",
+      "exit": 0,
+      "seconds": 0.03
+    },
+    {
+      "step": "server logs",
+      "exit": 0,
+      "seconds": 0.02
+    }
+  ],
+  "checks": {
+    "pushed_sha256_matches": true,
+    "sftp_listed_blob": true,
+    "list_recorded": true,
+    "launch_recorded": true,
+    "exec_recorded": true,
+    "exec_streams_recorded_at_end": true,
+    "file_push_recorded": true,
+    "sftp_mount_recorded": true,
+    "sftp_recorded": true,
+    "untrusted_recorded": true,
+    "one_boot": true,
+    "ids_unique": true,
+    "no_gap": true,
+    "no_drops": true,
+    "documented_keys_only": true,
+    "no_secret_in_log": true,
+    "no_key_or_cert_body": true,
+    "log_private": true
+  },
+  "counts": {
+    "records_before": 47,
+    "records_after": 79,
+    "new_records": 32,
+    "by_protocol": {
+      "http": 18,
+      "websocket": 12,
+      "raw": 2
+    },
+    "log_modes": {
+      "gateway-access.log": "0o600"
+    },
+    "logs_dir_mode": "0o700",
+    "untrusted_status": 403
+  },
+  "human_tail": [
+    "2026-11-24T18:53:52.668Z  356cef65c40b  200  GET /1.0/operations/116677b8-5636-4ce2-b3a0-3dbaee0e2f61  4ms  in 0B out 441B",
+    "2026-11-24T18:53:53.236Z  356cef65c40b  200  GET /1.0/instances/al-acc  4ms  in 0B out 2.8KiB",
+    "2026-11-24T18:53:53.256Z  356cef65c40b  101  GET /1.0/events  sent caller_closed  656ms  in 0B out 15.2KiB",
+    "2026-11-24T18:53:53.266Z  356cef65c40b  200  GET /1.0  5ms  in 0B out 3.9KiB",
+    "2026-11-24T18:53:53.307Z  356cef65c40b  202  POST /1.0/instances/al-acc/exec  11ms  in 197B out 1018B",
+    "2026-11-24T18:53:53.379Z  356cef65c40b  101  GET /1.0/operations/29ff35c5-9538-4209-bb6e-c88cf601691c/websocket  sent backend  63ms  in 0B out 0B",
+    "2026-11-24T18:53:53.380Z  356cef65c40b  101  GET /1.0/operations/29ff35c5-9538-4209-bb6e-c88cf601691c/websocket  sent backend  16ms  in 0B out 0B",
+    "2026-11-24T18:53:53.380Z  356cef65c40b  101  GET /1.0/operations/29ff35c5-9538-4209-bb6e-c88cf601691c/websocket  sent backend  30ms  in 0B out 28B",
+    "2026-11-24T18:53:53.380Z  356cef65c40b  101  GET /1.0/operations/29ff35c5-9538-4209-bb6e-c88cf601691c/websocket  sent caller_closed  47ms  in 0B out 0B",
+    "2026-11-24T18:53:53.388Z  356cef65c40b  200  GET /1.0/operations/29ff35c5-9538-4209-bb6e-c88cf601691c  4ms  in 0B out 967B",
+    "2026-11-24T18:53:53.411Z  356cef65c40b  101  GET /1.0/events  sent caller_closed  134ms  in 0B out 14.2KiB",
+    "2026-11-24T18:53:53.431Z  356cef65c40b  200  GET /1.0  5ms  in 0B out 3.9KiB",
+    "2026-11-24T18:53:53.482Z  356cef65c40b  101  GET /1.0/instances/al-acc/sftp  40ms  in 2.0MiB out 755B",
+    "2026-11-24T18:53:53.507Z  356cef65c40b  200  GET /1.0  3ms  in 0B out 3.9KiB",
+    "2026-11-24T18:53:53.532Z  356cef65c40b  202  POST /1.0/instances/al-acc/exec  9ms  in 173B out 994B",
+    "2026-11-24T18:53:53.628Z  356cef65c40b  200  GET /1.0/operations/168d3827-9d9f-44fe-9dbc-c5b2c6e79aab  5ms  in 0B out 931B",
+    "2026-11-24T18:53:53.635Z  356cef65c40b  101  GET /1.0/operations/168d3827-9d9f-44fe-9dbc-c5b2c6e79aab/websocket  sent backend  91ms  in 0B out 0B",
+    "2026-11-24T18:53:53.635Z  356cef65c40b  101  GET /1.0/operations/168d3827-9d9f-44fe-9dbc-c5b2c6e79aab/websocket  sent caller_closed  74ms  in 0B out 0B",
+    "2026-11-24T18:53:53.635Z  356cef65c40b  101  GET /1.0/operations/168d3827-9d9f-44fe-9dbc-c5b2c6e79aab/websocket  sent backend  54ms  in 0B out 77B",
+    "2026-11-24T18:53:53.636Z  356cef65c40b  101  GET /1.0/operations/168d3827-9d9f-44fe-9dbc-c5b2c6e79aab/websocket  sent caller_closed  36ms  in 0B out 0B",
+    "2026-11-24T18:53:53.674Z  356cef65c40b  101  GET /1.0/events  sent caller_closed  161ms  in 0B out 14.1KiB",
+    "2026-11-24T18:53:53.675Z  356cef65c40b  200  GET /1.0  6ms  in 0B out 3.9KiB",
+    "2026-11-24T18:53:53.694Z  356cef65c40b  200  GET /1.0/instances/al-acc  7ms  in 0B out 2.8KiB",
+    "2026-11-24T18:53:54.014Z  356cef65c40b  101  GET /1.0/instances/al-acc/sftp  27ms  in 46B out 167B",
+    "2026-11-24T18:53:54.124Z  refused  403  GET /1.0/instances  not_sent unauthorized  1ms  in 0B out 147B"
+  ],
+  "notes": [
+    "A first run failed on two wrong expectations of the runner, not of the product: incus file push uses the instance SFTP channel (a raw upgrade), not POST /files, and incus file mount --listen takes no instance path. The throwaway instance was deleted and the corrected runner rerun; this file is the second run.",
+    "Every WebSocket record in this run (exec channels and the events stream) has outcome sent with reason backend or caller_closed, never ok, although the commands succeeded. That is what opsmaru_incus 0.2.10 reports for a stream ended by a close.",
+    "Operation-peer and image-peer admissions, drops under overload and rotation were not exercised on hardware."
+  ]
+}
