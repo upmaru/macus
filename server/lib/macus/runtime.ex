@@ -1,7 +1,8 @@
 defmodule Macus.Runtime do
   @moduledoc """
-  Private Swift runtime API boundary. Lifecycle, configuration and health use
-  `runtime.sock`; VM ownership and implementation remain entirely in Swift.
+  Private Swift runtime API boundary. Lifecycle, configuration, health,
+  appliance upgrade and backups use `runtime.sock`; VM ownership and
+  implementation remain entirely in Swift.
   """
 
   alias Macus.Runtime.Client
@@ -32,6 +33,21 @@ defmodule Macus.Runtime do
 
   def delete(client, payload, opts \\ []),
     do: json(client, "DELETE", "/v1/runtime", payload, opts)
+
+  def upgrade_plan(client, opts \\ []),
+    do: Client.request(client, "POST", "/v1/runtime/upgrade/plan", "", opts)
+
+  def upgrade(client, payload, opts \\ []),
+    do: json(client, "POST", "/v1/runtime/upgrade", payload, opts)
+
+  def rollback(client, payload, opts \\ []),
+    do: json(client, "POST", "/v1/runtime/upgrade/rollback", payload, opts)
+
+  def backups(client, opts \\ []),
+    do: Client.request(client, "GET", "/v1/runtime/backups", "", opts)
+
+  def prune_backup(client, payload, opts \\ []),
+    do: json(client, "POST", "/v1/runtime/backups/prune", payload, opts)
 
   defp json(client, method, path, payload, opts) do
     case Jason.encode(payload) do

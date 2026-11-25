@@ -13,6 +13,10 @@ runtime status
 runtime start
 runtime stop [--force]
 runtime restart
+runtime upgrade [--dry-run]
+runtime upgrade --rollback [ID] [--discard-data-since-upgrade]
+runtime backups
+runtime backups prune ID [--confirm]
 doctor
 client setup [--remote NAME] [--set-default] [--incus ABSOLUTE_PATH]
 start [--remote NAME] [--set-default] [--incus ABSOLUTE_PATH] [--progress auto|plain|none]
@@ -34,9 +38,9 @@ server logs [--lines N] [--follow] [--json]
 
 The `server` commands are owner-local administration of `<state-dir>/server/`: the gateway listener configuration, bearer tokens and certificate enrollment tokens. `server logs` reads the gateway access log in `<state-dir>/logs/`. They require an existing state directory, never start or restart a service, contact the runtime or Incus, or touch VM disks, do not accept `--timeout`, and never print a token. `macus start` also prepares the local CLI's own runtime token once in `<state-dir>/server/local-cli.token`. See [the Macus server](server.md) for HTTPS configuration, gateway trust and credential rotation.
 
-`macus` and `macus --help` print this contract and exit 0. For client commands, global flags may appear around the command. `macus serve` runs the foreground daemon and accepts only its optional `--state-dir` after `serve`; `macus capabilities` reports host capabilities without contacting the daemon or booting a guest. Serve does not accept JSON/timeout flags. Capabilities accepts only `--json`, before or after the command; its default output is human-readable. Scripts that previously parsed unflagged capabilities must request `macus capabilities --json` or `macus --json capabilities` to retain the existing HostCapabilities object. `--force` is valid only on `runtime stop`. `--remote`, `--set-default` and `--incus` are valid on `start` and `client setup`. `--progress` is valid only on `start`. `list`, `show` and other workload commands fail before networking or installation. The default remote name is `macus`. `--incus` must be an absolute executable and skips PATH and Homebrew; it is the isolated-acceptance hook.
+`macus` and `macus --help` print this contract and exit 0. For client commands, global flags may appear around the command. `macus serve` runs the foreground daemon and accepts only its optional `--state-dir` after `serve`; `macus capabilities` reports host capabilities without contacting the daemon or booting a guest. Serve does not accept JSON/timeout flags. Capabilities accepts only `--json`, before or after the command; its default output is human-readable. Scripts that previously parsed unflagged capabilities must request `macus capabilities --json` or `macus --json capabilities` to retain the existing HostCapabilities object. `--force` is valid only on `runtime stop`. `--dry-run` and `--rollback` are valid only on `runtime upgrade`, and not together; `--discard-data-since-upgrade` only with `--rollback`; `--confirm` only on `runtime backups prune`. A word after `--rollback` is taken as the backup ID only when it has the backup ID form. `--remote`, `--set-default` and `--incus` are valid on `start` and `client setup`. `--progress` is valid only on `start`. `list`, `show` and other workload commands fail before networking or installation. The default remote name is `macus`. `--incus` must be an absolute executable and skips PATH and Homebrew; it is the isolated-acceptance hook.
 
-`start` is the high-level first-use command. It validates the host, entitlement and Incus/Homebrew prerequisite, acquires the pinned Alpine appliance, prepares its seed, activates the per-user background services when no compatible ones are serving, creates an absent runtime, waits through the expected kernel restart, and registers the standard Incus client. `serve`, `runtime`, `doctor` and `client setup` stay explicit lower-level commands. They do not download an appliance or activate a service. `runtime start` still fails when the runtime has not been created and does not provision an absent installation.
+`start` is the high-level first-use command. It validates the host, entitlement and Incus/Homebrew prerequisite, acquires the pinned Alpine appliance, prepares its seed, activates the per-user background services when no compatible ones are serving, creates an absent runtime, waits through the expected kernel restart, and registers the standard Incus client. `serve`, `runtime`, `doctor` and `client setup` stay explicit lower-level commands. They do not download an appliance or activate a service. `runtime start` still fails when the runtime has not been created and does not provision an absent installation. `runtime upgrade` is the one lower-level command that downloads an appliance and activates the jobs; see [Appliance upgrade](#appliance-upgrade).
 
 ### Service pair
 
@@ -52,7 +56,7 @@ Once both jobs serve, every lifecycle request `start` makes goes through the ser
 
 State directory precedence is `--state-dir`, then `MACUS_STATE_DIR`, then legacy `TIM_STATE_DIR`, then `~/.tama/incus-mac`. Every selected path must be absolute. Selecting it does not create the directory. Status, doctor and lifecycle commands never run `brew` or change Incus client configuration.
 
-Timeout is an integer from 1 to 3600 seconds and one monotonic deadline for each request or subprocess, including connect, write, read and child output. The default is 10 seconds for status and doctor, and 650 seconds for runtime start, stop, restart and client setup. `macus start` defaults to 1800 seconds so first provisioning, the expected kernel restart and client installation share one deadline. Later stages, including each Incus or Homebrew child, receive only the remaining whole seconds. A partial second is not rounded up into a new per-command timeout. Standalone `client setup` still gives each of its own commands the selected timeout. Restart includes shutdown plus boot. Setup uses the 650-second default because installing the Incus CLI can be slow. Raise `--timeout` when those operations need longer.
+Timeout is an integer from 1 to 3600 seconds and one monotonic deadline for each request or subprocess, including connect, write, read and child output. The default is 10 seconds for status, doctor and `runtime backups`, and 650 seconds for runtime start, stop, restart, `runtime upgrade --dry-run`, `runtime upgrade --rollback`, `runtime backups prune` and client setup. `runtime upgrade` defaults to 1800 seconds, like `start`, because it downloads the appliance and boots the new root. `macus start` defaults to 1800 seconds so first provisioning, the expected kernel restart and client installation share one deadline. Later stages, including each Incus or Homebrew child, receive only the remaining whole seconds. A partial second is not rounded up into a new per-command timeout. Standalone `client setup` still gives each of its own commands the selected timeout. Restart includes shutdown plus boot. Setup uses the 650-second default because installing the Incus CLI can be slow. Raise `--timeout` when those operations need longer.
 
 `--progress auto` animates on an interactive stderr terminal whose `TERM` is not `dumb`. Redirected stderr, `TERM=dumb`, `--progress plain` and `--json` use plain stage lines without cursor escapes. `--progress none` suppresses progress. `--json` writes one result object to stdout. Progress, when enabled, stays on stderr. Byte percentages appear only when a trustworthy total length is known. Exit 130 means start was interrupted; the command does not force-stop a daemon-owned guest.
 
@@ -82,9 +86,54 @@ The log is bounded and owner-private: it rotates at 10 MiB and keeps 5 archives 
 
 `macus server logs` prints the most recent records, newest last, reading the files directly after checking that the state directory and `STATE/logs` are owner-private (otherwise it fails with `invalid_configuration`). It contacts neither the server nor the runtime, so it works while the server is stopped, and it starts, issues and changes nothing. `--lines N` (1 to 100000, default 50) reads into the archives, oldest first, when the current file holds fewer lines. Human output is one row per exchange: time, caller (certificate prefix, `anonymous`, `operation-peer`, `image-peer` or `refused`), status, method and path, outcome and reason when not `ok`, duration and bytes in and out; malformed lines are skipped and counted. `--json` prints the stored lines unchanged, one per line. `--follow` keeps printing new records across rotation, without repeating or skipping one, until interrupted (exit status 130). Without a log, the command prints nothing and exits 0.
 
+## Appliance upgrade
+
+`start` never replaces the root disk of an existing state. The daemon records each ready guest's contract, guest payload revision, appliance and Incus package beside the disks. With that record, `start` and `runtime status` report `upgrade_available` when the appliance or payload is older than the installed package's, and `start` refuses with `conflict` before booting a guest this Macus can no longer serve. A state without a record is booted and probed; a guest without the flow-controlled relay is then stopped gracefully, recorded, and reported as `unavailable`. Each message names `macus runtime upgrade`, and no runtime data is removed.
+
+```text
+macus runtime upgrade --dry-run
+macus runtime upgrade
+macus runtime upgrade --rollback [ID] [--discard-data-since-upgrade]
+macus runtime backups
+macus runtime backups prune ID [--confirm]
+```
+
+`runtime upgrade` activates the runtime and server jobs the way `start` does, under the same bootstrap lock, but boots nothing, so it works after `start` refused the guest. It then asks the daemon for a read-only plan (`POST /runtime/upgrade/plan`). The plan is refused for an ext4 state, an older target Incus package, a pool identity that cannot be found (neither `runtime/storage-identity.json` nor a `TAMA_STORAGE_ZFS_READY` line in `serial.log`) or too little free space. Otherwise it names:
+
+- the current and target catalog IDs;
+- the class: `reversible` when the recorded Incus package equals the target's exactly, `migrating` when the target is newer or the recorded one is unknown;
+- the data copy: none, a `clonefile(2)` clone, or a full copy where the volume cannot clone;
+- the space needed, and that every workload restarts.
+
+The human output prints the plan before anything is stopped. `--dry-run` ends there, and downloads, stages and stops nothing. A state that is already current reports so and changes nothing.
+
+Otherwise the command acquires the appliance this executable ships (never a draft qualification catalog) and stages its root with an upgrade seed in `STATE/upgrade-<id>/`. It then posts the staging ID (`POST /runtime/upgrade`); if that request certainly never reached the runtime service, the staging is removed. A plan from a runtime service still running from another package (another appliance or guest payload) is refused, even when it reports nothing to do. `runtime stop` does not end that process: the refusal names the `launchctl bootout` of the runtime job, after which the next `runtime upgrade` starts it from the installed package; a foreground `macus serve` is ended and started again by hand. The daemon re-plans, verifies the staged root against the installed catalog and the seed against the planned pool, and then:
+
+1. closes Incus to clients until the upgrade ends, waits for running Incus tasks and reads the Incus inventory of a ready guest; a stopped guest, or one whose start was refused, is not read, so the comparison is skipped and the result says so (check the inventory it returns);
+2. stops the guest gracefully (a timeout leaves it running with nothing moved);
+3. journals every file in `STATE/upgrade.pending`;
+4. clones the data disk for a migrating upgrade;
+5. moves the old root, firmware store and seed into `STATE/backups/<id>/`;
+6. boots the new root, which adopts the existing pool by its GUID without force;
+7. requires the same pool, a compatible guest and, when it was read, every earlier instance, volume, network and profile name in Incus, then commits.
+
+Instances come back according to their own Incus autostart settings; the upgrade starts, stops and changes none. Any failure after the stop restores the previous files, and for a migrating upgrade the data disk copy, and the command names the failure. An interrupted upgrade is rolled back the next time the daemon starts. `--json` writes `{"upgraded":true,"plan":...,"result":...}`; a dry run writes `{"dry_run":true,"upgraded":false,"plan":...}` and a current state `{"upgraded":false,"plan":...}`. The human result names the new appliance, the backup ID and the inventory comparison.
+
+`runtime upgrade --rollback` restores the latest backup that still holds a root, or the one named, and leaves the runtime stopped; `start` then boots it. A root never boots against data at a different Incus package or holding a different pool:
+
+- when the backup's Incus package and pool equal the current data's, only the root, firmware store and seed are restored and the data disk stays;
+- otherwise its own data copy, or the earliest later backup's copy at its package and pool, is restored with it;
+- otherwise rollback is refused.
+
+Restoring a data copy discards everything written since that copy, so it needs `--discard-data-since-upgrade`, and the error without it names when that copy was taken. Rollback only renames files. The state it replaces becomes a new backup, so a rollback can itself be rolled back.
+
+`runtime backups` lists each backup with its time, operation, class, catalog IDs, Incus package, whether it holds a data copy, its allocated size and whether it can be restored now. Nothing removes a backup automatically, and runtime reset keeps them. `runtime backups prune ID` without `--confirm` removes nothing and names any backup that depends on that one's data copy; with `--confirm` it removes it.
+
+None of these commands runs a package manager or changes the installed package. To change the package itself, follow [Upgrade, rollback and removal](../Packaging/homebrew/README.md#upgrade-rollback-and-removal). These commands have passed unit and fixture tests; hardware acceptance is recorded separately in [the acceptance record](acceptance.md).
+
 ## Outer runtime and the standard Incus CLI
 
-`runtime` commands and `doctor` describe the outer Apple VZ appliance through the Macus server's public `/runtime/*` API (see [the API contract](api.md#public-runtime-api)). `runtime stop` sends `{"force":false}`; `runtime stop --force` sends `{"confirm":"force-stop","force":true}`. These commands do not list or mutate instances.
+`runtime` commands and `doctor` describe the outer Apple VZ appliance through the Macus server's public `/runtime/*` API (see [the API contract](api.md#public-runtime-api)). `runtime stop` sends `{"force":false}`; `runtime stop --force` sends `{"confirm":"force-stop","force":true}`. These commands do not list or mutate instances. `runtime upgrade` reads instance, volume, network and profile names through Incus to compare them and changes none.
 
 `client setup` reads `/runtime/status` from the Macus server and continues only when API version is 1, the outer runtime is ready and `runtime_ready` is not false. It does not boot a stopped appliance, and a stopped runtime leaves Incus client configuration, `INCUS_CONF` and gateway trust untouched. It then registers the server's public HTTPS endpoint from `server/endpoint.json` (for example `https://127.0.0.1:8443`), using only standard `incus` commands under the caller's `INCUS_CONF`; it never writes Incus configuration itself and never registers the private `incus.sock`. For a new remote it asks `incus remote get-client-certificate` for the certificate the client will present (incus creates one if there is none) and enrolls that certificate in gateway trust. Usually that means issuing an expiring (5-minute) single-use enrollment token, recorded in `server/trust-tokens.json` and bound to that certificate's SHA-256 fingerprint, and running `incus remote add NAME TOKEN`. The token names the gateway certificate, so incus checks the server before sending it. Because the token is on that command line, the server refuses it, without consuming it, from any other certificate, and setup revokes it if `incus remote add` fails. When the gateway already trusts the certificate (another remote name for the same client), setup runs `incus remote add NAME URL` and answers incus's certificate prompt with the pinned fingerprint instead of issuing a token. Either way `incus query NAME:/1.0` must then report the client trusted by a server presenting the endpoint's certificate, and `incus list NAME:` must succeed, so instance listing stays an Incus operation. Repeating setup for a remote that already names this endpoint issues nothing and only repeats those checks; if they fail (the client's trust was removed, or the remote stored an earlier server identity), setup reports it and leaves the remote alone. A name that points elsewhere fails with `conflict` and is not overwritten. A name holding a direct-socket `unix:` registration from an earlier macus is also a `conflict`: keep it and choose another `--remote`, or remove it yourself with `incus remote remove NAME` and rerun. The default remote changes only with `--set-default`. Unrelated remotes, projects, aliases and certificates are left in place.
 

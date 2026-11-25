@@ -9,6 +9,16 @@ struct BootstrapJournal: Codable, Sendable, Equatable {
   var rawSHA256: String
   var acquired: Bool
   var prepared: Bool
+
+  // Snake-case coding writes `catalog_id`, `archive_sha512` and `raw_sha256`, which decode
+  // back as `catalogId`, `archiveSha512` and `rawSha256`. These keys read journals already
+  // written that way and write the same file.
+  enum CodingKeys: String, CodingKey {
+    case schemaVersion, payloadRevision, acquired, prepared
+    case catalogID = "catalogId"
+    case archiveSHA512 = "archiveSha512"
+    case rawSHA256 = "rawSha256"
+  }
 }
 
 enum BootstrapStore {

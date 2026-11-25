@@ -13,6 +13,11 @@ defmodule MacusWeb.Runtime do
   | `POST /runtime/stop` | `POST /v1/runtime/stop` | `runtime.write`; `runtime.delete` to force |
   | `PUT /runtime/config` | `PUT /v1/runtime/config` | `runtime.write` |
   | `DELETE /runtime` | `DELETE /v1/runtime` | `runtime.delete` |
+  | `POST /runtime/upgrade/plan` | same beneath `/v1/runtime` | `runtime.read` |
+  | `POST /runtime/upgrade` | `POST /v1/runtime/upgrade` | `runtime.write` |
+  | `POST /runtime/upgrade/rollback` | same | `runtime.write`; `runtime.delete` to discard data |
+  | `GET /runtime/backups` | `GET /v1/runtime/backups` | `runtime.read` |
+  | `POST /runtime/backups/prune` | same | `runtime.delete` |
 
   Every request needs a Macus bearer credential (`Macus.Auth.Bearer`) of
   the runtime's owner and the route's scope, checked before the body is
@@ -35,9 +40,24 @@ defmodule MacusWeb.Runtime do
     private `{"force": ...}`.
   - `DELETE /runtime` takes `{"confirm": "delete-runtime"}`, forwarded as
     the private `{"confirm": true}`.
+  - `upgrade/plan` and `backups` take no body. The plan is read-only.
+  - `upgrade` takes `{"staging_id": ID}`, naming an upgrade the local
+    client staged inside the state directory.
+  - `upgrade/rollback` takes an empty body or any of `{"backup_id": ID}`
+    and `{"discard_data_since_upgrade": true, "confirm": "discard-data"}`
+    (scope `runtime.delete`), forwarded as the private
+    `{"backup_id": ID, "discard_data_since_upgrade": BOOL}`.
+  - `backups/prune` takes `{"backup_id": ID}`, optionally with
+    `"confirm": "prune-backup"`, forwarded as the private
+    `{"backup_id": ID, "confirm": BOOL}`. Without the confirmation Swift
+    removes nothing and names the backups that depend on it.
+
+  IDs are checked to be upgrade IDs (`YYYYMMDDTHHMMSSZ-` and 8 hex digits)
+  before dispatch.
 
   Swift responses keep their status and JSON bytes (errors and 409
-  conflicts included), except that a runtime status object is projected:
+  conflicts included), except that a runtime status object, alone or as the
+  `status` of an upgrade or rollback result, is projected:
   the private `incus_socket` path is removed and `server_endpoint`,
   `incus_endpoint` (the gateway's URL and certificate fingerprint),
   `server_ready` and `runtime_ready` are added. When the Swift service
@@ -59,6 +79,8 @@ defmodule MacusWeb.Runtime do
   @read_timeout 15_000
   @mutation_timeout 3_600_000
   @stop_timeout 330_000
+  @plan_timeout 60_000
+  @upgrade_id ~r/\A[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}\z/
   @config_fields %{
     "schema_version" => :integer,
     "cpu_count" => :integer,
@@ -103,6 +125,17 @@ defmodule MacusWeb.Runtime do
   defp route("PUT", ["config"]), do: {:ok, %{action: :update, scope: "runtime.write"}}
   defp route("DELETE", []), do: {:ok, %{action: :delete, scope: "runtime.delete"}}
 
+  defp route("POST", ["upgrade", "plan"]),
+    do: {:ok, %{action: :upgrade_plan, scope: "runtime.read"}}
+
+  defp route("POST", ["upgrade"]), do: {:ok, %{action: :upgrade, scope: "runtime.write"}}
+
+  defp route("POST", ["upgrade", "rollback"]),
+    do: {:ok, %{action: :rollback, scope: "runtime.write"}}
+
+  defp route("GET", ["backups"]), do: {:ok, %{action: :backups, scope: "runtime.read"}}
+  defp route("POST", ["backups", "prune"]), do: {:ok, %{action: :prune, scope: "runtime.delete"}}
+
   defp route(_method, path) do
     case allowed(path) do
       [] -> {:error, 404, "not_found", "No runtime route has this path."}
@@ -113,7 +146,10 @@ defmodule MacusWeb.Runtime do
   defp allowed([]), do: ["DELETE"]
   defp allowed(["config"]), do: ["GET", "PUT"]
   defp allowed([endpoint]) when endpoint in @reads, do: ["GET"]
-  defp allowed([action]) when action in ~w(create start stop restart), do: ["POST"]
+  defp allowed([action]) when action in ~w(create start stop restart upgrade), do: ["POST"]
+  defp allowed(["upgrade", action]) when action in ~w(plan rollback), do: ["POST"]
+  defp allowed(["backups"]), do: ["GET"]
+  defp allowed(["backups", "prune"]), do: ["POST"]
   defp allowed(_path), do: []
 
   # Authentication: a bearer credential of the runtime's owner with the
@@ -194,6 +230,48 @@ defmodule MacusWeb.Runtime do
     with {:ok, conn, body} <- read(conn),
          :ok <- confirmed(body, "delete-runtime", conn) do
       dispatch(conn, owner, "DELETE", "/v1/runtime", ~s({"confirm":true}), @stop_timeout, nil)
+    end
+  end
+
+  defp handle(conn, %{action: :upgrade_plan}, owner) do
+    with {:ok, conn, body} <- read(conn),
+         :ok <- empty(body, conn) do
+      dispatch(conn, owner, "POST", "/v1/runtime/upgrade/plan", "", @plan_timeout, nil)
+    end
+  end
+
+  defp handle(conn, %{action: :upgrade}, owner) do
+    with {:ok, conn, body} <- read(conn),
+         {:ok, private} <- upgrade_body(body, conn) do
+      dispatch(conn, owner, "POST", "/v1/runtime/upgrade", private, @mutation_timeout, nil)
+    end
+  end
+
+  defp handle(conn, %{action: :rollback}, owner) do
+    with {:ok, conn, body} <- read(conn),
+         {:ok, private} <- rollback_body(body, owner, conn) do
+      dispatch(
+        conn,
+        owner,
+        "POST",
+        "/v1/runtime/upgrade/rollback",
+        private,
+        @mutation_timeout,
+        nil
+      )
+    end
+  end
+
+  defp handle(conn, %{action: :backups}, owner) do
+    with {:ok, conn} <- empty_or_ignored(conn) do
+      dispatch(conn, owner, "GET", "/v1/runtime/backups", "", @read_timeout, nil)
+    end
+  end
+
+  defp handle(conn, %{action: :prune}, owner) do
+    with {:ok, conn, body} <- read(conn),
+         {:ok, private} <- prune_body(body, conn) do
+      dispatch(conn, owner, "POST", "/v1/runtime/backups/prune", private, @stop_timeout, nil)
     end
   end
 
@@ -325,6 +403,92 @@ defmodule MacusWeb.Runtime do
     end
   end
 
+  defp upgrade_body(body, conn) do
+    case Jason.decode(body) do
+      {:ok, %{"staging_id" => id} = upgrade} when map_size(upgrade) == 1 ->
+        if upgrade_id?(id),
+          do: {:ok, Jason.encode!(%{"staging_id" => id})},
+          else: invalid(conn, "staging_id is not an upgrade ID.")
+
+      _ ->
+        invalid(conn, ~s(upgrade takes {"staging_id": ID}.))
+    end
+  end
+
+  defp rollback_body(body, owner, conn) do
+    with {:ok, %{} = rollback} <- if(body == "", do: {:ok, %{}}, else: Jason.decode(body)),
+         [] <- Map.keys(rollback) -- ["backup_id", "discard_data_since_upgrade", "confirm"],
+         id when is_nil(id) or is_binary(id) <- rollback["backup_id"],
+         true <- is_nil(id) or upgrade_id?(id),
+         discard when discard in [nil, false, true] <- rollback["discard_data_since_upgrade"],
+         true <- discard == true or not Map.has_key?(rollback, "confirm") do
+      private = %{"discard_data_since_upgrade" => discard == true}
+      private = if id, do: Map.put(private, "backup_id", id), else: private
+
+      cond do
+        discard != true ->
+          {:ok, Jason.encode!(private)}
+
+        rollback["confirm"] !== "discard-data" ->
+          error(
+            conn,
+            400,
+            "confirmation_required",
+            ~s(Set confirm to "discard-data" to discard data written since the restored copy.),
+            "not_dispatched"
+          )
+
+        "runtime.delete" not in owner.scopes ->
+          error(
+            conn,
+            403,
+            "forbidden",
+            "The credential lacks the runtime.delete scope.",
+            "not_dispatched"
+          )
+
+        true ->
+          {:ok, Jason.encode!(private)}
+      end
+    else
+      _ ->
+        invalid(
+          conn,
+          ~s(rollback takes an empty body, {"backup_id": ID} and {"discard_data_since_upgrade": true, "confirm": "discard-data"}.)
+        )
+    end
+  end
+
+  defp prune_body(body, conn) do
+    case Jason.decode(body) do
+      {:ok, %{"backup_id" => id} = prune} when map_size(prune) <= 2 and is_binary(id) ->
+        cond do
+          not upgrade_id?(id) ->
+            invalid(conn, "backup_id is not a backup ID.")
+
+          map_size(prune) == 1 ->
+            {:ok, Jason.encode!(%{"backup_id" => id, "confirm" => false})}
+
+          prune["confirm"] === "prune-backup" ->
+            {:ok, Jason.encode!(%{"backup_id" => id, "confirm" => true})}
+
+          true ->
+            error(
+              conn,
+              400,
+              "confirmation_required",
+              ~s(Set confirm to "prune-backup" to remove the backup.),
+              "not_dispatched"
+            )
+        end
+
+      _ ->
+        invalid(conn, ~s(prune takes {"backup_id": ID} and optionally "confirm": "prune-backup".))
+    end
+  end
+
+  defp upgrade_id?(id), do: is_binary(id) and Regex.match?(@upgrade_id, id)
+
   defp confirmed(body, token, conn) do
     case Jason.decode(body) do
       {:ok, %{"confirm" => ^token} = confirm} when map_size(confirm) == 1 ->
@@ -369,18 +533,11 @@ defmodule MacusWeb.Runtime do
   # gateway's public endpoint and readiness.
   defp project(status, bytes) when status in 200..299 do
     case Jason.decode(bytes) do
-      {:ok, %{"incus_socket" => _, "state" => state} = runtime} ->
-        endpoint = endpoint()
+      {:ok, %{"incus_socket" => _, "state" => _} = runtime} ->
+        runtime |> project_runtime() |> Jason.encode!()
 
-        runtime
-        |> Map.delete("incus_socket")
-        |> Map.merge(%{
-          "server_endpoint" => endpoint,
-          "incus_endpoint" => endpoint && Map.take(endpoint, ["url", "certificate_fingerprint"]),
-          "server_ready" => true,
-          "runtime_ready" => state == "ready"
-        })
-        |> Jason.encode!()
+      {:ok, %{"status" => %{"incus_socket" => _, "state" => _} = runtime} = result} ->
+        %{result | "status" => project_runtime(runtime)} |> Jason.encode!()
 
       _ ->
         bytes
@@ -388,6 +545,19 @@ defmodule MacusWeb.Runtime do
   end
 
   defp project(_status, bytes), do: bytes
+
+  defp project_runtime(%{"state" => state} = runtime) do
+    endpoint = endpoint()
+
+    runtime
+    |> Map.delete("incus_socket")
+    |> Map.merge(%{
+      "server_endpoint" => endpoint,
+      "incus_endpoint" => endpoint && Map.take(endpoint, ["url", "certificate_fingerprint"]),
+      "server_ready" => true,
+      "runtime_ready" => state == "ready"
+    })
+  end
 
   defp endpoint do
     case Macus.Gateway.current() do

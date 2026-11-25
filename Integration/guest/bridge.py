@@ -6,7 +6,9 @@ import http.client
 import json
 import os
 import errno
+import re
 import struct
+import subprocess
 import time
 import traceback
 import socket
@@ -29,8 +31,110 @@ DATA, CREDIT, END = 1, 2, 3
 HEADER = struct.Struct('>BI')
 
 
+# Raised only when a host can no longer serve an older guest. 1 covers the flow relay.
+GUEST_CONTRACT = 1
+# Written by the seed: payload revision and appliance ID cannot live in the payload itself.
+GUEST_RECORD = '/etc/macus-guest'
+STORAGE_IDENTITY = '/etc/tama-storage'
+STORAGE_BACKEND = '/run/tama-storage-backend'
+PACKAGE_RETRY_SECONDS = 60
+REVISION = re.compile(r'[0-9a-f]{64}')
+APPLIANCE_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}')
+# APK versions always end in a package release; anything else is reported as unknown.
+APK_VERSION = re.compile(r'[0-9][0-9A-Za-z._]*-r[0-9]+')
+POOL_GUID = re.compile(r'[0-9]{1,20}')
+TOKEN = re.compile(r'[a-z0-9][a-z0-9-]{0,31}')
+package_lock = threading.Lock()
+package_cache = {'value': None}
+
+
 def host_peer(peer):
     return peer[0] == 2
+
+
+def read_token(path, pattern):
+    """A single validated line, or None when absent, unreadable or unexpected."""
+    try:
+        with open(path, encoding='ascii') as stream:
+            value = stream.read(4096).strip()
+    except (OSError, ValueError):
+        return None
+    return value if pattern.fullmatch(value) else None
+
+
+def guest_record():
+    try:
+        with open(GUEST_RECORD, encoding='ascii') as stream:
+            lines = stream.read(4096).splitlines()
+    except (OSError, ValueError):
+        return {}
+    if not lines or lines[0] != 'format=1':
+        return {}
+    fields = dict(line.split('=', 1) for line in lines[1:] if '=' in line)
+    result = {}
+    if REVISION.fullmatch(fields.get('payload_revision', '')):
+        result['payload_revision'] = fields['payload_revision']
+    if APPLIANCE_ID.fullmatch(fields.get('appliance_id', '')):
+        result['appliance_id'] = fields['appliance_id']
+    return result
+
+
+def read_incus_package():
+    """The full installed `incus` package version from APK, e.g. 7.0.1-r2, or None."""
+    try:
+        # supervise-daemon does not promise a login PATH; apk lives in /sbin or /usr/bin.
+        listing = subprocess.run(['apk', 'info', '-v'], capture_output=True, text=True,
+                                 timeout=30, check=True,
+                                 env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin'}).stdout
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    found = [line[len('incus-'):] for line in listing.splitlines()
+             if line.startswith('incus-') and APK_VERSION.fullmatch(line[len('incus-'):])]
+    return found[0] if len(found) == 1 else None
+
+
+def watch_incus_package(sleep=time.sleep):
+    """Packages never change after first boot: find the version once, off the health path."""
+    while True:
+        value = read_incus_package()
+        if value is not None:
+            with package_lock:
+                package_cache['value'] = value
+            return
+        sleep(PACKAGE_RETRY_SECONDS)
+
+
+def installed_incus_package():
+    with package_lock:
+        return package_cache['value']
+
+
+def storage_identity():
+    backend = read_token(STORAGE_BACKEND, TOKEN)
+    if backend == 'ext4':
+        return {'backend': 'ext4'}
+    if backend != 'zfs':
+        return None
+    result = {'backend': 'zfs'}
+    for key, name, pattern in (('pool_guid', 'pool-guid', POOL_GUID),
+                               ('layout', 'layout', TOKEN), ('phase', 'phase', TOKEN)):
+        value = read_token(os.path.join(STORAGE_IDENTITY, name), pattern)
+        if value is not None:
+            result[key] = value
+    return result
+
+
+def guest_identity():
+    """Identity fields of a ready guest. A field that cannot be read is omitted, never guessed."""
+    result = {'guest_contract': GUEST_CONTRACT}
+    result.update(guest_record())
+    package = installed_incus_package()
+    if package is not None:
+        result['incus_package'] = package
+    storage = storage_identity()
+    if storage is not None:
+        result['storage'] = storage
+    return result
 
 
 def incus_health():
@@ -251,6 +355,7 @@ def health(client):
                 raise RuntimeError('Incus relay listener is unavailable')
             result = incus_health()
             result['flow_relay_version'] = FLOW_VERSION
+            result.update(guest_identity())
             code = '200 OK'
         except (OSError, ValueError, KeyError, RuntimeError) as error:
             code, result = '503 Service Unavailable', {'error': str(error)}
@@ -313,6 +418,7 @@ def run_or_exit(port, handler, ready=None):
 
 
 if __name__ == '__main__':
+    threading.Thread(target=watch_incus_package, daemon=True).start()
     threading.Thread(target=run_or_exit, args=(RELAY_PORT, flow_relay, relay_ready),
                      daemon=True).start()
     run_or_exit(8444, health)

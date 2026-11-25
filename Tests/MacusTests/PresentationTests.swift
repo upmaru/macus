@@ -334,3 +334,43 @@ func hostNestingIsSeparateFromEffectiveWorkloadVM(kvm: Bool, nestingEnabled: Boo
   #expect(Data(capture.output.utf8).range(of: Data("\n\rRuntime\n\r".utf8)) != nil)
   #expect(!capture.output.contains("\u{1B}"))
 }
+
+@Test func upgradeAvailabilityIsShownInStartAndStatus() async throws {
+  let directory = URL(fileURLWithPath: "/tmp/macus-demo")
+  var result = StartupResult(
+    ready: true, connected: true, stateDirectory: directory.path, remote: "macus",
+    incus: "/opt/homebrew/bin/incus", installed: false, serviceOwnership: "foreground",
+    nextCommands: ["incus list macus:"])
+  for available in [Bool?.none, false, true] {
+    result.upgradeAvailable = available
+    let startup = StartCapture()
+    HumanPresentation(streams: startup.streams, environment: [:]).startup(result)
+    #expect(startup.output.contains("macus runtime upgrade --dry-run") == (available == true))
+    let object = resultObject(result)
+    #expect(object["upgrade_available"] as? Bool == available)
+    #expect((object["upgrade_available"] != nil) == (available != nil))
+
+    var status: [String: Any] = ["state": "ready", "uptime_seconds": 72]
+    if let available { status["upgrade_available"] = available }
+    let runtime = StartCapture()
+    HumanPresentation(streams: runtime.streams, environment: [:]).runtime(
+      status, directory: directory)
+    #expect(runtime.output.contains("Upgrade") == (available == true))
+    #expect(runtime.output.contains("macus runtime upgrade --dry-run") == (available == true))
+  }
+
+  let server = try ScriptedGateway { _, path, _ in
+    var status = publicStatus(state: "ready")
+    status["upgrade_available"] = true
+    return path == "/runtime/status"
+      ? mustJSON(200, status) : mustJSON(503, errorObject(code: "unavailable", message: "x"))
+  }
+  defer { server.stop() }
+  let json = StartCapture()
+  let code = await MacusCLI.run(
+    arguments: ["--state-dir", server.directory.path, "runtime", "status", "--json"],
+    streams: json.streams)
+  #expect(code == 0)
+  let decoded = try JSONSerialization.jsonObject(with: Data(json.output.utf8)) as? [String: Any]
+  #expect(decoded?["upgrade_available"] as? Bool == true)
+}

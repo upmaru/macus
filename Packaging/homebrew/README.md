@@ -78,6 +78,8 @@ The runner records its isolated `INCUS_CONF`; retain that configuration for stan
 
 `<hash>` is the same on both labels. `macus start --json` reports both as `service_label` and `server_label`.
 
+A package change and an appliance upgrade are separate steps. Changing the package replaces only the keg; it never touches the runtime disks. A new package may ship a newer appliance, and `macus runtime upgrade` then replaces the state's root disk on request, after the package change.
+
 ### Stop and unload
 
 1. Stop the runtime through the server while both jobs still run, and confirm it is stopped. `runtime stop` shuts the guest down cleanly; it does not unload launchd.
@@ -107,9 +109,32 @@ macus --state-dir /absolute/selected/state start
 
 The server plist records the package's source revision (`MACUS_EXPECTED_REVISION`), so after a package change `start` refuses the old one as a conflict instead of replacing it. Start writes a new one for the installed revision. The Swift job's plist names the stable `opt/macus/bin/macus` and stays valid across versions; start bootstraps it again unchanged. An older plist that names a versioned keg path is a conflict: after stop and unload, remove that owned plist too. Registration replacement is never implicit.
 
+#### Upgrade the appliance
+
+`start` on the new package checks the state's recorded appliance before booting. It continues and reports that an upgrade is available when the appliance or guest payload is older but still served. It fails with `conflict`, before booting, when the new package can no longer serve that guest. A state with no record yet is booted, probed, and stopped gracefully with `unavailable` if its guest is incompatible. In every case both jobs stay registered and the disks are kept. Then:
+
+```sh
+macus --state-dir /absolute/selected/state runtime upgrade --dry-run
+macus --state-dir /absolute/selected/state runtime upgrade
+```
+
+The dry run prints the plan: the target appliance, whether the upgrade is reversible (same Incus package) or migrating (the data disk is cloned first because Incus may migrate its database), the space needed, and that every workload restarts. It downloads and stops nothing. The upgrade prints the same plan, downloads the installed package's appliance, stops the guest gracefully, keeps the old root in `STATE/backups/<id>/` and boots the new root against the same ZFS pool. When the guest was ready before the upgrade, it reads every earlier instance, volume, network and profile name first and checks that Incus still lists each one after the boot. Right after the package change above the guest is stopped, so run `macus start` first to get that comparison. When the old guest cannot be started or cannot serve Incus to this host (a start the new package refused), the comparison is skipped and the result says so; check the inventory the upgrade returns, or `incus list --all-projects`, yourself. Any failure restores the previous state. Only ZFS states can be upgraded. See [Appliance upgrade](../../docs/cli.md#appliance-upgrade).
+
 ### Rollback
 
-Rollback is the same sequence with a retained, verified earlier bottle in place of `brew upgrade`: stop and unload both jobs, remove the server plist, install the earlier bottle (for a candidate, `candidate.py install --opt-in --candidate /absolute/earlier/candidate` after uninstalling the current one), then `macus start`. Rollback changes only the package. It never replaces or downgrades guest disks, server credentials or the Incus client configuration.
+Rolling back has two parts, in this order, because an earlier package may not serve the appliance the later one installed:
+
+1. **State.** If `macus runtime upgrade` ran on the later package, restore the earlier appliance while that package is still installed:
+
+   ```sh
+   macus --state-dir /absolute/selected/state runtime backups
+   macus --state-dir /absolute/selected/state runtime upgrade --rollback
+   ```
+
+   This restores the latest backup (or the one named) and leaves the runtime stopped. A reversible upgrade restores only the root. After a migrating upgrade the data disk copy taken before the upgrade is restored as well, which discards everything written since; the command refuses until you add `--discard-data-since-upgrade`. The replaced state becomes a new backup.
+2. **Package.** Use the same sequence as an upgrade with a retained, verified earlier bottle in place of `brew upgrade`: stop and unload both jobs, remove the server plist, install the earlier bottle (for a candidate, `candidate.py install --opt-in --candidate /absolute/earlier/candidate` after uninstalling the current one), then `macus start`.
+
+A package rollback alone never replaces or downgrades guest disks, server credentials or the Incus client configuration. Backups are kept until `macus runtime backups prune ID --confirm` removes one; no package command removes them.
 
 ### Removal
 
@@ -127,6 +152,7 @@ A default plist left in LaunchAgents would try to start a missing executable at 
 Upgrade, rollback and removal keep the selected state, which lives outside the keg:
 
 - runtime disks and settings: `STATE/runtime/root.raw`, `data.raw`, `efi.bin` and `STATE/config.json`, with every guest workload;
+- appliance backups in `STATE/backups/`, and the guest and storage identity records in `STATE/runtime/`;
 - server credentials and trust: `STATE/server/gateway.crt` and `gateway.key` (clients keep their pinned certificate), `gateway.json`, `bearer-tokens.json`, `local-cli.token`, `trusted-certificates.json` and the enrollment token records;
 - the standard Incus client configuration and its `macus` remote;
 - the logs in `STATE/logs`: `service.*.log`, `server.*.log` and the gateway access log `gateway-access.log` with its rotated archives `gateway-access.log.0` to `.4`.

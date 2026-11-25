@@ -1,6 +1,40 @@
 import Darwin
 import Foundation
 
+/// The host-named pool a replacement root may adopt. The guest treats the GUID as a selector
+/// and proves ownership itself, but the host still renders only a well-formed record.
+struct StorageAdoption: Sendable, Equatable {
+  static let path = "/etc/tama-storage/adopt"
+  static let supportedLayout = "zfs-v1"
+
+  let poolGuid: String
+  let layout: String
+
+  init(poolGuid: String, layout: String) throws {
+    guard !poolGuid.isEmpty, poolGuid.utf8.count <= 20,
+      poolGuid.utf8.allSatisfy({ (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0) })
+    else {
+      throw RuntimeError(.invalidConfiguration, "Storage adoption needs a numeric pool GUID")
+    }
+    guard layout == Self.supportedLayout else {
+      throw RuntimeError(
+        .invalidConfiguration, "Storage adoption does not support layout \(layout)")
+    }
+    self.poolGuid = poolGuid
+    self.layout = layout
+  }
+
+  /// The pool this state's record names.
+  init(_ record: StorageIdentityRecord) throws {
+    guard record.backend == "zfs" else {
+      throw RuntimeError(.invalidConfiguration, "Storage adoption needs a ZFS identity")
+    }
+    try self.init(poolGuid: record.poolGuid, layout: record.layout)
+  }
+
+  var record: String { "pool_guid=\(poolGuid)\nlayout=\(layout)\n" }
+}
+
 enum SeedPreparation {
   static let entries: [(name: String, destination: String, permissions: String)] = [
     ("bridge.py", "/usr/local/libexec/tama-bridge.py", "0755"),
@@ -13,7 +47,20 @@ enum SeedPreparation {
     ("tama-bootstrap.initd", "/etc/init.d/tama-bootstrap", "0755"),
   ]
 
-  static func userData(entry: ApplianceCatalogEntry? = nil) throws -> String {
+  static let guestRecordPath = "/etc/macus-guest"
+
+  /// Read by the guest bridge and reported in health.
+  static func guestRecord(applianceID: String?) -> String {
+    var record = "format=1\npayload_revision=\(EmbeddedGuestPayload.revision)\n"
+    if let applianceID { record += "appliance_id=\(applianceID)\n" }
+    return record
+  }
+
+  /// The rendered user data for a seed. Only an upgrade seed passes `adoption`; `prepare`, which
+  /// builds the shared creation seed, never does, so a new runtime cannot adopt a pool.
+  static func userData(
+    entry: ApplianceCatalogEntry? = nil, adoption: StorageAdoption? = nil
+  ) throws -> String {
     var text =
       "#cloud-config\noutput: {all: \"| tee -a /var/log/cloud-init-output.log /dev/hvc0\"}\nusers: []\nssh_pwauth: false\ndisable_root: true\nwrite_files:\n"
     for entry in entries {
@@ -23,6 +70,14 @@ enum SeedPreparation {
       text += body.split(separator: "\n", omittingEmptySubsequences: false).map {
         "      \($0)\n"
       }.joined()
+    }
+    // The payload revision hashes the payload, so it is delivered beside it, not inside it.
+    text += "  - path: \(guestRecordPath)\n    permissions: \"0600\"\n    content: |\n"
+    text += guestRecord(applianceID: entry?.id).split(separator: "\n").map { "      \($0)\n" }
+      .joined()
+    if let adoption {
+      text += "  - path: \(StorageAdoption.path)\n    permissions: \"0600\"\n    content: |\n"
+      text += adoption.record.split(separator: "\n").map { "      \($0)\n" }.joined()
     }
     if let entry, let identity = entry.prebuiltIdentity {
       text += "  - path: /etc/macus-appliance-expected\n    permissions: \"0600\"\n    content: |\n"
@@ -44,34 +99,10 @@ enum SeedPreparation {
     if try seedIsCurrent(stamp: stamp, iso: iso, manifest: manifest, entry: entry) {
       return manifest
     }
-    let seed = cache.appendingPathComponent("seed", isDirectory: true)
-    if FileManager.default.fileExists(atPath: seed.path) {
-      try FileManager.default.removeItem(at: seed)
-    }
-    try FileManager.default.createDirectory(
-      at: seed, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
     do {
-      try write(
-        "instance-id: \(entry.id)\nlocal-hostname: tama-incus\n",
-        seed.appendingPathComponent("meta-data"))
-      try write(
-        "version: 1\nconfig:\n  - type: physical\n    name: eth0\n    subnets:\n      - type: dhcp\n",
-        seed.appendingPathComponent("network-config"))
-      try write(userData(entry: entry), seed.appendingPathComponent("user-data"))
-      if FileManager.default.fileExists(atPath: iso.path) {
-        try FileManager.default.removeItem(at: iso)
-      }
-      let result = try await runner.run(
-        executable: "/usr/bin/hdiutil",
-        arguments: [
-          "makehybrid", "-iso", "-joliet", "-default-volume-name", "cidata", "-o", iso.path,
-          seed.path,
-        ],
-        environment: environment, timeout: timeout)
-      guard result.status == 0, FileManager.default.fileExists(atPath: iso.path) else {
-        throw RuntimeError(.io, "hdiutil could not create the NoCloud seed")
-      }
-      guard chmod(iso.path, 0o600) == 0 else { throw RuntimeError(.io, "Cannot secure seed") }
+      try await makeISO(
+        entry: entry, adoption: nil, directory: cache, runner: runner, timeout: timeout,
+        environment: environment)
       try writeManifest(entry: entry, manifest: manifest)
       let stampObject: [String: String] = [
         "payload_revision": EmbeddedGuestPayload.revision, "catalog_id": entry.id,
@@ -81,14 +112,69 @@ enum SeedPreparation {
       guard chmod(stamp.path, 0o600) == 0 else {
         throw RuntimeError(.io, "Cannot secure seed stamp")
       }
-      try? FileManager.default.removeItem(at: seed)
       return manifest
     } catch {
-      try? FileManager.default.removeItem(at: seed)
       try? FileManager.default.removeItem(at: iso)
       try? FileManager.default.removeItem(at: stamp)
       throw error
     }
+  }
+
+  /// The seed of an upgrade, which names the pool the replacement root adopts. It is written
+  /// only into the upgrade's private staging directory, never into the shared appliance
+  /// cache, so a later new runtime can never adopt.
+  static func prepareUpgradeSeed(
+    entry: ApplianceCatalogEntry, adoption: StorageAdoption, directory: URL,
+    runner: any LocalCommandRunner, timeout: Int, environment: [String: String]
+  ) async throws -> URL {
+    let iso = directory.appendingPathComponent("seed.iso")
+    do {
+      try await makeISO(
+        entry: entry, adoption: adoption, directory: directory, runner: runner, timeout: timeout,
+        environment: environment)
+      return iso
+    } catch {
+      try? FileManager.default.removeItem(at: iso)
+      throw error
+    }
+  }
+
+  /// Renders the NoCloud files into `directory/seed` and builds `directory/seed.iso` from
+  /// them. The working directory is removed either way.
+  private static func makeISO(
+    entry: ApplianceCatalogEntry, adoption: StorageAdoption?, directory: URL,
+    runner: any LocalCommandRunner, timeout: Int, environment: [String: String]
+  ) async throws {
+    let iso = directory.appendingPathComponent("seed.iso")
+    let seed = directory.appendingPathComponent("seed", isDirectory: true)
+    if FileManager.default.fileExists(atPath: seed.path) {
+      try FileManager.default.removeItem(at: seed)
+    }
+    try FileManager.default.createDirectory(
+      at: seed, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    defer { try? FileManager.default.removeItem(at: seed) }
+    try write(
+      "instance-id: \(entry.id)\nlocal-hostname: tama-incus\n",
+      seed.appendingPathComponent("meta-data"))
+    try write(
+      "version: 1\nconfig:\n  - type: physical\n    name: eth0\n    subnets:\n      - type: dhcp\n",
+      seed.appendingPathComponent("network-config"))
+    try write(
+      userData(entry: entry, adoption: adoption), seed.appendingPathComponent("user-data"))
+    if FileManager.default.fileExists(atPath: iso.path) {
+      try FileManager.default.removeItem(at: iso)
+    }
+    let result = try await runner.run(
+      executable: "/usr/bin/hdiutil",
+      arguments: [
+        "makehybrid", "-iso", "-joliet", "-default-volume-name", "cidata", "-o", iso.path,
+        seed.path,
+      ],
+      environment: environment, timeout: timeout)
+    guard result.status == 0, FileManager.default.fileExists(atPath: iso.path) else {
+      throw RuntimeError(.io, "hdiutil could not create the NoCloud seed")
+    }
+    guard chmod(iso.path, 0o600) == 0 else { throw RuntimeError(.io, "Cannot secure seed") }
   }
 
   private static func seedIsCurrent(

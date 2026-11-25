@@ -121,6 +121,7 @@ struct HumanPresentation {
       field("Control socket", directory.appendingPathComponent("runtime.sock").path)
       field("Incus socket", jsonString(object["incus_socket"]))
     }
+    if object["upgrade_available"] as? Bool == true { field("Upgrade", upgradeAvailableText) }
     if let error = jsonString(object["last_error"]), !error.isEmpty { field("Last error", error) }
   }
   func host(_ object: [String: Any], title: String = "Host support") {
@@ -219,6 +220,7 @@ struct HumanPresentation {
     heading("\nRuntime")
     field("Status", result.observedState?.capitalized ?? (result.ready ? "Ready" : "Unavailable"))
     field("State directory", result.stateDirectory)
+    if result.upgradeAvailable == true { field("Upgrade", upgradeAvailableText) }
     heading("\nClient")
     field("Connection", result.connected ? "Connected" : "Unavailable")
     field("Remote", result.remote)
@@ -245,6 +247,9 @@ struct HumanPresentation {
     next(result.nextCommands)
   }
 }
+
+let upgradeAvailableText =
+  "Available. Run macus runtime upgrade --dry-run to see what it would change."
 
 func support(_ value: Bool?) -> String {
   guard let value else { return "Unavailable" }

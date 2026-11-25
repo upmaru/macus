@@ -66,6 +66,9 @@ class Macus < Formula
       (com.upmaru.macus.server, then com.upmaru.macus) and remove the server job's plist;
       for uninstall remove both plists. macus start registers them again.
       Runtime disks, server credentials and Incus configuration are preserved outside the keg.
+      After a package upgrade, run macus runtime upgrade --dry-run to see whether the appliance
+      needs replacing; macus runtime upgrade replaces it and keeps a backup. Before rolling the
+      package back, restore that backup with macus runtime upgrade --rollback.
       If no compatible bottle is available, source builds require Xcode 27 / Swift 6.4.
     EOS
   end

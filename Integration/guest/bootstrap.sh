@@ -144,7 +144,12 @@ rc-update add acpid default
 rc-service acpid start
 echo 'MACUS_OBSERVATION v1 stage=storage'
 rc-service tama-storage start || {
-    echo 'MACUS_OBSERVATION v1 stage=failed code=storage_refused' >&2
+    # Storage names a more specific refusal, such as a refused adoption, in /run.
+    code=storage_refused
+    if [ "$(cat "$boot/run/tama-storage-failure" 2>/dev/null || true)" = storage_adoption_refused ]; then
+        code=storage_adoption_refused
+    fi
+    echo "MACUS_OBSERVATION v1 stage=failed code=$code" >&2
     cat "$boot/var/log/tama-storage.log"
     exit 1
 }

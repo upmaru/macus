@@ -158,6 +158,24 @@ public protocol GatewayTransport: Sendable {
 public struct HTTPSGatewayClient: GatewayTransport {
   public static let maximumResponseBody = 16 * 1024 * 1024
   static let methods: Set<String> = ["GET", "POST", "PUT", "DELETE"]
+  static let cannotConnect = "Cannot connect to the Macus server"
+
+  /// Whether a request failed before any connection to the server was made, so it never ran.
+  static func neverConnected(_ error: any Error) -> Bool {
+    guard let error = error as? RuntimeError else { return false }
+    return error.code == .unavailable && error.message.hasPrefix(cannotConnect)
+  }
+
+  /// Whether a gateway answer says the runtime service never received the request: the
+  /// credential was refused, or the gateway reports it `not_dispatched`.
+  static func notDispatched(_ response: LocalHTTPResponse) -> Bool {
+    if response.status == 401 { return true }
+    guard !(200...299).contains(response.status),
+      let object = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
+      let error = object["error"] as? [String: Any]
+    else { return false }
+    return error["outcome"] as? String == "not_dispatched"
+  }
 
   public init() {}
 
@@ -345,11 +363,16 @@ private final class PinnedExchange: NSObject, URLSessionDataDelegate, @unchecked
       return CancellationError()
     case .timedOut:
       return RuntimeError(.timeout, "The Macus server at \(server) did not answer in time")
-    case .cannotConnectToHost, .cannotFindHost, .networkConnectionLost, .notConnectedToInternet,
-      .dnsLookupFailed, .secureConnectionFailed:
+    case .cannotConnectToHost, .cannotFindHost, .notConnectedToInternet, .dnsLookupFailed,
+      .secureConnectionFailed:
       return RuntimeError(
         .unavailable,
-        "Cannot connect to the Macus server at \(server). Run macus start; this command does not fall back to the private runtime socket."
+        "\(HTTPSGatewayClient.cannotConnect) at \(server). Run macus start; this command does not fall back to the private runtime socket."
+      )
+    case .networkConnectionLost:
+      return RuntimeError(
+        .unavailable,
+        "The connection to the Macus server at \(server) was lost before it answered, so the request may have run. Check macus status before retrying."
       )
     default:
       return RuntimeError(.io, "Macus server request failed: \(error.localizedDescription)")

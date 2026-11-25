@@ -38,7 +38,20 @@ defmodule Macus.Runtime.ClientTest do
        ~s({"force":true})},
       {fn -> Runtime.restart(context.client) end, "POST", "/v1/runtime/restart", ""},
       {fn -> Runtime.delete(context.client, %{confirm: true}) end, "DELETE", "/v1/runtime",
-       ~s({"confirm":true})}
+       ~s({"confirm":true})},
+      {fn -> Runtime.upgrade_plan(context.client) end, "POST", "/v1/runtime/upgrade/plan", ""},
+      {fn -> Runtime.upgrade(context.client, %{staging_id: "20261124T120000Z-0a1b2c3d"}) end,
+       "POST", "/v1/runtime/upgrade", ~s({"staging_id":"20261124T120000Z-0a1b2c3d"})},
+      {fn -> Runtime.rollback(context.client, %{discard_data_since_upgrade: false}) end, "POST",
+       "/v1/runtime/upgrade/rollback", ~s({"discard_data_since_upgrade":false})},
+      {fn -> Runtime.backups(context.client) end, "GET", "/v1/runtime/backups", ""},
+      {fn ->
+         Runtime.prune_backup(context.client, %{
+           "backup_id" => "20261124T120000Z-0a1b2c3d",
+           "confirm" => false
+         })
+       end, "POST", "/v1/runtime/backups/prune",
+       ~s({"backup_id":"20261124T120000Z-0a1b2c3d","confirm":false})}
     ]
 
     for {call, _, _, _} <- calls do
