@@ -95,6 +95,8 @@ enum UpgradeJournal {
   /// Records copied beside the old disks, restored by rollback.
   static let records = ["config.json", "bootstrap-journal.json"]
   static let guestRecordName = "guest-record.json"
+  /// The pool the backed-up state's data disk held, restored when rollback exchanges the disk.
+  static let storageIdentityName = "storage-identity.json"
   static let disks = ["root.raw", "efi.bin", "seed.iso"]
 
   static func load(paths: RuntimePaths) throws -> UpgradeIntent? {
@@ -148,6 +150,11 @@ enum UpgradeJournal {
       try PrivateFile.write(
         try Data(contentsOf: paths.guestRecord),
         to: backup.appendingPathComponent(guestRecordName))
+    }
+    if try FileIdentity.of(paths.storageIdentity) != nil {
+      try PrivateFile.write(
+        try Data(contentsOf: paths.storageIdentity),
+        to: backup.appendingPathComponent(storageIdentityName))
     }
     try PrivateFile.sync(backup)
     try PrivateFile.sync(paths.backupsDirectory)

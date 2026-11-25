@@ -612,6 +612,53 @@ func daemonStartUndoesAnInterruptedRollback(point: String) async throws {
   #expect(paired[0].dataFrom == own)
 }
 
+@Test func rollbackRestoresTheStorageIdentityWithTheDataDisk() async throws {
+  // The runtime was deleted and created again: the backup holds the earlier pool's disks.
+  let fixture = try UpgradeFixture()
+  defer { fixture.clean() }
+  try fixture.record(package: packageP)
+  let earlier = backupID(0)
+  try writeBackup(fixture, id: earlier, root: "A", package: packageP, data: "data-999", pool: "999")
+  let replaced = try Data(contentsOf: fixture.paths.storageIdentity)
+  let service = try fixture.service(UpgradeVM())
+  let result = try await service.rollback(backupID: earlier, discardDataSinceUpgrade: true)
+  #expect(result.restoreData == "own")
+  // The record names the pool on the restored data disk, not the one it replaced.
+  let restored = try #require(try GuestRecordStore.loadStorageIdentity(paths: fixture.paths))
+  #expect(restored.poolGuid == "999")
+  #expect(restored.source == StorageIdentityRecord.backupSource)
+  #expect(BackupCatalog.currentPool(paths: fixture.paths) == "999")
+  let safety = fixture.paths.backup(result.safetyBackupId)
+  #expect(try Data(contentsOf: safety.appendingPathComponent("storage-identity.json")) == replaced)
+  // The replaced root is no longer offered against the earlier pool's data disk.
+  let listed = try await service.backups()
+  #expect(listed.first { $0.id == result.safetyBackupId }?.restoreData == "own")
+  // Rolling the rollback back restores the identity saved with the replaced disks.
+  _ = try await service.rollback(
+    backupID: result.safetyBackupId, discardDataSinceUpgrade: true)
+  #expect(try Data(contentsOf: fixture.paths.storageIdentity) == replaced)
+}
+
+@Test func undoneRollbackPutsTheStorageIdentityBack() async throws {
+  let fixture = try UpgradeFixture()
+  defer { fixture.clean() }
+  try fixture.record(package: packageP)
+  let earlier = backupID(0)
+  try writeBackup(fixture, id: earlier, root: "A", package: packageP, data: "data-999", pool: "999")
+  let replaced = try Data(contentsOf: fixture.paths.storageIdentity)
+  let service = try fixture.service(UpgradeVM()) { label in
+    if label == "rollback_recorded" { throw UpgradeInterruption() }
+  }
+  await #expect(throws: UpgradeInterruption.self) {
+    _ = try await service.rollback(backupID: earlier, discardDataSinceUpgrade: true)
+  }
+  #expect(try GuestRecordStore.loadStorageIdentity(paths: fixture.paths)?.poolGuid == "999")
+  let restarted = try fixture.service(UpgradeVM())
+  #expect(await restarted.status().state == .stopped)
+  #expect(try Data(contentsOf: fixture.paths.storageIdentity) == replaced)
+  #expect(!exists(fixture.paths.rollbackIntent))
+}
+
 @Test func repeatedUndoAfterItsRestoreKeepsTheRestoredRecords() async throws {
   let history = try History()
   let fixture = history.fixture

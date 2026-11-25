@@ -50,6 +50,8 @@ struct StartupCoordinator {
 struct ActivatedServices: Sendable {
   let paths: RuntimePaths
   let lock: BootstrapLock
+  /// The runtime service's launchd target (`gui/<uid>/<label>`); nil for a foreground one.
+  let runtimeTarget: String?
   func release() { lock.release() }
 }
 
@@ -175,8 +177,10 @@ private final class StartContext: @unchecked Sendable {
             "This state directory has no runtime. Run macus start to create one; \(purpose) changed nothing."
           )
         }
-        _ = try await ensureService(paths)
-        return ActivatedServices(paths: paths, lock: lock)
+        let runtime = try await ensureService(paths)
+        return ActivatedServices(
+          paths: paths, lock: lock,
+          runtimeTarget: runtime.label.map { "gui/\(dependencies.uid)/\($0)" })
       } catch {
         lock.release()
         throw error

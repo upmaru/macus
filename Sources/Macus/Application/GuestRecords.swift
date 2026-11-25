@@ -38,6 +38,8 @@ struct StorageIdentityRecord: Codable, Sendable, Equatable {
   var source: String
 
   static let healthSource = "health"
+  /// Written by a rollback from the pool its backup recorded.
+  static let backupSource = "backup"
 }
 
 enum StorageIdentityOutcome: Sendable, Equatable {

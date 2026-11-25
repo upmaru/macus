@@ -46,7 +46,9 @@ func runRuntimeUpgrade(
     directory: directory, budget: budget, dependencies: dependencies, json: json,
     environment: environment, streams: streams, presentation: presentation)
   switch action {
-  case .upgrade(let dryRun): try await session.upgrade(dryRun: dryRun, paths: services.paths)
+  case .upgrade(let dryRun):
+    try await session.upgrade(
+      dryRun: dryRun, paths: services.paths, runtimeTarget: services.runtimeTarget)
   case .rollback(let id, let discardData): try await session.rollback(id: id, discard: discardData)
   }
 }
@@ -60,12 +62,13 @@ private struct UpgradeSession {
   let streams: MacusStreams
   let presentation: HumanPresentation
 
-  func upgrade(dryRun: Bool, paths: RuntimePaths) async throws {
+  func upgrade(dryRun: Bool, paths: RuntimePaths, runtimeTarget: String?) async throws {
     let planned = try await request("POST", "/runtime/upgrade/plan")
     let plan = try JSON.decoder().decode(UpgradePlan.self, from: planned.body)
     let planObject = try jsonObject(planned.body)
     let entry = dependencies.catalog
-    try Self.requireThisPackage(plan, entry: entry, payload: EmbeddedGuestPayload.revision)
+    try Self.requireThisPackage(
+      plan, entry: entry, payload: EmbeddedGuestPayload.revision, runtimeTarget: runtimeTarget)
     if plan.current {
       if json {
         streams.writeOutput(try jsonText(["upgraded": false, "plan": planObject]))
@@ -137,14 +140,21 @@ private struct UpgradeSession {
   }
 
   /// A runtime service left running from another package plans with its own appliance and
-  /// payload, so its answer, current or not, says nothing about this package's.
-  static func requireThisPackage(_ plan: UpgradePlan, entry: ApplianceCatalogEntry, payload: String)
-    throws
-  {
+  /// payload, so its answer, current or not, says nothing about this package's. Stopping the
+  /// guest does not end that process; the recovery names how to replace it.
+  static func requireThisPackage(
+    _ plan: UpgradePlan, entry: ApplianceCatalogEntry, payload: String, runtimeTarget: String?
+  ) throws {
     guard plan.toCatalogId == entry.id, plan.toPayloadRevision == payload else {
+      // Upgrade activates an unloaded runtime job itself, from the installed package.
+      let restart =
+        runtimeTarget.map {
+          "Stop the guest with macus runtime stop, unload the runtime service with launchctl bootout \($0), then rerun macus runtime upgrade, which starts the service from this package."
+        }
+        ?? "The runtime service is a foreground macus serve: stop the guest with macus runtime stop, end that process, start macus serve again from this package, then rerun macus runtime upgrade."
       throw RuntimeError(
         .conflict,
-        "The runtime service plans with appliance \(terminalSafe(plan.toCatalogId)) and guest payload \(terminalSafe(plan.toPayloadRevision)), but this macus installs \(entry.id) with guest payload \(payload): it runs from another package. Restart the runtime service from this package (macus runtime stop, then macus runtime upgrade); nothing was changed."
+        "The runtime service plans with appliance \(terminalSafe(plan.toCatalogId)) and guest payload \(terminalSafe(plan.toPayloadRevision)), but this macus installs \(entry.id) with guest payload \(payload): it runs from another package. \(restart) Nothing was changed."
       )
     }
   }

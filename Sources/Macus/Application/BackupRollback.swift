@@ -461,7 +461,7 @@ enum RollbackJournal {
       try PrivateFile.makeDirectory(paths.backupsDirectory)
     }
     if !(try PrivateFile.isOwnedDirectory(target)) { try PrivateFile.makeDirectory(target) }
-    try copyRecords(from: paths.directory, guest: paths.guestRecord, into: target)
+    try copyRecords(paths: paths, into: target)
     try PrivateFile.sync(paths.backupsDirectory)
     try hook?("rollback_backup_created")
     intent.step = .moving
@@ -482,6 +482,7 @@ enum RollbackJournal {
     try save(intent, paths: paths)
     try hook?("moved")
     try restoreRecords(from: source, paths: paths)
+    if intent.dataFrom != nil { try adoptIdentity(of: intent.source, paths: paths) }
     intent.step = .recordsRestored
     try save(intent, paths: paths)
     try hook?("records_restored")
@@ -541,22 +542,66 @@ enum RollbackJournal {
       try PrivateFile.sync(to.deletingLastPathComponent())
     }
     // The copies are complete once the moves began; before that nothing was replaced.
-    if hasTarget, intent.step >= .moving { try restoreRecords(from: target, paths: paths) }
+    if hasTarget, intent.step >= .moving {
+      try restoreRecords(from: target, paths: paths)
+      if intent.dataFrom != nil { try putBackIdentity(from: target, paths: paths) }
+    }
   }
 
-  private static func copyRecords(from directory: URL, guest: URL, into backup: URL) throws {
+  private static func copyRecords(paths: RuntimePaths, into backup: URL) throws {
     for name in UpgradeJournal.records {
-      let url = directory.appendingPathComponent(name)
+      let url = paths.directory.appendingPathComponent(name)
       if try FileIdentity.of(url) != nil {
         try PrivateFile.write(try Data(contentsOf: url), to: backup.appendingPathComponent(name))
       }
     }
-    if try FileIdentity.of(guest) != nil {
-      try PrivateFile.write(
-        try Data(contentsOf: guest),
-        to: backup.appendingPathComponent(UpgradeJournal.guestRecordName))
+    let runtime = [
+      (paths.guestRecord, UpgradeJournal.guestRecordName),
+      (paths.storageIdentity, UpgradeJournal.storageIdentityName),
+    ]
+    for (url, name) in runtime where try FileIdentity.of(url) != nil {
+      try PrivateFile.write(try Data(contentsOf: url), to: backup.appendingPathComponent(name))
     }
     try PrivateFile.sync(backup)
+  }
+
+  /// The storage identity follows the data disk. After a rollback exchanged the disk, the
+  /// record names the restored root's pool: the identity saved with that backup when it names
+  /// the same pool, else one written from the backup's recorded pool. A backup that recorded
+  /// no pool leaves none in place, so the next ready guest reports it; nothing is guessed.
+  private static func adoptIdentity(of source: String, paths: RuntimePaths) throws {
+    let pool = try BackupCatalog.entry(source, paths: paths).record?.poolGuid ?? ""
+    let saved = paths.backup(source).appendingPathComponent(UpgradeJournal.storageIdentityName)
+    var identity: StorageIdentityRecord?
+    if try FileIdentity.of(saved) != nil {
+      identity = try? JSON.decoder().decode(
+        StorageIdentityRecord.self, from: Data(contentsOf: saved))
+      if let found = identity, found.backend != "zfs" || found.poolGuid.isEmpty { identity = nil }
+      if let found = identity, !pool.isEmpty, found.poolGuid != pool { identity = nil }
+    }
+    if identity == nil, !pool.isEmpty {
+      identity = StorageIdentityRecord(
+        backend: "zfs", poolGuid: pool, layout: StorageAdoption.supportedLayout,
+        source: StorageIdentityRecord.backupSource)
+    }
+    if let identity {
+      try PrivateFile.write(try JSON.encoder().encode(identity), to: paths.storageIdentity)
+    } else if try FileIdentity.of(paths.storageIdentity) != nil {
+      try FileManager.default.removeItem(at: paths.storageIdentity)
+    }
+    try PrivateFile.sync(paths.runtimeDirectory)
+  }
+
+  /// Undo: the identity as the rollback found it. A new backup without one means the state
+  /// had none.
+  private static func putBackIdentity(from backup: URL, paths: RuntimePaths) throws {
+    let saved = backup.appendingPathComponent(UpgradeJournal.storageIdentityName)
+    if try FileIdentity.of(saved) != nil {
+      try PrivateFile.write(try Data(contentsOf: saved), to: paths.storageIdentity)
+    } else if try FileIdentity.of(paths.storageIdentity) != nil {
+      try FileManager.default.removeItem(at: paths.storageIdentity)
+    }
+    try PrivateFile.sync(paths.runtimeDirectory)
   }
 
   /// Puts a backup's records in place. A backup without a guest record had none, so the one

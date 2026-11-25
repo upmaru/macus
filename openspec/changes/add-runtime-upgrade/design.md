@@ -47,7 +47,7 @@ Every guest-side change (scripts, kernel, ZFS, Incus) is delivered by staging a 
 
 ### 2. The host carries the storage identity
 
-**Record.** `STATE/runtime/storage-identity.json` holds `schema_version`, `backend` (`zfs`), `pool_guid`, `layout` (`zfs-v1`) and `source` (`health` or `serial`). It sits beside the disks so it moves with them. The daemon is its only writer. Mode 0600, written atomically.
+**Record.** `STATE/runtime/storage-identity.json` holds `schema_version`, `backend` (`zfs`), `pool_guid`, `layout` (`zfs-v1`) and `source` (`health`, `serial`, or `backup` when a rollback restored it with a data disk). It sits beside the disks so it moves with them. The daemon is its only writer. Mode 0600, written atomically.
 
 **How the host learns it.**
 1. Guest health reports `storage: {backend, pool_guid, layout, phase}` from this payload onward. The daemon writes the record whenever a ready guest reports a ZFS identity in phase `ready`, and refuses to overwrite a record with a different GUID.
@@ -142,6 +142,7 @@ Implementation choices for explicit rollback:
 - `STATE/rollback.pending` journals every rename with the file's device and inode before the first one. A failed rename is undone at once; an interrupted rollback is undone at the next daemon start, which restores the replaced records, journals that they are restored, and only then removes the new backup, so a repeated undo never reads a partly removed one. An unreadable journal preserves everything and refuses runtime changes, as for an upgrade.
 - The selected backup's directory is kept with whatever remains, such as its own data copy when case 1 left it unused, and lists as `restored`. A data copy restored from another backup is moved, so that backup lists without one. With no ID, rollback selects the latest backup that still holds a root.
 - The selected backup's guest record replaces the current one; a backup without one removes the current one, which describes another root.
+- The storage identity follows the data disk. Every backup keeps a copy of `storage-identity.json` as it was. When rollback exchanges `data.raw` (cases 2 and 3), the record is replaced with the one naming the restored root's pool: the backup's saved copy when it names the recorded pool, else one written from the backup's recorded pool GUID with `source: backup`. A backup that recorded no pool leaves no record, and the next ready guest reports one. An undone rollback puts the replaced record back. When the data disk stays (case 1) the record is not touched.
 - Automatic rollback likewise removes a guest record written for the new root when the earlier state had none, moving it into `failed/`.
 
 Implementation choices for the API and client:

@@ -380,6 +380,11 @@ private func stagingEntries(_ fixture: UpgradeFixture) throws -> [String] {
     let capture = StartCapture()
     #expect(await pair.run(arguments, capture: capture, catalog: fixture.entry) == 1)
     #expect(capture.error.contains("it runs from another package"), "\(capture.error)")
+    // Stopping the guest leaves the stale process serving; the recovery replaces it.
+    #expect(
+      capture.error.contains("launchctl bootout gui/")
+        || capture.error.contains("end that process, start macus serve again"),
+      "\(capture.error)")
     #expect(!capture.output.contains("already runs the installed appliance"))
   }
   #expect(pair.downloader.calls == 0)
