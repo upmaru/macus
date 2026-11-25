@@ -249,3 +249,15 @@ A substitute run on the retained isolated state (`/tmp/macus-r53`) exercised the
 Both were fixed after this run. The client now prints `Checking the latest backup; the runtime is stopped only if it can be restored…`, and the refusal names a second backup only when the copy comes from a later one (`copy from backup Y taken at …`). `migratingUpgradeShowsWhatHappensBeforeTheStopAndRollbackNeedsTheDiscardFlag`, `discardWarningNamesWhenTheDataCopyWasTaken` and `rollbackAcrossALaterMigrationUsesTheLaterDataCopy` cover the fixes. The hardware run used the earlier wording and was not repeated.
 
 The state directory is retained, `56a2513` is installed in its prefix, and both jobs are unloaded.
+
+## Forced stop of the new root with the pool imported — 2026-11-25 UTC
+
+Task 5.6 of `add-runtime-upgrade` passed [opt-in hardware acceptance](testing/runtime-upgrade-forced-stop-acceptance.json) on the retained isolated state (`/tmp/macus-r53`), on the develop root with its workload markers. `4183af2` (develop with upmaru/macus#20 merged) was installed.
+
+- **Forced stop:** an upgrade can only end before commit by the readiness timeout or daemon death, so a watcher sent SIGKILL to the runtime service once the new root's storage service had finished (`stage=storage`, then the first `stage=incus`) while `upgrade.pending` existed. The new root had adopted and imported the pool and Incus was starting. The VM process ended with the daemon, with no guest shutdown or pool export. The client failed after 45 s with `unavailable`.
+- **Journal rollback:** launchd restarted the daemon within 12 s, and it rolled the journal back before anything else. Root, firmware store, seed and data disk were on the earlier root's inodes. The guest record, storage identity and `config.json` were byte-identical to the copies taken before the upgrade. `upgrade.pending` was gone, the new root, firmware store and seed were kept under the backup's `failed/`, and the runtime was stopped with a last error saying the uncommitted upgrade was rolled back.
+- **Earlier root:** `macus start` was ready in 37 s. The develop root imports its owned pool only without `-f` and refuses otherwise, and no refusal appeared, so it imported the pool the killed root left imported. Both containers ran, every marker (including one written just before the upgrade) was intact and the custom volume was present.
+
+A first attempt keyed the kill on `TAMA_STORAGE_ZFS_READY`, which the guest prints only in a log dump after bootstrap readiness. The upgrade committed before that line appeared, so nothing was killed. It was rolled back explicitly (`runtime upgrade --rollback`, root only, 6 s) and the develop root started again before the second attempt.
+
+**Not covered:** a forced stop during a migrating upgrade. No findings. The state directory is retained, `4183af2` is installed in its prefix, and both jobs are unloaded.

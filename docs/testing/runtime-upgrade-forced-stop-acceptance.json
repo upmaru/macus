@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "change": "add-runtime-upgrade",
+  "task": "5.6",
+  "status": "passed",
+  "recorded_at": "2026-11-25T12:40:00+00:00",
+  "scenario": "Failed upgrade in which the new root is force-stopped with the pool imported, the leftover journal rolled back at the next daemon start, then the earlier root importing the pool without force",
+  "packages": {
+    "installed": {
+      "commit": "4183af2627edcee2ac480d71f729e01bf7db59b9",
+      "branch": "develop (merge of upmaru/macus#20; tree identical to becb6a6)",
+      "macus_binary_sha256": "8f46b038cef30bbeb4e1439c05b60799c39367294f6bc74116e0d4fd4077ede5"
+    },
+    "build": "release, Packaging/install-local.sh into the isolated prefix, ad hoc virtualization signing",
+    "package_change": "both jobs were already unloaded after task 5.4; only the server plist (registered for 56a2513) was removed before install-local.sh and macus start"
+  },
+  "host": {
+    "model": "Mac16,5",
+    "chip": "Apple M4 Max",
+    "memory_gib": 64,
+    "architecture": "arm64",
+    "macos": "27.0.1 (26A434)",
+    "virtualization": "Apple Virtualization.framework",
+    "incus_client": "7.5.1"
+  },
+  "isolation": {
+    "state_dir": "/tmp/macus-r53 (retained from tasks 5.3 to 5.5 and the 5.4 substitute run, on the develop root)",
+    "prefix": "/tmp/mcx-r53",
+    "incus_conf": "the isolated temporary directory from task 5.3; every incus and macus start command exported it",
+    "remote": "macus-r53",
+    "service_label": "com.upmaru.macus.228c94a474c5",
+    "server_label": "com.upmaru.macus.server.228c94a474c5",
+    "default_jobs_and_client_config_touched": false,
+    "other_acceptance_state_touched": false,
+    "services_unloaded_after_run": true,
+    "state_dir_retained": true
+  },
+  "earlier_root": {
+    "description": "The develop root (before this change): its health reports no guest contract or payload revision, its storage.sh imports the owned pool only with `zpool import -N -d $vdev $guid` and refuses otherwise.",
+    "guest_record": {"incus_package": "7.0.1-r2", "incus_package_source": "catalog"},
+    "pool_guid": "3952008500462468296",
+    "inodes": {"root.raw": 121385526, "efi.bin": 121385601, "seed.iso": 121385598, "data.raw": 121827917}
+  },
+  "forced_stop": {
+    "method": "Daemon death, the only way besides the readiness timeout to end an upgrade before commit (design: the upgrade owns the mutation gate and refuses a forced stop). A watcher polled serial.log every 0.1 s after the pre-upgrade line count and sent SIGKILL to the runtime service process (pid 84754) on the first `MACUS_OBSERVATION v1 stage=incus` after `MACUS_OBSERVATION v1 stage=storage`, and only while upgrade.pending existed. The storage service had then finished (`Preparing persistent Incus data and configured shares ... [ ok ]`), so the new root had adopted and imported the pool, and incusd was starting on it. The Virtualization.framework VM process ended with the daemon, without a guest shutdown or pool export.",
+    "first_attempt": "The first watcher keyed on `TAMA_STORAGE_ZFS_READY`, which the guest prints only in a log dump after `TAMA_BOOTSTRAP_READY`; it appeared 5 s after the upgrade committed, the watcher saw no upgrade.pending and did not kill. That upgrade (backup 20261125T123120Z-c9145d09) committed in 48 s with the inventory compared, and `runtime upgrade --rollback` restored the develop root in 6 s (root-only, data kept; replaced state kept as 20261125T123246Z-4ee102df). The develop root then started ready in 38 s on the same inodes as before, and the second attempt ran from there."
+  },
+  "steps": [
+    {
+      "name": "start_earlier_root_on_installed_package",
+      "result": "ready",
+      "seconds": 38,
+      "checks": {"upgrade_available_reported": true, "instances_running": true, "pre_upgrade_marker_written": "/root/r56-pre in r53-marker"}
+    },
+    {
+      "name": "upgrade_killed_with_pool_imported",
+      "result": "failed",
+      "exit_status": 1,
+      "seconds": 45,
+      "backup_id": "20261125T123345Z-ef9d6b89",
+      "error": "Macus failed (unavailable): The Swift runtime service did not answer.",
+      "checks": {
+        "plan": "reversible, Incus 7.0.1-r2 to 7.0.1-r2, pool 3952008500462468296 from health",
+        "inventory_read_before_stop": true,
+        "sigkill_after_storage_ready_on_new_root": "2026-11-25T12:34:29Z",
+        "isolated_vm_process_gone": true
+      }
+    },
+    {
+      "name": "daemon_restart_rolls_back_journal",
+      "result": "rolled back",
+      "checks": {
+        "launchd_restarted_daemon": "runs 2, new pid 87271, within 12 s",
+        "upgrade_pending_removed": true,
+        "root_efi_seed_data_inodes_equal_earlier_root": true,
+        "guest_record_storage_identity_config_byte_identical": true,
+        "new_root_efi_seed_kept_in_failed": true,
+        "runtime_left_stopped": true,
+        "last_error": "An upgrade (backup 20261125T123345Z-ef9d6b89) did not commit before the daemon stopped, so it was rolled back: the previous root and configuration were restored.",
+        "failed_backup_listing": "upgrade, not restorable (incomplete), 4.0 GiB; created, source appliance and Incus package list as unknown because backup.json is written only at commit, as for the task 5.5 failed backup"
+      }
+    },
+    {
+      "name": "start_earlier_root_after_forced_stop",
+      "result": "ready",
+      "seconds": 37,
+      "checks": {
+        "pool_imported_without_force": "the earlier root's only owned-pool import has no -f and refuses on failure; no refusal in this boot's serial output, storage ready and Incus served the pool",
+        "storage_pool": "zfs default, 4.26 GiB used of 29.51 GiB",
+        "instances_running": ["r53-marker", "r53-proj-c (project r53)"],
+        "markers_intact": ["/root/r56-pre", "/root/marker"],
+        "custom_volume_present": "r53-vol",
+        "storage_identity_unchanged": true
+      }
+    }
+  ],
+  "findings": [],
+  "notes": [
+    "Serial `TAMA_STORAGE_*` lines are a log dump printed after bootstrap readiness and repeat earlier boots; `MACUS_OBSERVATION v1 stage=...` lines are the live progress markers. Hardware runners that react to a guest stage should key on the observation lines.",
+    "Backups 20261125T123246Z-4ee102df and 20261125T123345Z-ef9d6b89 each hold a 4 GiB root; /tmp had 21 GiB free after the run. They are kept until pruned, as designed."
+  ],
+  "not_covered": [
+    "A forced stop during a migrating upgrade, where the rollback also restores the data clone.",
+    "Inspecting the earlier root's /etc/hostid directly; the property is shown by the import outcome."
+  ]
+}
