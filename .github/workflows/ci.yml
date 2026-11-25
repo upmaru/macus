@@ -58,7 +58,7 @@ jobs:
           (cd .integration/cassette && shasum -a 256 -c "opsmaru_incus-$locked.tama-cassette.sha256")
           gh attestation verify ".integration/cassette/opsmaru_incus-$locked.tama-cassette" --repo upmaru/opsmaru-incus
           echo "MACUS_RELEASE_SMOKE_CASSETTE=$PWD/.integration/cassette/opsmaru_incus-$locked.tama-cassette" >> "$GITHUB_ENV"
-      - name: Canonical checks: Swift, Mix, guest syntax and embedded release smoke
+      - name: "Canonical checks: Swift, Mix, guest syntax and embedded release smoke"
         env:
           # install-local.sh verifies the cassette's attestation with gh.
           GH_TOKEN: ${{ github.token }}

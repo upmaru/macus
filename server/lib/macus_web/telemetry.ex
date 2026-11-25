@@ -52,12 +52,54 @@ defmodule MacusWeb.Telemetry do
         unit: {:native, :millisecond}
       ),
 
+      # Native gateway exchanges, from the shared library's stop event.
+      # Tagged by protocol, admission kind and outcome only: path, project
+      # and certificate are never metric tags.
+      counter("opsmaru_incus.gateway.exchange.stop.count", exchange_options()),
+      summary(
+        "opsmaru_incus.gateway.exchange.stop.duration",
+        exchange_options(unit: {:native, :millisecond})
+      ),
+      summary(
+        "opsmaru_incus.gateway.exchange.stop.request_bytes",
+        exchange_options(unit: :byte)
+      ),
+      summary(
+        "opsmaru_incus.gateway.exchange.stop.response_bytes",
+        exchange_options(unit: :byte)
+      ),
+      sum("macus.access_log.dropped.count"),
+
       # VM Metrics
       summary("vm.memory.total", unit: {:byte, :kilobyte}),
       summary("vm.total_run_queue_lengths.total"),
       summary("vm.total_run_queue_lengths.cpu"),
       summary("vm.total_run_queue_lengths.io")
     ]
+  end
+
+  @exchange_tags [:protocol, :admitted_as, :outcome]
+
+  @doc "The only tags of the gateway exchange metrics."
+  def exchange_tags, do: @exchange_tags
+
+  defp exchange_options(options \\ []) do
+    Keyword.merge([tags: @exchange_tags, tag_values: &exchange_tag_values/1], options)
+  end
+
+  @doc false
+  def exchange_tag_values(metadata) do
+    Map.new(@exchange_tags, fn tag ->
+      value =
+        case Map.get(metadata, tag) do
+          nil -> "none"
+          value when is_atom(value) -> Atom.to_string(value)
+          value when is_binary(value) -> value
+          _ -> "other"
+        end
+
+      {tag, value}
+    end)
   end
 
   defp periodic_measurements do
