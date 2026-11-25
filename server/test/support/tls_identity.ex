@@ -71,7 +71,14 @@ defmodule Macus.TestSupport.TLSIdentity do
 
     for path <- [certfile, keyfile, cafile, cakey, csr, extensions], do: File.chmod!(path, 0o600)
     [{:Certificate, der, _}] = :public_key.pem_decode(File.read!(certfile))
-    %{certfile: certfile, keyfile: keyfile, cafile: cafile, der: der}
+    [{:Certificate, ca_der, _}] = :public_key.pem_decode(File.read!(cafile))
+    # Pass `ca_der` to OTP as `cacerts`, never `cafile` as `cacertfile`: OTP's
+    # VM-wide ssl_manager keeps a `cacertfile` path registered for a while
+    # after its last connection, and its periodic PEM check (every 2 min)
+    # crashes on a deleted one, restarting ssl_manager and failing every TLS
+    # handshake in flight. These identities live in a per-test temporary
+    # directory.
+    %{certfile: certfile, keyfile: keyfile, cafile: cafile, der: der, ca_der: ca_der}
   end
 
   @doc """

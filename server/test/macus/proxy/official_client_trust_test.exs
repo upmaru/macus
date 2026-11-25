@@ -122,7 +122,7 @@ defmodule Macus.Proxy.OfficialClientTrustTest do
             # below accepts self-signed client certificates regardless. Like
             # Incus, advertise no acceptable CAs: Go clients otherwise send
             # no certificate whose issuer is not listed.
-            cacertfile: String.to_charlist(server.cafile),
+            cacerts: [server.ca_der],
             certificate_authorities: false,
             verify: :verify_peer,
             fail_if_no_peer_cert: false,

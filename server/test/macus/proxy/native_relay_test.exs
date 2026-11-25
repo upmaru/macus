@@ -22,8 +22,14 @@ defmodule Macus.Proxy.NativeRelayTest do
   @reference_dir Path.expand("../../reference", __DIR__)
   @admission Macus.Proxy.Admission
   @revision String.duplicate("ab12", 10)
-  # A tightened revocation bound keeps the revocation tests short.
-  @bound 400
+  # A tightened revocation bound keeps the revocation tests short. Only those
+  # tests set it: the shared gateway rechecks every live exchange within the
+  # bound and gives the host callback a quarter of it, and a callback that
+  # overruns revokes the exchange (fail closed). At 400 ms that budget is
+  # 100 ms, which a loaded CI runner's trust-file read exceeds, ending
+  # streams that no test meant to revoke. Every other test keeps the
+  # production bound and its 1 s callback budget.
+  @bound 1_000
   @mcp_version "2026-07-28"
   # A receive timeout: Mint.WebSocket.recv/3 returns the raw :ssl reason after
   # the upgrade, Mint.HTTP.recv/3 this struct before it.
@@ -58,8 +64,7 @@ defmodule Macus.Proxy.NativeRelayTest do
     Application.put_env(:macus, Macus.Build, revision: @revision)
 
     Application.put_env(:macus, Macus.Proxy,
-      api_extensions: ["certificate_update", "instances", "instance_nbd"],
-      recheck_interval: @bound
+      api_extensions: ["certificate_update", "instances", "instance_nbd"]
     )
 
     on_exit(fn ->
@@ -196,7 +201,10 @@ defmodule Macus.Proxy.NativeRelayTest do
       [secret, wait_secret, wrong] =
         for _ <- 1..3, do: Base.encode16(:crypto.strong_rand_bytes(32), case: :lower)
 
-      image = :crypto.strong_rand_bytes(256 * 1024)
+      # A gzip-framed image, as real image files are. Wholly random bytes
+      # would start with `{` or JSON whitespace about one time in 51, which
+      # the gateway rightly refuses as a JSON image request.
+      image = <<0x1F, 0x8B, 0x08, 0x00>> <> :crypto.strong_rand_bytes(256 * 1024)
       wait_path = "/1.0/operations/#{wait}/wait"
       export_path = "/1.0/images/#{fp}/export"
 
@@ -488,6 +496,7 @@ defmodule Macus.Proxy.NativeRelayTest do
 
     test "untrusted upgrades never reach the backend; revocation closes open ones in bound",
          context do
+      put_proxy(recheck_interval: @bound)
       IncusBackend.start!(context.sock, self(), context.guest.pem)
       assert {:refused, 403} = ws(context, "/1.0/events", nil)
       refute_receive {:incus, _, _, _, _}, 100
@@ -664,6 +673,7 @@ defmodule Macus.Proxy.NativeRelayTest do
 
     @tag protocol: "sftp"
     test "revocation closes an open raw tunnel within the bound", context do
+      put_proxy(recheck_interval: @bound)
       native!(context, initial: <<1>>)
       socket = tls!(context)
       :ok = :ssl.send(socket, upgrade("/1.0/instances/fixture/sftp", "sftp"))

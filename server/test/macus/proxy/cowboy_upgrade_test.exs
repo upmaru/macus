@@ -187,7 +187,7 @@ defmodule Macus.Proxy.CowboyUpgradeTest do
             port: 0,
             certfile: String.to_charlist(context.server.certfile),
             keyfile: String.to_charlist(context.server.keyfile),
-            cacertfile: String.to_charlist(context.client.cafile),
+            cacerts: [context.client.ca_der],
             verify: :verify_peer,
             fail_if_no_peer_cert: false,
             versions: [:"tlsv1.3"],
@@ -207,7 +207,7 @@ defmodule Macus.Proxy.CowboyUpgradeTest do
       active: false,
       verify: :verify_peer,
       exit_on_close: false,
-      cacertfile: String.to_charlist(context.server.cafile),
+      cacerts: [context.server.ca_der],
       server_name_indication: ~c"localhost",
       customize_hostname_check: [match_fun: :public_key.pkix_verify_hostname_match_fun(:https)],
       versions: [:"tlsv1.3"]

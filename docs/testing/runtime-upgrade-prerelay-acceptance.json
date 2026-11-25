@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "change": "add-runtime-upgrade",
+  "task": "5.7",
+  "status": "passed",
+  "recorded_at": "2026-11-25T13:20:00+00:00",
+  "scenario": "Isolated copy of the 2026-11-04 pre-relay state: start records it as contract 0, a migrating upgrade selects the pool from the serial.log identity and clones the data disk, then rollback is refused without and completed with the discard confirmation",
+  "packages": {
+    "installed": {
+      "commit": "4183af2627edcee2ac480d71f729e01bf7db59b9",
+      "branch": "develop (merge of upmaru/macus#20)",
+      "macus_binary_sha256": "8f46b038cef30bbeb4e1439c05b60799c39367294f6bc74116e0d4fd4077ede5"
+    },
+    "original_state_package": "created 2026-11-04 by an earlier package; its gateway endpoint records revision ac86fe9 from its last start on 2026-11-23"
+  },
+  "host": {
+    "model": "Mac16,5",
+    "chip": "Apple M4 Max",
+    "memory_gib": 64,
+    "architecture": "arm64",
+    "macos": "27.0.1 (26A434)",
+    "virtualization": "Apple Virtualization.framework",
+    "incus_client": "7.5.1"
+  },
+  "original": {
+    "path": "~/.tama/incus-mac.backup-20261123 (the state moved aside on 2026-11-23; ~/.tama/incus-mac is a newer live state and was not used)",
+    "shape": {
+      "created": "2026-11-04",
+      "guest_record": false,
+      "storage_identity": false,
+      "serial_log_zfs_ready_lines": ["TAMA_STORAGE_ZFS_READY 16202589654529525438"],
+      "appliance": "alpine-3.24.2-incus-v1"
+    },
+    "read_only": "listed, fingerprinted (inode, size, mtime of all 25 files) and cloned; never started, written or opened by a service",
+    "unchanged_after_run": true
+  },
+  "isolation": {
+    "state_dir": "/tmp/macus-r57, an APFS clonefile copy (cp -c -Rp) of the original",
+    "prefix": "/tmp/mcx-r53 (the 4183af2 install from task 5.6)",
+    "incus_conf": "/tmp/macus-r57-incus-conf, new and empty before the run; every incus and macus start command exported it",
+    "remote": "macus-r57",
+    "service_label": "com.upmaru.macus.44bc2af80b44",
+    "server_label": "com.upmaru.macus.server.44bc2af80b44",
+    "copy_adjustments": [
+      "config.json and reboot-allowance.json held absolute paths into ~/.tama/incus-mac/appliance-cache, which is now the live state's directory; in the copy only the prefix was rewritten to /tmp/macus-r57/, so they name the copy's own cache as the original's named its own.",
+      "server/gateway.json (0600) was written with a free port (49320), as docs/development.md requires of acceptance states; the original's gateway used the default 8443, which the live default gateway holds."
+    ],
+    "default_jobs_and_client_config_touched": false,
+    "other_acceptance_state_touched": false,
+    "services_unloaded_after_run": true,
+    "state_dir_retained": true
+  },
+  "steps": [
+    {
+      "name": "first_start_attempt_on_default_port",
+      "result": "aborted",
+      "note": "Before gateway.json was written, the copy's server job crash-looped with eaddrinuse on 127.0.0.1:8443 and start waited at service activation for 10 minutes. The start was stopped and the copy's server job unloaded; no guest was booted. Isolation setup, not a product finding: the original state legitimately owned the default port at its own location."
+    },
+    {
+      "name": "start_on_installed_package",
+      "result": "unavailable",
+      "exit_status": 1,
+      "seconds": 39,
+      "checks": {
+        "guest_booted_and_probed": true,
+        "error": "The appliance guest bridge predates the flow-controlled Incus relay this Macus requires. The guest was stopped gracefully. Run macus runtime upgrade to replace the appliance root; runtime data was kept.",
+        "guest_record_written": {"guest_contract": 0},
+        "services_left_registered_and_named": true
+      }
+    },
+    {
+      "name": "dry_run",
+      "result": "planned",
+      "checks": {
+        "from": "alpine-3.24.2-incus-v1 (guest payload unknown)",
+        "to": "alpine-3.24.2-lts-1 (guest payload 50670a7d91d1)",
+        "class": "migrating (Incus unknown to 7.0.1-r2)",
+        "pool": "16202589654529525438 (zfs-v1, from serial)",
+        "data_clone_named": true,
+        "space": "12.0 GiB needed, 20.1 GiB free"
+      }
+    },
+    {
+      "name": "upgrade",
+      "result": "upgraded",
+      "seconds": 118,
+      "backup_id": "20261125T130753Z-991c5565",
+      "checks": {
+        "includes_appliance_download": true,
+        "guest_adopted_named_pool": "TAMA_STORAGE_ADOPTED 16202589654529525438, after stage=storage, incus and ready observations",
+        "inventory_comparison_skipped_and_said_why": "The previous guest was not serving Incus to this host, so its inventory was not read and the comparison was skipped. Check the inventory below.",
+        "inventory_after": {
+          "default": "0 instances, 0 volumes, 1 networks, 1 profiles",
+          "opsmaru-acceptance-gateway-dst-20261107-113939-d65f-r11": "0 instances, 0 volumes, 1 networks, 1 profiles",
+          "opsmaru-acceptance-gateway-src-20261107-113939-d65f-r11": "2 instances, 4 volumes, 1 networks, 1 profiles",
+          "opsmaru-pool-benchmark-f0e80bd0": "0 instances, 0 volumes, 1 networks, 1 profiles"
+        },
+        "old_root_efi_seed_moved_into_backup_by_inode": true,
+        "live_data_disk_kept_inode": 122305060,
+        "backup_data_clone_new_inode": 122317874,
+        "data_copied_at_precedes_created_at": "13:08:01Z before 13:08:36Z",
+        "guest_record_from_health": {"guest_contract": 1, "incus_package": "7.0.1-r2", "payload_revision": "50670a7d…"},
+        "storage_identity_from_health": "16202589654529525438"
+      }
+    },
+    {
+      "name": "workloads_on_new_root",
+      "result": "served",
+      "checks": {
+        "containers": "gw-6c498d13c046-base and gw-6c498d13c046-m0 listed STOPPED with no recorded power state or autostart, as left in the original",
+        "custom_volumes": ["gw-6c498d13c046-block (block)", "gw-6c498d13c046-files (filesystem)"],
+        "carried_over_container_started": "gw-6c498d13c046-m0 started and ran a command",
+        "post_upgrade_writes": ["/root/r57-post in gw-6c498d13c046-m0", "custom volume r57-post-vol in project default"]
+      }
+    },
+    {
+      "name": "rollback_without_discard",
+      "result": "refused",
+      "exit_status": 1,
+      "checks": {
+        "error": "Rolling back to backup 20261125T130753Z-991c5565 restores the data disk copy taken at 2026-11-25T13:08:01Z; everything written to the data disk since then is discarded. Confirm with --discard-data-since-upgrade. Nothing was changed.",
+        "progress_line": "Checking the latest backup; the runtime is stopped only if it can be restored…",
+        "runtime_still_ready": true,
+        "files_unchanged": true
+      }
+    },
+    {
+      "name": "rollback_with_discard",
+      "result": "restored",
+      "seconds": 7,
+      "safety_backup_id": "20261125T130940Z-149f171a",
+      "checks": {
+        "data_disk": "restored from the backup's copy of 13:08:01Z (inode 122317874)",
+        "root_efi_seed_original_inodes": true,
+        "config_and_contract_0_guest_record_byte_identical": true,
+        "storage_identity_written_from_backup_pool": {"pool_guid": "16202589654529525438", "source": "backup"},
+        "upgraded_state_and_its_data_kept_as_safety_backup": true,
+        "runtime_left_stopped": true
+      }
+    },
+    {
+      "name": "start_restored_state_on_installed_package",
+      "result": "conflict",
+      "exit_status": 1,
+      "seconds": 0.16,
+      "checks": {
+        "refused_before_boot": "This runtime's appliance guest was recorded with contract 0, below the contract 1 this Macus requires, so it was not booted. Run macus runtime upgrade to replace the appliance root; runtime data was kept.",
+        "next_dry_run": "migrating, pool 16202589654529525438 from backup"
+      }
+    }
+  ],
+  "findings": [],
+  "notes": [
+    "The storage identity written by rollback (source backup) is the upmaru/macus#20 review fix in becb6a6: the pre-relay state had no record, so without it the upgraded root's record would have stayed beside the restored data disk.",
+    "Post-upgrade writes are shown discarded by file identity: the restored data.raw is the clone taken before the new root's first boot, and the disk that received /root/r57-post and r57-post-vol is in safety backup 20261125T130940Z-149f171a. The guest-level discard was shown on hardware in the task 5.4 substitute run. A second upgrade to inspect it here was skipped because the host volume had 16 GiB free (99% used)."
+  ],
+  "not_covered": [
+    "Booting the restored pre-relay root, which only the earlier package can serve; the installed package correctly refuses it before boot.",
+    "Reading the old guest's Incus inventory before the upgrade, which the pre-relay bridge does not allow."
+  ]
+}
