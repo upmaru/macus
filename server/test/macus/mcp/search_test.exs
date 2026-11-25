@@ -42,7 +42,10 @@ defmodule Macus.MCP.SearchTest do
 
     test "searching opens no endpoint or listener", ctx do
       search!(%{"query" => "instance"}, @all_incus)
-      assert network_ports() == ctx.ports_before
+      # No port opened since before the index started. An earlier module's
+      # socket may still be closing, so a port that went away is not a
+      # failure.
+      assert network_ports() -- ctx.ports_before == []
     end
   end
 
