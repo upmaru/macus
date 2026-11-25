@@ -303,6 +303,8 @@ def main():
                 stop_and_unload(binary, state, client, labels, args.transition, env, report)
                 report["stopped_version"] = manifest["version"]
         report["last_phase_success"] = True
+        # A retried phase that now succeeds must not carry the earlier attempt's failure.
+        report.pop("failure", None)
     except Exception as error:
         report["last_phase_success"] = False
         report["failure"] = str(error)

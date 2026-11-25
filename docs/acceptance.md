@@ -286,3 +286,29 @@ A substitute run on the retained isolated state (`/tmp/macus-r53`) exercised the
 Both were fixed after this run. The client now prints `Checking the latest backup; the runtime is stopped only if it can be restored…`, and the refusal names a second backup only when the copy comes from a later one (`copy from backup Y taken at …`). `migratingUpgradeShowsWhatHappensBeforeTheStopAndRollbackNeedsTheDiscardFlag`, `discardWarningNamesWhenTheDataCopyWasTaken` and `rollbackAcrossALaterMigrationUsesTheLaterDataCopy` cover the fixes. The hardware run used the earlier wording and was not repeated.
 
 The state directory is retained, `56a2513` is installed in its prefix, and both jobs are unloaded.
+
+## Installed package upgrade and removal — 2026-11-25 UTC
+
+Task 4.3 of `add-homebrew-tap` passed [opt-in hardware acceptance](testing/homebrew-upgrade-acceptance.json) on ARM64 macOS 27.0.1. It used two verified candidates installed by Homebrew from a local tap:
+
+- **Old:** `ac86fe90`, the 4.2 candidate, with opsmaru_incus 0.2.9 and bottle `00f64875…`.
+- **New:** `develop` at `d92f1368`, with opsmaru_incus 0.2.10. Homebrew built it from source and then poured bottle `919cc071…`. The package report recorded a verified signature and virtualization entitlement, system-only linkage, no runtime dependencies, no Homebrew service and a passive install.
+
+`homebrew-acceptance.py` ran the phases against one isolated state, with its own `INCUS_CONF`, remote `macus-brew`, gateway port and hashed labels:
+
+- **Start on the old package:** both starts were ready. A standard Incus container, `macus-brew-marker` (Alpine 3.24), was launched and a marker file written into it.
+- **Stop for upgrade:** the runtime stopped, and the server job and then the runtime job were unloaded. Only the revision-bound server plist was removed. The runner then recorded disk identities, keyed digests of the settings, server credentials and client configuration, and the gateway certificate.
+- **Package change:** `brew uninstall` of the old package and an untap, then the new candidate was built and poured.
+- **Resume on the new package:**
+  - Ready on the same port, and the marker read back unchanged.
+  - The disks were the same files, and every recorded digest and the gateway certificate were unchanged.
+  - The server plist was registered again for `d92f1368`.
+  - Start reported `upgrade_available` and changed nothing: no guest image upgrade and no disk reset.
+- **Removal:** both jobs were stopped and unloaded and both owned plists removed. Then `brew uninstall` ran. No job, plist or package remained, and the disks, credentials and client configuration were unchanged.
+
+**Runner fixes.** Two runner bugs were fixed during the run.
+
+- **Gateway port.** The runner gave the isolated state no gateway port, so its server tried the default `127.0.0.1:8443`, which the machine's default runtime holds, and crash-looped on `eaddrinuse`. That attempt was unloaded with its files kept, and the runner now writes the state's own port, as `start-acceptance.py` does.
+- **Marker listing.** `incus list macus-brew:macus-brew-marker` was read as a filter on the default remote, which the isolated client lacks. The runner now lists `macus-brew:` and matches the marker by name. The retained state was finished with `--phase retry-start`.
+
+**Default state.** With the user's approval, the machine's default state, created on the old candidate, went through the same documented sequence and was started on the new package. It was ready, with the server job registered for the new revision and the same gateway certificate. Its container kept running, and the appliance upgrade was reported but not applied.
