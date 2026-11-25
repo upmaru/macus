@@ -174,15 +174,27 @@ private func transitions(_ sink: CollectingProgressSink) -> [String] {
   cached.finishAcquisition()
   #expect(
     transitions(reused) == ["acquisition:active", "acquisition:skipped", "verification:complete"])
+  // A download hands over to its own active verification step, which is where a digest
+  // mismatch then fails.
   let fetched = CollectingProgressSink()
   let download = steps(.upgrade(dryRun: false), into: fetched)
   download.begin(.acquisition)
   download.download(completed: 512, total: 1024)
+  download.beginVerification()
   download.finishAcquisition()
   #expect(
     transitions(fetched) == [
-      "acquisition:active", "acquisition:active", "acquisition:complete", "verification:complete",
+      "acquisition:active", "acquisition:active", "acquisition:complete", "verification:active",
+      "verification:complete",
     ])
+  let mismatch = CollectingProgressSink()
+  let rejected = steps(.upgrade(dryRun: false), into: mismatch)
+  rejected.begin(.acquisition)
+  rejected.download(completed: 1024, total: 1024)
+  rejected.beginVerification()
+  rejected.fail(RuntimeError(.invalidConfiguration, "Appliance archive SHA-512 does not match"))
+  #expect(transitions(mismatch).last == "verification:failed")
+  #expect(!transitions(mismatch).contains("acquisition:failed"))
   #expect(fetched.snapshot()[1].completedBytes == 512)
   #expect(fetched.snapshot()[1].totalBytes == 1024)
 }
@@ -237,4 +249,56 @@ private func transitions(_ sink: CollectingProgressSink) -> [String] {
   await current.finish(ready: true, connected: true)
   #expect(done.error.contains("Upgrade: 3/3 stages resolved"))
   #expect(!done.error.contains("\u{1B}"))
+}
+
+@Test func thePhaseALastOperationEndedInDoesNotAdvanceANewOne() {
+  // After a start the service still reports `ready` while the upgrade re-plans and checks
+  // the staging; nothing has stopped or booted yet.
+  let sink = CollectingProgressSink()
+  let tracker = steps(.upgrade(dryRun: false), into: sink)
+  tracker.beginDispatch(runtimeWasStopped: false, previousPhase: "ready")
+  tracker.observe(operation: "upgrade", phase: "ready", expectedReboot: false)
+  tracker.observe(operation: "upgrade", phase: "ready", expectedReboot: false)
+  #expect(transitions(sink) == ["runtime_stop:active"])
+  // A refusal before the stop fails the stop step, not the verification.
+  tracker.closeDispatch(succeeded: false)
+  tracker.fail(RuntimeError(.conflict, "refused"))
+  #expect(transitions(sink) == ["runtime_stop:active", "runtime_stop:failed"])
+
+  // Once the operation reports its own phase, the same names count, `ready` included.
+  let later = CollectingProgressSink()
+  let real = steps(.upgrade(dryRun: false), into: later)
+  real.beginDispatch(runtimeWasStopped: false, previousPhase: "booting")
+  real.observe(operation: "upgrade", phase: "booting", expectedReboot: false)
+  real.observe(operation: "upgrade", phase: "stopping", expectedReboot: false)
+  real.observe(operation: "upgrade", phase: "booting", expectedReboot: false)
+  real.observe(operation: "upgrade", phase: "ready", expectedReboot: false)
+  #expect(
+    transitions(later) == [
+      "runtime_stop:active", "runtime_stop:active", "runtime_stop:complete",
+      "upgrade_boot:active", "upgrade_boot:complete", "upgrade_verification:active",
+    ])
+}
+
+@Test func concurrentPhasesAndFailureReachTheSinkInTheOrderTheStepsChanged() async {
+  for _ in 0..<50 {
+    let sink = CollectingProgressSink()
+    let tracker = steps(.upgrade(dryRun: false), into: sink)
+    tracker.beginDispatch(runtimeWasStopped: false)
+    await withTaskGroup(of: Void.self) { group in
+      group.addTask {
+        tracker.observe(operation: "upgrade", phase: "booting", expectedReboot: false)
+      }
+      group.addTask {
+        tracker.closeDispatch(succeeded: false)
+        tracker.fail(RuntimeError(.unavailable, "boot failed"))
+      }
+    }
+    // Whichever ran first, a stage never resolves after a later one has started or failed.
+    let rows = transitions(sink)
+    #expect(rows.last?.hasSuffix(":failed") == true, "\(rows)")
+    if let boot = rows.firstIndex(of: "upgrade_boot:active") {
+      #expect(rows.firstIndex(of: "runtime_stop:complete").map { $0 < boot } == true, "\(rows)")
+    }
+  }
 }

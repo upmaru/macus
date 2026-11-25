@@ -138,10 +138,9 @@ private struct UpgradeSession {
     }
     steps.begin(.acquisition)
     let cache = try await ApplianceAcquisition(downloader: dependencies.downloader).materialize(
-      entry: entry, directory: directory, budget: budget, now: dependencies.now
-    ) { completed, total in
-      steps.download(completed: completed, total: total)
-    }
+      entry: entry, directory: directory, budget: budget, now: dependencies.now,
+      onVerifying: { steps.beginVerification() },
+      onBytes: { completed, total in steps.download(completed: completed, total: total) })
     steps.finishAcquisition()
     steps.begin(.upgradeStaging)
     let stagingID = try await UpgradeStaging.stage(
@@ -231,7 +230,8 @@ private struct UpgradeSession {
     send: (() async throws -> LocalHTTPResponse)? = nil
   ) async throws -> LocalHTTPResponse {
     let before = try? await progress()
-    steps.beginDispatch(runtimeWasStopped: before?.stopped == true, detail: detail)
+    steps.beginDispatch(
+      runtimeWasStopped: before?.stopped == true, previousPhase: before?.phase, detail: detail)
     let steps = self.steps
     let poll = Task {
       while !Task.isCancelled {

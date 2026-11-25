@@ -62,6 +62,12 @@ final class UpgradeSteps: StartupProgressSink, @unchecked Sendable {
   private var runtimeWasStopped = false
   private var dispatchClosed = false
   private var downloaded = false
+  private var verifying = false
+  /// The phase the runtime service reported before the request: the end of its last
+  /// operation, such as `ready` after a start. It says nothing about this operation, so it
+  /// is ignored until the service reports a phase of its own.
+  private var stalePhase: String?
+  private var operationReported = false
 
   init(
     sink: any StartupProgressSink, action: RuntimeUpgradeAction, operationID: String,
@@ -74,10 +80,7 @@ final class UpgradeSteps: StartupProgressSink, @unchecked Sendable {
     self.now = now
   }
 
-  func emit(_ event: StartupProgressEvent) {
-    lock.withLock { record(event) }
-    sink.emit(event)
-  }
+  func emit(_ event: StartupProgressEvent) { lock.withLock { deliver(event) } }
 
   func diagnostic(_ text: String) { sink.diagnostic(text) }
 
@@ -85,51 +88,75 @@ final class UpgradeSteps: StartupProgressSink, @unchecked Sendable {
   func complete(_ stage: StartupStage) { send(stage, .complete) }
 
   func download(completed: Int64, total: Int64?) {
-    lock.withLock { downloaded = true }
-    send(.acquisition, .active, completed: completed, total: total)
+    lock.withLock {
+      downloaded = true
+      deliver(event(.acquisition, .active, completed: completed, total: total))
+    }
+  }
+
+  /// The archive is downloaded; its size, digests and extracted disk are checked next.
+  func beginVerification() {
+    lock.withLock {
+      verifying = true
+      deliver(event(.acquisition, .complete))
+      deliver(event(.verification, .active))
+    }
   }
 
   /// A verified cache needs no download, so the acquisition is shown as skipped.
   func finishAcquisition() {
-    send(.acquisition, lock.withLock { downloaded } ? .complete : .skipped)
-    send(.verification, .complete)
+    lock.withLock {
+      if !verifying { deliver(event(.acquisition, downloaded ? .complete : .skipped)) }
+      deliver(event(.verification, .complete))
+    }
   }
 
   /// Marks the stage that was active when the command failed, so the failure names it.
   func fail(_ error: any Error) {
-    guard let stage = lock.withLock({ active }) else { return }
-    let failure = error as? RuntimeError
-    send(
-      stage, .failed, detail: failure?.message ?? (error as? StartupInterrupted)?.message,
-      code: failure?.code.rawValue)
+    lock.withLock {
+      guard let stage = active else { return }
+      let failure = error as? RuntimeError
+      deliver(
+        event(
+          stage, .failed, detail: failure?.message ?? (error as? StartupInterrupted)?.message,
+          code: failure?.code.rawValue))
+    }
   }
 
   /// The runtime service now owns the operation. A runtime that was stopped beforehand is
   /// never stopped again, so its stop is shown as skipped rather than performed.
-  func beginDispatch(runtimeWasStopped: Bool, detail: String? = nil) {
-    var events: [StartupProgressEvent] = []
+  /// `previousPhase` is the phase the runtime service reported before the request.
+  func beginDispatch(
+    runtimeWasStopped: Bool, previousPhase: String? = nil, detail: String? = nil
+  ) {
     lock.withLock {
       self.runtimeWasStopped = runtimeWasStopped
+      stalePhase = previousPhase
       var first = 0
       let stages = action.dispatchStages
       if runtimeWasStopped, stages.first == .runtimeStop {
-        events.append(event(.runtimeStop, .skipped))
+        deliver(event(.runtimeStop, .skipped))
         first = 1
       }
       position = first
-      events.append(event(stages[first], .active, detail: detail))
-      for event in events { record(event) }
+      deliver(event(stages[first], .active, detail: detail))
     }
-    for event in events { sink.emit(event) }
   }
 
   /// One `GET /runtime/progress` observation during the dispatch.
   func observe(operation: String?, phase: String?, expectedReboot: Bool) {
-    var events: [StartupProgressEvent] = []
     lock.withLock {
       guard !dispatchClosed, operation == action.serviceOperation, let position,
         let phase
       else { return }
+      if !operationReported {
+        // Until the operation reports a phase of its own, the service may still show the one
+        // its last operation ended in; an upgrade's own `ready` comes only after verifying.
+        let stale =
+          phase == stalePhase || (action.serviceOperation == "upgrade" && phase == "ready")
+        guard !stale else { return }
+        operationReported = true
+      }
       let stages = action.dispatchStages
       var target = position
       if let stage = action.dispatchStage(phase: phase),
@@ -140,51 +167,46 @@ final class UpgradeSteps: StartupProgressSink, @unchecked Sendable {
         target = index
       }
       if target > position {
-        events.append(event(stages[position], .complete))
+        deliver(event(stages[position], .complete))
         for index in (position + 1)..<target {
           let skipped = stages[index] == .runtimeStop && runtimeWasStopped
-          events.append(event(stages[index], skipped ? .skipped : .complete))
+          deliver(event(stages[index], skipped ? .skipped : .complete))
         }
         self.position = target
       }
       let named = ["stopping", "booting", "verifying", "ready"].contains(phase)
-      events.append(
+      deliver(
         event(
           stages[target], .active, detail: named ? nil : phase,
           reboot: expectedReboot && stages[target] == .upgradeBoot))
-      for event in events { record(event) }
     }
-    for event in events { sink.emit(event) }
   }
 
   /// The runtime service answered: later observations are ignored, and on success every
   /// remaining stage resolves in order.
   func closeDispatch(succeeded: Bool) {
-    var events: [StartupProgressEvent] = []
     lock.withLock {
       dispatchClosed = true
       guard succeeded, let position else { return }
       let stages = action.dispatchStages
       for index in position..<stages.count {
         let skipped = index > position && stages[index] == .runtimeStop && runtimeWasStopped
-        events.append(event(stages[index], skipped ? .skipped : .complete))
+        deliver(event(stages[index], skipped ? .skipped : .complete))
       }
       self.position = nil
-      for event in events { record(event) }
     }
-    for event in events { sink.emit(event) }
   }
 
   private func send(
-    _ stage: StartupStage, _ state: StartupStageState, completed: Int64? = nil,
-    total: Int64? = nil, detail: String? = nil, code: String? = nil
+    _ stage: StartupStage, _ state: StartupStageState, detail: String? = nil
   ) {
-    let event = lock.withLock {
-      let event = event(
-        stage, state, completed: completed, total: total, detail: detail, code: code)
-      record(event)
-      return event
-    }
+    lock.withLock { deliver(event(stage, state, detail: detail)) }
+  }
+
+  /// Records and emits under the lock, so the poll and the request deliver their events to
+  /// the sink in the order the steps changed. The sink never calls back into the steps.
+  private func deliver(_ event: StartupProgressEvent) {
+    record(event)
     sink.emit(event)
   }
 
