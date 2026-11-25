@@ -6,7 +6,16 @@ defmodule Macus.Proxy.NativeRelayTest do
   use ExUnit.Case, async: false
 
   alias Macus.Proxy.Trust
-  alias Macus.TestSupport.{AuthFixtures, DexFixtures, IncusBackend, NativeBackend, TLSIdentity}
+
+  alias Macus.TestSupport.{
+    AccessLogAudit,
+    AuthFixtures,
+    DexFixtures,
+    IncusBackend,
+    NativeBackend,
+    TLSIdentity
+  }
+
   alias Opsmaru.Incus.Gateway.Admission
 
   @driver Path.expand("../../../../.integration/incus-reference-driver", __DIR__)
@@ -72,6 +81,16 @@ defmodule Macus.Proxy.NativeRelayTest do
         expected_revision: @revision,
         now: DateTime.utc_now()
       )
+
+    # Every test here also writes the access log, and whatever it wrote is
+    # held to the redaction rule once the test's processes have stopped.
+    start_supervised!({Macus.Proxy.AccessLog, [state_dir: state_dir, uid: uid]})
+    access_log = Path.join(Macus.Proxy.AccessLog.logs_dir(state_dir), "gateway-access.log")
+
+    on_exit(fn ->
+      written = if File.exists?(access_log), do: File.read!(access_log), else: ""
+      assert AccessLogAudit.violations(written, [Base.encode64(admin.der, padding: false)]) == []
+    end)
 
     start_supervised!(Macus.Gateway.listener(gateway))
     start_supervised!({Macus.Gateway.Publisher, gateway})

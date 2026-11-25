@@ -82,12 +82,32 @@ public struct UnixHTTPClient: LocalHTTPTransport, Sendable {
       guard getpeereid(descriptor.rawValue, &uid, &gid) == 0, uid == getuid() else {
         throw RuntimeError(.invalidConfiguration, "Local socket peer must belong to this user")
       }
-      let header =
-        "\(method) \(path) HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
-      try io.write(Data(header.utf8) + body)
-      var reader = ClientHTTPReader(io: io)
-      return try reader.response()
+      return try Self.exchange(io: io, method: method, path: path, body: body)
     }
+  }
+
+  /// One bounded request on an already connected nonblocking stream socket, such as the
+  /// daemon's internal Incus relay pair.
+  static func exchange(
+    on socket: SocketDescriptor, method: String, path: String, body: Data = Data(),
+    deadline: ContinuousClock.Instant
+  ) throws -> LocalHTTPResponse {
+    guard path.hasPrefix("/"), !path.utf8.contains(where: { $0 < 33 || $0 == 127 }),
+      method == "GET" || method == "POST"
+    else { throw RuntimeError(.invalidRequest, "Invalid local HTTP request") }
+    return try exchange(
+      io: ClientSocketIO(socket: socket, deadline: deadline), method: method, path: path,
+      body: body)
+  }
+
+  private static func exchange(io: ClientSocketIO, method: String, path: String, body: Data)
+    throws -> LocalHTTPResponse
+  {
+    let header =
+      "\(method) \(path) HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+    try io.write(Data(header.utf8) + body)
+    var reader = ClientHTTPReader(io: io)
+    return try reader.response()
   }
 }
 

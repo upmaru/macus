@@ -23,8 +23,11 @@ public struct RuntimeStatus: Codable, Sendable {
   public let incusSocket: String
   public let lastError: String?
   public let uptimeSeconds: Int
+  /// Whether the state's recorded guest is older than the installed package's appliance or
+  /// payload. Absent until a ready guest of the state has been recorded.
+  public var upgradeAvailable: Bool? = nil
   public enum CodingKeys: String, CodingKey {
-    case apiVersion, state, incusSocket, lastError, uptimeSeconds
+    case apiVersion, state, incusSocket, lastError, uptimeSeconds, upgradeAvailable
   }
 }
 
@@ -35,18 +38,50 @@ public struct GuestHealth: Codable, Sendable, Equatable {
   public let kvm: Bool
   /// Absent from guest bridges that predate the flow-controlled Incus relay.
   public let flowRelayVersion: Int?
+  /// The identity fields below are absent from guests that predate guest identity
+  /// reporting, and a field the guest could not read is absent too: absent means unknown.
+  public let guestContract: Int?
+  public let payloadRevision: String?
+  public let applianceId: String?
+  /// The full installed APK version with its release suffix (`7.0.1-r2`), unlike
+  /// `incusVersion`, which is Incus's `server_version`.
+  public let incusPackage: String?
+  public let storage: GuestStorageIdentity?
   public init(
     protocolVersion: Int = 1, incusVersion: String, apiExtensions: [String], kvm: Bool,
-    flowRelayVersion: Int? = FlowRelayProtocol.version
+    flowRelayVersion: Int? = FlowRelayProtocol.version, guestContract: Int? = nil,
+    payloadRevision: String? = nil, applianceId: String? = nil, incusPackage: String? = nil,
+    storage: GuestStorageIdentity? = nil
   ) {
     self.protocolVersion = protocolVersion
     self.incusVersion = incusVersion
     self.apiExtensions = apiExtensions
     self.kvm = kvm
     self.flowRelayVersion = flowRelayVersion
+    self.guestContract = guestContract
+    self.payloadRevision = payloadRevision
+    self.applianceId = applianceId
+    self.incusPackage = incusPackage
+    self.storage = storage
   }
   /// Whether the guest relays Incus with the protocol this host speaks.
   public var servesFlowRelay: Bool { flowRelayVersion == FlowRelayProtocol.version }
+}
+
+/// The guest's storage identity as reported in health. For ZFS the pool fields are
+/// the root's ownership record, which storage verifies against the imported pool at boot.
+public struct GuestStorageIdentity: Codable, Sendable, Equatable {
+  public let backend: String
+  public let poolGuid: String?
+  public let layout: String?
+  public let phase: String?
+  public init(backend: String, poolGuid: String? = nil, layout: String? = nil, phase: String? = nil)
+  {
+    self.backend = backend
+    self.poolGuid = poolGuid
+    self.layout = layout
+    self.phase = phase
+  }
 }
 
 public struct HostCapabilities: Codable, Sendable {

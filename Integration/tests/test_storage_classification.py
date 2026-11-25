@@ -39,12 +39,21 @@ if [ "$1" = get ]; then
   esac
   exit 0
 fi
-if [ "$1" = status ]; then printf '%s\\n' "{disk}"; exit 0; fi
+if [ "$1" = status ]; then printf '%s\\n' "${{TAMA_ZPOOL_STATUS_DISK:-{disk}}}"; exit 0; fi
 if [ "$1" = online ] && [ "${{TAMA_ZPOOL_ONLINE_FAIL:-}}" = 1 ]; then exit 1; fi
+# With TAMA_ZPOOL_IMPORTED set, the pool is listed only after an import and until an export.
+if [ "$1" = list ] && [ -n "${{TAMA_ZPOOL_IMPORTED:-}}" ]; then
+  [ -f "$TAMA_ZPOOL_IMPORTED" ] || exit 1
+  exit 0
+fi
 if [ "$1" = import ]; then
-  if [ "${{TAMA_ZPOOL_IMPORT_OK:-}}" = 1 ]; then exit 0; fi
+  if [ "${{TAMA_ZPOOL_IMPORT_OK:-}}" = 1 ]; then
+    if [ -n "${{TAMA_ZPOOL_IMPORTED:-}}" ]; then : > "$TAMA_ZPOOL_IMPORTED"; fi
+    exit 0
+  fi
   exit 1
 fi
+if [ "$1" = export ] && [ -n "${{TAMA_ZPOOL_IMPORTED:-}}" ]; then rm -f "$TAMA_ZPOOL_IMPORTED"; fi
 if [ "$1" = export ] && [ -n "${{TAMA_EXPORT_FAILS_FILE:-}}" ]; then
   left=$(cat "$TAMA_EXPORT_FAILS_FILE")
   if [ "$left" -gt 0 ]; then
@@ -58,6 +67,7 @@ exit 0
         write_stub(bin_dir, 'rc-service', f'printf "rc-service %s\\n" "$*" >> "{calls}"\nexit "${{TAMA_INCUSD_STATUS:-3}}"\n')
         write_stub(bin_dir, 'zfs', f'''
 printf "zfs %s\\n" "$*" >> "{calls}"
+if [ "$1" = list ] && [ "${{TAMA_ZFS_NO_METADATA:-}}" = 1 ]; then exit 1; fi
 if [ "$1" = get ]; then
   case "$*" in
     *available*) printf '1073741824\\n' ;;
@@ -506,3 +516,268 @@ fi
             self.assertEqual(result.returncode, 0, log)
             self.assertIn('TAMA_STORAGE_DRIVER_OK', log)
             self.assertIn('incus query /1.0/profiles/default', calls.read_text())
+
+    # Adoption: a replacement root with no identity and a host-delivered record.
+
+    def adoptable(self, root, guid='120', layout='zfs-v1', database=True):
+        identity = root / 'etc/tama-storage'
+        identity.mkdir(parents=True)
+        (identity / 'adopt').write_text(f'pool_guid={guid}\nlayout={layout}\n')
+        metadata = root / 'metadata'
+        metadata.mkdir(parents=True, exist_ok=True)
+        (metadata / '.tama-storage-layout').write_text('zfs-v1\n')
+        if database:
+            (metadata / 'database').mkdir()
+            (metadata / 'database' / 'global').write_bytes(b'db')
+        disk = root / 'disk'
+        disk.write_bytes(b'zfs')
+        return disk
+
+    def adopt(self, root, disk, kind='zfs_member', imported=False, extra_env=None):
+        env = {'TAMA_ZPOOL_IMPORT_OK': '1'}
+        if not imported:
+            env['TAMA_ZPOOL_IMPORTED'] = str(root / 'imported')
+        env.update(extra_env or {})
+        result, calls = self.run_storage(root, disk, kind=kind, extra_env=env)
+        log = (root / 'storage.log').read_text()
+        recorded = calls.read_text() if calls.exists() else ''
+        return result, log, recorded
+
+    def metadata_files(self, root):
+        metadata = root / 'metadata'
+        return {path.relative_to(metadata).as_posix(): path.read_bytes()
+                for path in metadata.rglob('*') if path.is_file()}
+
+    def assert_adoption_refused(self, root, result, log, recorded, reason):
+        identity = root / 'etc/tama-storage'
+        self.assertNotEqual(result.returncode, 0, log)
+        self.assertIn('TAMA_STORAGE_REFUSED: adoption:', log)
+        self.assertIn(reason, log)
+        self.assertNotIn('TAMA_STORAGE_ADOPTED', log)
+        self.assertNotIn('TAMA_STORAGE_ZFS_READY', log)
+        self.assertEqual((root / 'run/tama-storage-failure').read_text().strip(), 'storage_adoption_refused')
+        for name in ('pool-guid', 'layout', 'phase'):
+            self.assertFalse((identity / name).exists(), name)
+        self.assertTrue((identity / 'adopt').is_file())
+        self.assertFalse((root / 'run/tama-storage-backend').exists())
+        for forbidden in ('zpool create', 'zpool import -f', 'zpool online', 'zfs create', 'zfs set', 'mkfs.ext4'):
+            self.assertNotIn(forbidden, recorded)
+        self.assertFalse((root / 'metadata/.tama-preseed-pending').exists())
+
+    def test_adoption_records_named_pool_and_runs_owned_checks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            disk = self.adoptable(root)
+            before = self.metadata_files(root)
+            result, log, recorded = self.adopt(root, disk)
+            identity = root / 'etc/tama-storage'
+            self.assertEqual(result.returncode, 0, log)
+            imports = [line for line in recorded.splitlines() if line.startswith('zpool import')]
+            self.assertEqual(imports, [f'zpool import -N -d {disk} 120'])
+            self.assertEqual((identity / 'pool-guid').read_text().strip(), '120')
+            self.assertEqual((identity / 'layout').read_text().strip(), 'zfs-v1')
+            self.assertEqual((identity / 'phase').read_text().strip(), 'ready')
+            self.assertFalse((identity / 'adopt').exists())
+            self.assertLess(log.index('TAMA_STORAGE_ADOPTED 120'), log.index('TAMA_STORAGE_ZFS_READY 120'))
+            self.assertIn(f'zpool online -e tama-data {disk}', recorded)
+            self.assertEqual((root / 'run/tama-storage-backend').read_text().strip(), 'zfs')
+            self.assertFalse((root / 'run/tama-storage-failure').exists())
+            self.assertNotIn('zpool create', recorded)
+            self.assertNotIn('zfs create', recorded)
+            self.assertNotIn('zfs set', recorded)
+            self.assertNotIn('zpool export', recorded)
+            self.assertEqual(self.metadata_files(root), before)
+            self.assertFalse((root / 'metadata/.tama-preseed-pending').exists())
+
+    def test_adoption_accepts_named_pool_already_imported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            disk = self.adoptable(root)
+            result, log, recorded = self.adopt(root, disk, imported=True)
+            self.assertEqual(result.returncode, 0, log)
+            self.assertNotIn('zpool import', recorded)
+            self.assertIn('TAMA_STORAGE_ZFS_READY 120', log)
+
+    def test_adoption_refuses_guid_mismatch(self):
+        # The disk holds no pool with the named GUID: nothing is imported.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            disk = self.adoptable(root, guid='999')
+            result, log, recorded = self.adopt(root, disk, extra_env={'TAMA_ZPOOL_IMPORT_OK': '0'})
+            self.assert_adoption_refused(root, result, log, recorded, 'named pool 999 cannot be imported')
+            self.assertIn(f'zpool import -N -d {disk} 999', recorded)
+            self.assertNotIn('zfs mount', recorded)
+        # An import that yields another GUID is exported again.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            disk = self.adoptable(root, guid='999')
+            result, log, recorded = self.adopt(root, disk)
+            self.assert_adoption_refused(root, result, log, recorded, 'pool GUID 120 is not the named 999')
+            self.assertIn('zpool export tama-data', recorded)
+            self.assertFalse((root / 'imported').exists())
+        # Another pool already imported under the name is not ours to export.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            disk = self.adoptable(root, guid='999')
+            result, log, recorded = self.adopt(root, disk, imported=True)
+            self.assert_adoption_refused(root, result, log, recorded, 'not exporting it')
+            self.assertNotIn('zpool import', recorded)
+            self.assertNotIn('zpool export', recorded)
+
+    def test_adoption_refuses_pool_on_another_vdev(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            disk = self.adoptable(root)
+            result, log, recorded = self.adopt(
+                root, disk, extra_env={'TAMA_ZPOOL_STATUS_DISK': '/dev/vdz'})
+            self.assert_adoption_refused(root, result, log, recorded, 'not backed by the attached data disk')
+            self.assertIn('zpool export tama-data', recorded)
+
+    def test_adoption_refuses_foreign_or_missing_layout(self):
+        for marker in ('foreign-layout-v2\n', None):
+            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                disk = self.adoptable(root)
+                layout_marker = root / 'metadata/.tama-storage-layout'
+                if marker is None:
+                    layout_marker.unlink()
+                else:
+                    layout_marker.write_text(marker)
+                before = self.metadata_files(root)
+                result, log, recorded = self.adopt(root, disk)
+                self.assert_adoption_refused(root, result, log, recorded, 'not zfs-v1')
+                self.assertIn('zpool export tama-data', recorded)
+                self.assertEqual(self.metadata_files(root), before)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            disk = self.adoptable(root)
+            result, log, recorded = self.adopt(root, disk, extra_env={'TAMA_ZFS_NO_METADATA': '1'})
+            self.assert_adoption_refused(root, result, log, recorded, 'has no metadata dataset')
+
+    def test_adoption_refuses_uninitialized_pool(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            disk = self.adoptable(root, database=False)
+            result, log, recorded = self.adopt(root, disk)
+            self.assert_adoption_refused(root, result, log, recorded, 'no Incus database')
+            self.assertIn('zpool export tama-data', recorded)
+        for marker, reason in (('.tama-preseed-pending', 'still pending'),
+                               ('.tama-preseed-started', 'was interrupted')):
+            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                disk = self.adoptable(root)
+                (root / 'metadata' / marker).write_text('')
+                result, log, recorded = self.adopt(root, disk)
+                self.assertNotEqual(result.returncode, 0, log)
+                self.assertIn(reason, log)
+                self.assertEqual((root / 'run/tama-storage-failure').read_text().strip(), 'storage_adoption_refused')
+                self.assertFalse((root / 'etc/tama-storage/phase').exists())
+                self.assertTrue((root / 'metadata' / marker).exists())
+                self.assertIn('zpool export tama-data', recorded)
+
+    def test_adoption_refuses_invalid_record_before_touching_the_disk(self):
+        for guid, layout, reason in (('', 'zfs-v1', 'no valid pool GUID'),
+                                     ('12x', 'zfs-v1', 'no valid pool GUID'),
+                                     ('120', 'zfs-v2', 'unknown layout zfs-v2'),
+                                     ('120', '', 'unknown layout absent')):
+            with self.subTest(guid=guid, layout=layout), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                disk = self.adoptable(root, guid=guid, layout=layout)
+                result, log, recorded = self.adopt(root, disk)
+                self.assert_adoption_refused(root, result, log, recorded, reason)
+                self.assertNotIn('zpool', recorded)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            disk = self.adoptable(root)
+            result, log, recorded = self.adopt(root, disk, extra_env={'TAMA_MODPROBE_FAIL': 'zfs'})
+            self.assert_adoption_refused(root, result, log, recorded, 'ZFS module is unavailable')
+            self.assertNotIn('zpool', recorded)
+
+    def test_adoption_never_creates_or_converts_storage(self):
+        # A blank disk or an ext4 disk with a record is refused, never formatted or repaired.
+        for kind in ('', 'ext4'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                disk = self.adoptable(root)
+                disk.write_bytes(b'\0' * 64)
+                os.truncate(disk, 4 * 1024 ** 3)
+                result, log, recorded = self.adopt(root, disk, kind=kind, extra_env={'TAMA_ZPOOL_IMPORT_OK': '0'})
+                self.assert_adoption_refused(root, result, log, recorded, 'cannot be imported')
+                for forbidden in ('e2fsck', 'resize2fs', 'mount -o'):
+                    self.assertNotIn(forbidden, recorded)
+
+    def test_interrupted_adoption_resumes_on_the_next_start(self):
+        # The VM stopped after some identity files were written but before the record was removed.
+        for written in (('pool-guid',), ('pool-guid', 'layout'), ('pool-guid', 'layout', 'phase')):
+            with self.subTest(written=written), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                disk = self.adoptable(root)
+                identity = root / 'etc/tama-storage'
+                values = {'pool-guid': '120', 'layout': 'zfs-v1', 'phase': 'ready'}
+                for name in written:
+                    (identity / name).write_text(values[name] + '\n')
+                result, log, recorded = self.adopt(root, disk)
+                self.assertEqual(result.returncode, 0, log)
+                self.assertIn('TAMA_STORAGE_ADOPT_RESUMED', log)
+                self.assertIn('TAMA_STORAGE_ADOPTED 120', log)
+                self.assertIn('TAMA_STORAGE_ZFS_READY 120', log)
+                for name, value in values.items():
+                    self.assertEqual((identity / name).read_text().strip(), value)
+                self.assertFalse((identity / 'adopt').exists())
+                imports = [line for line in recorded.splitlines() if line.startswith('zpool import')]
+                self.assertEqual(imports, [f'zpool import -N -d {disk} 120'])
+                self.assertNotIn('zpool create', recorded)
+
+    def test_resumed_adoption_still_refuses_a_failed_check(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            disk = self.adoptable(root, database=False)
+            (root / 'etc/tama-storage/pool-guid').write_text('120\n')
+            result, log, recorded = self.adopt(root, disk)
+            self.assertNotEqual(result.returncode, 0, log)
+            self.assertIn('TAMA_STORAGE_ADOPT_RESUMED', log)
+            self.assertIn('metadata has no Incus database', log)
+            self.assertNotIn('TAMA_STORAGE_ZFS_READY', log)
+            self.assertTrue((root / 'etc/tama-storage/adopt').is_file())
+            self.assertFalse((root / 'etc/tama-storage/phase').exists())
+
+    def test_root_identity_ignores_stale_adoption_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            disk = root / 'disk'
+            disk.write_bytes(b'zfs')
+            self.owned_identity(root)
+            (root / 'etc/tama-storage/adopt').write_text('pool_guid=999\nlayout=zfs-v1\n')
+            result, calls = self.run_storage(root, disk, kind='zfs_member')
+            log = (root / 'storage.log').read_text()
+            self.assertEqual(result.returncode, 0, log)
+            self.assertIn('TAMA_STORAGE_ADOPT_IGNORED', log)
+            self.assertIn('TAMA_STORAGE_ZFS_READY 120', log)
+            self.assertNotIn('TAMA_STORAGE_ADOPTED', log)
+            self.assertNotIn(' 999', calls.read_text())
+            self.assertEqual((root / 'etc/tama-storage/pool-guid').read_text().strip(), '120')
+
+    def test_failure_observation_is_cleared_on_the_next_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            disk = root / 'disk'
+            disk.write_bytes(b'zfs')
+            self.owned_identity(root)
+            (root / 'run/tama-storage-failure').write_text('storage_adoption_refused\n')
+            result, _calls = self.run_storage(root, disk, kind='zfs_member')
+            self.assertEqual(result.returncode, 0, (root / 'storage.log').read_text())
+            self.assertFalse((root / 'run/tama-storage-failure').exists())
+
+    def test_fresh_root_without_record_still_refuses_zfs_member(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            disk = root / 'disk'
+            disk.write_bytes(b'zfs')
+            (root / 'metadata').mkdir()
+            (root / 'metadata/database').mkdir()
+            result, calls = self.run_storage(root, disk, kind='zfs_member', extra_env={'TAMA_ZPOOL_IMPORT_OK': '1'})
+            log = (root / 'storage.log').read_text()
+            self.assertNotEqual(result.returncode, 0, log)
+            self.assertIn('foreign ZFS member has no owned identity', log)
+            self.assertNotIn('zpool import', calls.read_text() if calls.exists() else '')
+            self.assertFalse((root / 'run/tama-storage-failure').exists())

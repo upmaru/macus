@@ -16,6 +16,10 @@ echo 'MACUS_OBSERVATION v1 stage=image'
 # The host renders the exact supported format from pinned metadata.
 [ "$(sed -n '1p' "$expected" 2>/dev/null)" = format=1 ] &&
     cmp -s "$expected" "$record" || mismatch 'image record differs from the seed'
+# Every qualified root shares one ZFS host identity (none), so a pool a root left imported
+# after a forced stop imports on another root without force.
+[ ! -e "$boot/etc/hostid" ] && [ ! -L "$boot/etc/hostid" ] ||
+    mismatch 'root carries its own ZFS host identity (/etc/hostid)'
 kernel=$(sed -n 's/^kernel_release=//p' "$expected")
 [ -n "$kernel" ] && [ "$(uname -r)" = "$kernel" ] &&
     printf '%s\n' "$kernel" | cmp -s - "$boot/etc/tama-zfs-qualified-kernel" ||

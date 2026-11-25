@@ -13,6 +13,31 @@ public struct RuntimePaths: Sendable {
   public var dataDisk: URL { runtimeDirectory.appendingPathComponent("data.raw") }
   public var efiStore: URL { runtimeDirectory.appendingPathComponent("efi.bin") }
   public var seed: URL { runtimeDirectory.appendingPathComponent("seed.iso") }
+  /// Daemon-owned records kept beside the disks, so they move with them.
+  public var guestRecord: URL { runtimeDirectory.appendingPathComponent("guest-record.json") }
+  public var storageIdentity: URL {
+    runtimeDirectory.appendingPathComponent("storage-identity.json")
+  }
+  /// Durable intent of an upgrade that has not committed.
+  public var upgradeIntent: URL { directory.appendingPathComponent("upgrade.pending") }
+  /// Durable intent of an explicit rollback that has not committed.
+  public var rollbackIntent: URL { directory.appendingPathComponent("rollback.pending") }
+  /// Upgrade safety copies, private and on the same volume as the disks.
+  public var backupsDirectory: URL {
+    directory.appendingPathComponent("backups", isDirectory: true)
+  }
+  /// IDs are validated by `UpgradeID` before they name a path.
+  func backup(_ id: String) -> URL {
+    backupsDirectory.appendingPathComponent(id, isDirectory: true)
+  }
+  /// The client's private staging for one upgrade, never the shared appliance cache.
+  func staging(_ id: String) -> URL {
+    directory.appendingPathComponent("upgrade-\(id)", isDirectory: true)
+  }
+  func applianceCache(_ catalogID: String) -> URL {
+    directory.appendingPathComponent("appliance-cache", isDirectory: true)
+      .appendingPathComponent(catalogID, isDirectory: true)
+  }
   public var serialLog: URL { directory.appendingPathComponent("serial.log") }
   public var controlSocket: URL { directory.appendingPathComponent("runtime.sock") }
   public var incusSocket: URL { directory.appendingPathComponent("incus.sock") }

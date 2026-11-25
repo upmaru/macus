@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "change": "add-runtime-upgrade",
+  "task": "5.5",
+  "status": "passed",
+  "recorded_at": "2026-11-24T19:15:00+00:00",
+  "scenario": "Failed upgrade forced by an adoption refusal, automatic rollback, then the previous state booting on the earlier package",
+  "packages": {
+    "earlier": {
+      "commit": "ac86fe90f4fd54cadedd569d3ade170b2152ddee",
+      "branch": "develop",
+      "macus_binary_sha256": "d6841ab1915240003769d6b1df859d0e935f463472baa967b361d6ffd6154cd4"
+    },
+    "upgrading": {
+      "commit": "56685b24c8ed82bc01e12fcf688c7fc0b584af0a",
+      "branch": "feature/upgrade-docs",
+      "macus_binary_sha256": "773f00f17830cc398a72870178b41be09e4b996da6ad8dab111de047554931b0"
+    },
+    "build": "release, Packaging/install-local.sh into one isolated prefix, ad hoc virtualization signing; the develop rebuild reproduced the same binary SHA-256 as in task 5.3",
+    "package_change": "runtime stopped, launchctl bootout of the server job then the runtime job, removal of the server plist only, install-local.sh of develop into the same prefix, then macus start"
+  },
+  "host": {
+    "model": "Mac16,5",
+    "chip": "Apple M4 Max",
+    "memory_gib": 64,
+    "architecture": "arm64",
+    "macos": "27.0.1 (26A434)",
+    "virtualization": "Apple Virtualization.framework",
+    "incus_client": "7.5.1"
+  },
+  "isolation": {
+    "state_dir": "/tmp/macus-r53 (retained from task 5.3, on the develop root after that rollback)",
+    "prefix": "/tmp/mcx-r53",
+    "incus_conf": "the isolated temporary directory from task 5.3; every incus and macus start command exported it",
+    "remote": "macus-r53",
+    "service_label": "com.upmaru.macus.228c94a474c5",
+    "server_label": "com.upmaru.macus.server.228c94a474c5",
+    "default_jobs_and_client_config_touched": false,
+    "other_acceptance_state_touched": false,
+    "services_unloaded_after_run": true,
+    "state_dir_retained": true
+  },
+  "forced_refusal": {
+    "method": "With the runtime ready on the develop root, one digit of pool_guid in runtime/storage-identity.json was changed (3952008500462468296 to 3952008500462468297), written atomically at mode 0600. The plan, staged upgrade seed and adoption record therefore named a GUID that no attached pool has.",
+    "property_exercised": "The delivered GUID is a selector, not proof: a wrong value must end in a refusal that leaves the pool untouched, never an adoption.",
+    "restored_after": "The real record was put back from a copy before the package change."
+  },
+  "steps": [
+    {
+      "name": "start_previous_state_on_upgrading_package",
+      "result": "ready",
+      "seconds": 41,
+      "checks": { "upgrade_available_reported": true, "instances_running": true }
+    },
+    {
+      "name": "dry_run_with_forged_identity",
+      "result": "planned",
+      "checks": { "class": "reversible", "pool_named": "3952008500462468297 (from health record)" }
+    },
+    {
+      "name": "upgrade",
+      "result": "failed",
+      "exit_status": 1,
+      "seconds": 39,
+      "backup_id": "20261124T190037Z-c3c927f2",
+      "error_code": "unavailable",
+      "checks": {
+        "guest_refusal": "MACUS_OBSERVATION v1 stage=failed code=storage_adoption_refused; TAMA_STORAGE_REFUSED: adoption: named pool 3952008500462468297 cannot be imported from /dev/vdb1 without force; disk preserved",
+        "error_names_code_and_restoration": true,
+        "inventory_read_before_stop": true,
+        "original_root_efi_seed_inodes_restored": true,
+        "data_disk_inode_unchanged": true,
+        "guest_record_matches_pre_upgrade_copy": true,
+        "config_matches_pre_upgrade_copy": true,
+        "new_root_efi_seed_kept_in_failed": true,
+        "no_intent_or_staging_left": true,
+        "runtime_left_stopped": true,
+        "failed_backup_listing": "upgrade, not restorable (incomplete), 4.0 GiB"
+      }
+    },
+    {
+      "name": "start_previous_state_on_earlier_package",
+      "result": "ready",
+      "seconds": 42,
+      "checks": {
+        "server_job_registered_for_earlier_revision": true,
+        "earlier_package_accepts_new_records_and_backups": true,
+        "instances_running": true,
+        "all_markers_intact": true
+      },
+      "note": "The develop package ignores runtime/guest-record.json, runtime/storage-identity.json and backups/, which this change adds."
+    }
+  ],
+  "findings": [
+    "The failure message appends the generic boot-failure remedy, 'Inspect serial.log, then run macus runtime stop --force and macus start', although automatic rollback has already stopped the runtime and restored the previous root. Only 'macus start' is needed. Fixed after this run: the message now drops that remedy, says the runtime is stopped and ends with 'Run macus start to boot the previous root.' (unit test refusedAdoptionRollsBackAndNamesOnlyStart); the hardware run was not repeated with the new wording.",
+    "The rolled-back backup keeps the rejected 4 GiB root under failed/ until it is pruned; nothing removes it automatically, as designed."
+  ],
+  "not_covered": [
+    "A forced stop of the new root with the pool imported (task 5.6): here the pool was never imported by the new root.",
+    "A migrating failure with a data disk copy to restore."
+  ]
+}

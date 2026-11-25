@@ -340,7 +340,8 @@ final class FakeServerProbe: ServerProbe, GatewayTransport, @unchecked Sendable 
     let response: LocalHTTPResponse
     do {
       response = try await UnixHTTPClient().request(
-        socket: socket, method: method, path: "/v1" + path, body: body, timeout: timeout)
+        socket: socket, method: method, path: "/v1" + path,
+        body: Self.privateBody(path: path, body: body), timeout: timeout)
     } catch let error as RuntimeError where error.code == .invalidRequest {
       throw error
     } catch {
@@ -366,9 +367,38 @@ final class FakeServerProbe: ServerProbe, GatewayTransport, @unchecked Sendable 
 
   private func project(_ response: LocalHTTPResponse, url: String) -> LocalHTTPResponse {
     guard (200...299).contains(response.status),
-      var object = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
-      object["incus_socket"] != nil, let state = object["state"] as? String
+      var object = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any]
     else { return response }
+    // An upgrade or rollback result carries the runtime status, projected the same way.
+    if var status = object["status"] as? [String: Any], status["incus_socket"] != nil,
+      let state = status["state"] as? String
+    {
+      Self.project(&status, state: state, url: url)
+      object["status"] = status
+      return LocalHTTPResponse(
+        status: response.status,
+        body: (try? JSONSerialization.data(withJSONObject: object)) ?? response.body)
+    }
+    guard object["incus_socket"] != nil, let state = object["state"] as? String else {
+      return response
+    }
+    Self.project(&object, state: state, url: url)
+    return LocalHTTPResponse(
+      status: response.status,
+      body: (try? JSONSerialization.data(withJSONObject: object)) ?? response.body)
+  }
+
+  /// The server turns a public confirmation token into the private boolean; other bodies
+  /// pass through, and the private routes ignore keys they do not read.
+  private static func privateBody(path: String, body: Data) -> Data {
+    guard path == "/runtime/backups/prune",
+      var object = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+    else { return body }
+    object["confirm"] = object["confirm"] as? String == "prune-backup"
+    return (try? JSONSerialization.data(withJSONObject: object)) ?? body
+  }
+
+  private static func project(_ object: inout [String: Any], state: String, url: String) {
     object.removeValue(forKey: "incus_socket")
     let endpoint: [String: Any] = [
       "url": url, "certificate_fingerprint": String(repeating: "0", count: 64),
@@ -377,8 +407,5 @@ final class FakeServerProbe: ServerProbe, GatewayTransport, @unchecked Sendable 
     object["incus_endpoint"] = endpoint
     object["server_ready"] = true
     object["runtime_ready"] = state == "ready"
-    return LocalHTTPResponse(
-      status: response.status,
-      body: (try? JSONSerialization.data(withJSONObject: object)) ?? response.body)
   }
 }

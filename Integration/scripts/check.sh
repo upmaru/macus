@@ -10,6 +10,7 @@ swift format lint --strict --recursive Package.swift Sources Tests
 sh -n Integration/guest/bootstrap.sh
 sh -n Integration/guest/storage.sh
 sh -n Integration/guest/incus-guard.sh
+sh -n Integration/guest/verify-appliance-image.sh
 sh -n Integration/guest/tama-storage.initd
 sh -n Integration/guest/tama-bridge.initd
 sh -n Integration/guest/tama-bootstrap.initd
@@ -21,7 +22,7 @@ python3 -m py_compile Integration/guest/bridge.py Integration/scripts/prepare-ap
 python3 Integration/scripts/sync-guest-payload.py --check
 python3 Integration/scripts/check-catalog.py
 python3 -m py_compile Packaging/homebrew/candidate.py
-python3 -m py_compile Integration/scripts/homebrew-acceptance.py Integration/scripts/presentation-acceptance.py Integration/scripts/cross-component-fixture.py
+python3 -m py_compile Integration/scripts/homebrew-acceptance.py Integration/scripts/presentation-acceptance.py Integration/scripts/cross-component-fixture.py Integration/scripts/access-log-acceptance.py
 python3 -m py_compile Integration/qualification/prepare-zfs.py Integration/qualification/run-zfs.py
 python3 -m unittest discover -s Integration/tests -v
 sh Integration/scripts/test-install.sh

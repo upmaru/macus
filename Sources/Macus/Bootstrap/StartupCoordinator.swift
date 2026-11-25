@@ -32,6 +32,27 @@ struct StartupCoordinator {
     )
     return try await context.run()
   }
+
+  /// Activates the runtime and server jobs of an existing runtime the way start does, without
+  /// creating or booting anything, so a state that start refused can still be upgraded or
+  /// rolled back through the public API. The bootstrap lock stays held until the caller
+  /// releases the result.
+  func activate(_ request: StartupRequest, purpose: String) async throws -> ActivatedServices {
+    let budget = StartupBudget(seconds: request.timeout, now: dependencies.now())
+    let context = StartContext(
+      request: request, budget: budget, dependencies: dependencies, operationID: request.operationID
+    )
+    return try await context.activate(purpose: purpose)
+  }
+}
+
+/// The serving runtime and server of a state, with the bootstrap lock still held.
+struct ActivatedServices: Sendable {
+  let paths: RuntimePaths
+  let lock: BootstrapLock
+  /// The runtime service's launchd target (`gui/<uid>/<label>`); nil for a foreground one.
+  let runtimeTarget: String?
+  func release() { lock.release() }
 }
 
 private final class StartContext: @unchecked Sendable {
@@ -96,7 +117,7 @@ private final class StartContext: @unchecked Sendable {
       }
       let ownership = try await ensureService(paths)
       if kind == .absent { try await createRuntime(paths, manifest: try publishedManifest(paths)) }
-      let capabilities = try await bootAndWait(paths)
+      let (capabilities, upgradeAvailable) = try await bootAndWait(paths)
       let client = try await configureClient(paths)
       emit(.clientSetup, .complete)
       return StartupResult(
@@ -107,7 +128,7 @@ private final class StartContext: @unchecked Sendable {
         serverLabel: serverOwnership == "launchd" ? serverLabel : nil,
         serverEndpoint: endpoint?.url.absoluteString, serverFingerprint: endpoint?.fingerprint,
         capabilities: capabilities, nextCommands: client.commands, pathGuidance: client.guidance,
-        observedState: "ready")
+        observedState: "ready", upgradeAvailable: upgradeAvailable)
     } catch is CancellationError {
       throw StartupInterrupted(message: await interruptedMessage())
     } catch let error as StartupInterrupted {
@@ -120,6 +141,55 @@ private final class StartContext: @unchecked Sendable {
         failed = RuntimeError(failed.code, "\(failed.message) \(established)")
       }
       throw failed
+    }
+  }
+
+  func activate(purpose: String) async throws -> ActivatedServices {
+    do {
+      emit(.preflight, .active)
+      try BootstrapStore.validateState(request.stateDirectory)
+      guard await dependencies.capabilities().supported else {
+        throw RuntimeError(
+          .unavailable,
+          "Apple virtualization is unavailable on this host. \(purpose) changed nothing.")
+      }
+      guard dependencies.hasEntitlement() else {
+        throw RuntimeError(
+          .unavailable,
+          "The macus executable is missing the virtualization entitlement. Install the entitled binary before \(purpose)."
+        )
+      }
+      emit(.preflight, .complete)
+      let paths = RuntimePaths(directory: request.stateDirectory)
+      try paths.prepare()
+      let lock = try BootstrapLock(directory: paths.directory)
+      do {
+        try BearerTokenStore(stateDirectory: paths.directory).prepareLocalCredential()
+        serviceLabel = LaunchAgentPlan.label(
+          stateDirectory: paths.directory, home: dependencies.homeDirectory)
+        serverLabel = LaunchAgentPlan.label(
+          stateDirectory: paths.directory, home: dependencies.homeDirectory, role: .server)
+        try await rejectLegacy(paths)
+        try await preflightServer(paths)
+        guard try BootstrapStore.existingRuntime(paths.directory) == .existing else {
+          throw RuntimeError(
+            .notFound,
+            "This state directory has no runtime. Run macus start to create one; \(purpose) changed nothing."
+          )
+        }
+        let runtime = try await ensureService(paths)
+        return ActivatedServices(
+          paths: paths, lock: lock,
+          runtimeTarget: runtime.label.map { "gui/\(dependencies.uid)/\($0)" })
+      } catch {
+        lock.release()
+        throw error
+      }
+    } catch is CancellationError {
+      throw StartupInterrupted(
+        message:
+          "\(purpose.prefix(1).uppercased() + purpose.dropFirst()) was interrupted while activating the services; nothing was booted, stopped or changed."
+      )
     }
   }
 
@@ -387,14 +457,16 @@ private final class StartContext: @unchecked Sendable {
     emit(.runtimeCreation, .complete)
   }
 
-  private func bootAndWait(_ paths: RuntimePaths) async throws -> RuntimeCapabilities {
+  /// Boots the runtime and returns its live capabilities and, when the runtime reported it,
+  /// whether an appliance upgrade is available.
+  private func bootAndWait(_ paths: RuntimePaths) async throws -> (RuntimeCapabilities, Bool?) {
     emit(.provisioning, .active)
     let status = try await statusObject(paths)
     if jsonString(status["state"]) == "ready" {
       let capabilities = try await liveCapabilities(paths)
       emit(.provisioning, .skipped, detail: "already ready")
       emit(.readiness, .complete)
-      return capabilities
+      return (capabilities, status["upgrade_available"] as? Bool)
     }
     if jsonString(status["state"]) == "starting" {
       throw RuntimeError(
@@ -418,17 +490,18 @@ private final class StartContext: @unchecked Sendable {
       // The connection to the server was lost, so Swift may have accepted the boot. It is never
       // sent again: the guest keeps booting (expected reboot included) and readiness is
       // observed through the gateway once it answers again.
-      try await awaitReadyAfterLostStart(paths)
+      let upgradeAvailable = try await awaitReadyAfterLostStart(paths)
       let capabilities = try await liveCapabilities(paths)
       emit(.provisioning, .complete)
       emit(.readiness, .complete)
-      return capabilities
+      return (capabilities, upgradeAvailable)
     }
-    _ = try requireGatewaySuccess(response)
+    let started = try requireGatewaySuccess(response)
     let capabilities = try await liveCapabilities(paths)
     emit(.provisioning, .complete)
     emit(.readiness, .complete)
-    return capabilities
+    let object = (try? JSONSerialization.jsonObject(with: started.body)) as? [String: Any]
+    return (capabilities, object?["upgrade_available"] as? Bool)
   }
 
   private func configureClient(_ paths: RuntimePaths) async throws -> (
@@ -618,7 +691,9 @@ private final class StartContext: @unchecked Sendable {
   /// After the start request's connection was lost: waits, within the budget, for the gateway to
   /// report the runtime ready. A gateway that is restarting or a Swift service it cannot reach yet
   /// is waited for; a runtime that is no longer starting is reported, and the boot is not retried.
-  private func awaitReadyAfterLostStart(_ paths: RuntimePaths) async throws {
+  /// Waits for the boot that may already have been accepted, and returns the ready status's
+  /// `upgrade_available`, as a completed start request would.
+  private func awaitReadyAfterLostStart(_ paths: RuntimePaths) async throws -> Bool? {
     emit(.provisioning, .active, detail: "reconnecting to the Macus server")
     while dependencies.now() < budget.deadline {
       try Task.checkCancellation()
@@ -636,7 +711,7 @@ private final class StartContext: @unchecked Sendable {
       if (200...299).contains(response.status), let object = try? jsonObject(response.body) {
         switch jsonString(object["state"]) {
         case "ready":
-          return
+          return object["upgrade_available"] as? Bool
         case "starting":
           break
         case let state:

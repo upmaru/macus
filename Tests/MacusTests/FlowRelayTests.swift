@@ -457,7 +457,10 @@ func startRefusesGuestBridgesWithoutTheFlowRelay(version: Int?) async throws {
   await #expect(throws: RuntimeError.self) { try await service.start() }
   let status = await service.status()
   #expect(status.state == .failed)
-  #expect(status.lastError == RuntimeService.legacyGuestBridge)
+  // The incompatible guest is stopped gracefully and the error names the upgrade.
+  #expect(status.lastError?.hasPrefix(RuntimeService.legacyGuestReason) == true)
+  #expect(status.lastError?.contains("macus runtime upgrade") == true)
+  #expect(await driver.running == false)
   await #expect(throws: RuntimeError.self) { try await service.openIncusStream() }
   #expect(await driver.ports.isEmpty)
 }
@@ -482,4 +485,32 @@ func startRefusesGuestBridgesWithoutTheFlowRelay(version: Int?) async throws {
       .utf8)
   #expect(try JSON.decoder().decode(GuestHealth.self, from: legacy).flowRelayVersion == nil)
   #expect(try JSON.decoder().decode(GuestHealth.self, from: current).flowRelayVersion == 1)
+}
+
+@Test func guestHealthDecodesIdentityAndTreatsAbsenceAsUnknown() throws {
+  let identity = Data(
+    #"{"protocol_version":1,"incus_version":"7.0.1","api_extensions":[],"kvm":true,"flow_relay_version":1,"guest_contract":1,"payload_revision":"ab","appliance_id":"alpine-3.24.2-lts-1","incus_package":"7.0.1-r2","storage":{"backend":"zfs","pool_guid":"123","layout":"zfs-v1","phase":"ready"}}"#
+      .utf8)
+  let health = try JSON.decoder().decode(GuestHealth.self, from: identity)
+  #expect(health.guestContract == 1)
+  #expect(health.payloadRevision == "ab")
+  #expect(health.applianceId == "alpine-3.24.2-lts-1")
+  #expect(health.incusPackage == "7.0.1-r2")
+  #expect(health.incusVersion == "7.0.1")
+  #expect(
+    health.storage
+      == GuestStorageIdentity(backend: "zfs", poolGuid: "123", layout: "zfs-v1", phase: "ready"))
+  // Re-encoding keeps the guest's snake_case keys, so status output round-trips.
+  #expect(
+    try JSON.decoder().decode(GuestHealth.self, from: JSON.encoder().encode(health)) == health)
+
+  let ext4 = Data(
+    #"{"protocol_version":1,"incus_version":"7.0.1","api_extensions":[],"kvm":true,"storage":{"backend":"ext4"}}"#
+      .utf8)
+  let legacy = try JSON.decoder().decode(GuestHealth.self, from: ext4)
+  #expect(legacy.storage == GuestStorageIdentity(backend: "ext4"))
+  #expect(legacy.guestContract == nil)
+  #expect(legacy.incusPackage == nil)
+  #expect(legacy.payloadRevision == nil)
+  #expect(legacy.applianceId == nil)
 }

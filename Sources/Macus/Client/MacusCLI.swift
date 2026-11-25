@@ -84,6 +84,8 @@ public enum MacusCLI {
       return 130
     } catch is ReportedDiagnosis {
       return 1
+    } catch is FollowInterrupted {
+      return 130
     } catch let error as RuntimeError {
       emit(
         error, json: json, streams: streams, environment: environment,
@@ -138,6 +140,15 @@ public enum MacusCLI {
       runtime restart
       serve [--state-dir ABSOLUTE_PATH]    Own the daemon in this terminal.
 
+    Appliance upgrade:
+      runtime upgrade [--dry-run]
+        Replace the appliance root with the one this macus installs, keeping the data disk.
+      runtime upgrade --rollback [ID] [--discard-data-since-upgrade]
+        Restore the latest or named backup and leave the runtime stopped.
+      runtime backups                 List backups, their size and whether each can be restored.
+      runtime backups prune ID [--confirm]
+        Remove one backup; without --confirm, show what it would break and remove nothing.
+
     Client:
       client setup [--remote NAME] [--set-default] [--incus ABSOLUTE_PATH]
 
@@ -159,6 +170,10 @@ public enum MacusCLI {
         It expires after 1 hour by default and at most 30 days. It is never printed.
       server trust token list         List enrollment tokens and their redemption.
       server trust token revoke ID    Refuse an unredeemed enrollment token.
+      server logs [--lines N] [--follow] [--json]
+        Print recent gateway access records from STATE/logs/gateway-access.log, newest last
+        (50 by default, N from 1 to 100000). --follow keeps printing across rotation until
+        interrupted; --json prints the stored lines unchanged. Works while the server is stopped.
 
     Common examples:
       macus start
@@ -173,18 +188,32 @@ public enum MacusCLI {
       macus server token issue --principal laptop --scope incus.read --output ~/macus.token
       macus server trust token issue --name laptop --address macus.example.net:8443 \\
         --server-certificate ~/gateway.crt --output ~/laptop.trust-token
+      macus server logs --lines 200
 
     Options:
       --json            Machine results on stdout, errors on stderr.
       --progress auto|plain|none    Startup progress on stderr.
       --state-dir ABSOLUTE_PATH    Select existing or isolated state.
       --timeout SECONDS           Set a bounded deadline.
+      --lines N                   Records server logs prints (1...100000, default 50).
+      --follow                    Keep printing new server logs records until interrupted.
 
     start is the high-level first-use command. It prepares the pinned appliance,
     activates the per-user runtime and server jobs when needed, creates an absent
     runtime, waits for live Incus readiness, and registers the standard incus client.
     It does not install Homebrew or require sudo. serve, runtime, doctor and client setup remain
-    explicit lower-level commands and do not download an appliance or activate a service.
+    explicit lower-level commands and do not download an appliance or activate a service,
+    except runtime upgrade.
+
+    runtime upgrade activates the runtime and server jobs as start does, without booting,
+    so it also works after start refused an incompatible appliance. It prints the upgrade
+    class, what is copied and that every workload restarts before it stops anything, then
+    downloads the installed appliance into STATE/upgrade-ID and lets the runtime service
+    swap it in. --dry-run prints the plan and downloads, stages and stops nothing. Every
+    upgrade and rollback keeps the replaced state as a backup in STATE/backups; nothing
+    removes backups but runtime backups prune --confirm. A rollback that restores a data
+    disk copy discards what was written since that copy and needs
+    --discard-data-since-upgrade. Neither runs a package manager or changes this package.
 
     The outer runtime is the Apple VZ appliance. runtime commands and doctor use
     the Macus server's pinned HTTPS endpoint and never install software or boot implicitly.
@@ -201,8 +230,9 @@ public enum MacusCLI {
     then ~/.tama/incus-mac. The existing default preserves appliance data.
     Selecting a state directory does not create it. Invalid flags fail before
     networking or installation. Timeout is \(readOnlyTimeout) seconds for read-only
-    requests and \(lifecycleTimeout) seconds for runtime start, stop, restart and
-    client setup (1...3600). macus start defaults to \(startTimeout) seconds, still within
+    requests and \(lifecycleTimeout) seconds for runtime start, stop, restart, upgrade
+    --dry-run, upgrade --rollback, backups prune and client setup (1...3600). runtime
+    upgrade defaults to \(startTimeout) seconds. macus start defaults to \(startTimeout) seconds, still within
     1...3600, and uses one deadline across download, boot, the expected kernel restart and
     client setup. A restart or Homebrew install may need a larger value.
     Bearer scopes: incus.read, incus.write, incus.exec, incus.delete, runtime.read,
@@ -217,7 +247,8 @@ public enum MacusCLI {
     certificate naming that host.
     --progress auto animates only on an interactive terminal; plain and JSON avoid cursor
     escapes. --progress none suppresses progress. Exit status is 0 on success, 1 on
-    operational failure, 2 on invalid arguments and 130 when start is interrupted.
+    operational failure, 2 on invalid arguments and 130 when start or server logs --follow
+    is interrupted.
 
     """
   }
@@ -235,6 +266,9 @@ private enum Command {
   case runtimeStart
   case runtimeStop(force: Bool)
   case runtimeRestart
+  case runtimeUpgrade(RuntimeUpgradeAction)
+  case runtimeBackups
+  case runtimeBackupsPrune(id: String, confirm: Bool)
   case doctor
   case clientSetup(remote: String, setDefault: Bool, incus: String?)
   case start(remote: String, setDefault: Bool, incus: String?, progress: ProgressSelection)
@@ -248,6 +282,7 @@ private enum Command {
     name: String, addresses: [String], serverCertificate: String, expiresIn: Int, output: String)
   case serverTrustTokenList
   case serverTrustTokenRevoke(id: String)
+  case serverLogs(lines: Int, follow: Bool)
 }
 
 private struct Invocation {
@@ -267,7 +302,7 @@ private func requestsJSON(_ arguments: [String]) -> Bool {
       || token == "--scope" || token == "--expires-in" || token == "--output"
       || token == "--name" || token == "--address" || token == "--server-certificate"
       || token == "--bind-address" || token == "--port" || token == "--advertised-url"
-      || token == "--certificate-file" || token == "--key-file"
+      || token == "--certificate-file" || token == "--key-file" || token == "--lines"
     {
       index += 2
       continue
@@ -283,11 +318,14 @@ private func isAbsolute(_ path: String) -> Bool {
 
 private func defaultTimeout(_ command: Command) -> Int {
   switch command {
-  case .runtimeStart, .runtimeStop, .runtimeRestart, .clientSetup: MacusCLI.lifecycleTimeout
-  case .start: MacusCLI.startTimeout
+  case .runtimeStart, .runtimeStop, .runtimeRestart, .clientSetup, .runtimeBackupsPrune:
+    MacusCLI.lifecycleTimeout
+  case .runtimeUpgrade(.upgrade(dryRun: false)), .start: MacusCLI.startTimeout
+  case .runtimeUpgrade: MacusCLI.lifecycleTimeout
+  case .runtimeBackups: MacusCLI.readOnlyTimeout
   case .capabilities, .runtimeStatus, .doctor, .serverConfigShow, .serverConfigSet,
     .serverConfigReset, .serverTokenIssue, .serverTokenList, .serverTokenRevoke,
-    .serverTrustTokenIssue, .serverTrustTokenList, .serverTrustTokenRevoke:
+    .serverTrustTokenIssue, .serverTrustTokenList, .serverTrustTokenRevoke, .serverLogs:
     MacusCLI.readOnlyTimeout
   }
 }
@@ -298,6 +336,11 @@ private func parse(_ arguments: [String]) throws -> Invocation {
   var timeout: Int?
   var stateDirectory: String?
   var force = false
+  var dryRun = false
+  var rollback = false
+  var rollbackID: String?
+  var discardData = false
+  var confirm = false
   var setDefault = false
   var remote: String?
   var incusOverride: String?
@@ -310,6 +353,8 @@ private func parse(_ arguments: [String]) throws -> Invocation {
   var addresses: [String] = []
   var serverCertificate: String?
   var gateway = GatewayConfigurationChange()
+  var lines: Int?
+  var follow = false
   var positionals: [String] = []
   func value(for flag: String) throws -> String {
     guard index + 1 < arguments.count, !arguments[index + 1].hasPrefix("-") else {
@@ -341,6 +386,25 @@ private func parse(_ arguments: [String]) throws -> Invocation {
     case "--force":
       guard !force else { throw UsageError(message: "Duplicate --force") }
       force = true
+    case "--dry-run":
+      guard !dryRun else { throw UsageError(message: "Duplicate --dry-run") }
+      dryRun = true
+    case "--rollback":
+      guard !rollback else { throw UsageError(message: "Duplicate --rollback") }
+      rollback = true
+      // An optional backup ID; without one the latest restorable backup is restored.
+      if index + 1 < arguments.count, UpgradeID.isValid(arguments[index + 1]) {
+        index += 1
+        rollbackID = arguments[index]
+      }
+    case "--discard-data-since-upgrade":
+      guard !discardData else {
+        throw UsageError(message: "Duplicate --discard-data-since-upgrade")
+      }
+      discardData = true
+    case "--confirm":
+      guard !confirm else { throw UsageError(message: "Duplicate --confirm") }
+      confirm = true
     case "--set-default":
       guard !setDefault else { throw UsageError(message: "Duplicate --set-default") }
       setDefault = true
@@ -427,6 +491,19 @@ private func parse(_ arguments: [String]) throws -> Invocation {
         throw UsageError(message: "--key-file requires an absolute path")
       }
       gateway.keyFile = raw
+    case "--lines":
+      guard lines == nil else { throw UsageError(message: "Duplicate --lines") }
+      let raw = try value(for: "--lines")
+      guard raw.utf8.count <= 6, raw.utf8.allSatisfy({ (48...57).contains($0) }),
+        let parsed = Int(raw), (1...GatewayAccessLog.maxLines).contains(parsed)
+      else {
+        throw UsageError(
+          message: "--lines must be an integer from 1 to \(GatewayAccessLog.maxLines)")
+      }
+      lines = parsed
+    case "--follow":
+      guard !follow else { throw UsageError(message: "Duplicate --follow") }
+      follow = true
     default:
       if token.hasPrefix("-") { throw UsageError(message: "Unknown flag \(token)") }
       positionals.append(token)
@@ -447,6 +524,21 @@ private func parse(_ arguments: [String]) throws -> Invocation {
     command = .runtimeStop(force: force)
   } else if positionals == ["runtime", "restart"] {
     command = .runtimeRestart
+  } else if positionals == ["runtime", "upgrade"] {
+    if rollback {
+      guard !dryRun else { throw UsageError(message: "--dry-run is not valid with --rollback") }
+      command = .runtimeUpgrade(.rollback(id: rollbackID, discardData: discardData))
+    } else {
+      command = .runtimeUpgrade(.upgrade(dryRun: dryRun))
+    }
+  } else if positionals == ["runtime", "backups"] {
+    command = .runtimeBackups
+  } else if positionals.count == 4, positionals.prefix(3) == ["runtime", "backups", "prune"] {
+    guard UpgradeID.isValid(positionals[3]) else {
+      throw UsageError(
+        message: "runtime backups prune needs a backup ID from macus runtime backups")
+    }
+    command = .runtimeBackupsPrune(id: positionals[3], confirm: confirm)
   } else if positionals == ["doctor"] {
     command = .doctor
   } else if positionals == ["client", "setup"] {
@@ -512,6 +604,8 @@ private func parse(_ arguments: [String]) throws -> Invocation {
   } else if positionals.count == 5, positionals.prefix(4) == ["server", "trust", "token", "revoke"]
   {
     command = .serverTrustTokenRevoke(id: positionals[4])
+  } else if positionals == ["server", "logs"] {
+    command = .serverLogs(lines: lines ?? GatewayAccessLog.defaultLines, follow: follow)
   } else if positionals == ["list"] || positionals.first == "show" {
     throw UsageError(
       message:
@@ -526,6 +620,19 @@ private func parse(_ arguments: [String]) throws -> Invocation {
   if force, case .runtimeStop = command {
   } else if force {
     throw UsageError(message: "--force is only valid with runtime stop")
+  }
+  if dryRun || rollback, case .runtimeUpgrade = command {
+  } else if dryRun || rollback {
+    throw UsageError(message: "--dry-run and --rollback are only valid with runtime upgrade")
+  }
+  if discardData, case .runtimeUpgrade(.rollback) = command {
+  } else if discardData {
+    throw UsageError(
+      message: "--discard-data-since-upgrade is only valid with runtime upgrade --rollback")
+  }
+  if confirm, case .runtimeBackupsPrune = command {
+  } else if confirm {
+    throw UsageError(message: "--confirm is only valid with runtime backups prune")
   }
   if remote != nil || setDefault || incusOverride != nil {
     switch command {
@@ -565,6 +672,12 @@ private func parse(_ arguments: [String]) throws -> Invocation {
       )
     }
   }
+  if lines != nil || follow {
+    if case .serverLogs = command {
+    } else {
+      throw UsageError(message: "--lines and --follow are only valid with server logs")
+    }
+  }
   if expiresIn != nil || output != nil {
     switch command {
     case .serverTokenIssue, .serverTrustTokenIssue: break
@@ -578,7 +691,7 @@ private func parse(_ arguments: [String]) throws -> Invocation {
   switch command {
   case .serverConfigShow, .serverConfigSet, .serverConfigReset, .serverTokenIssue,
     .serverTokenList, .serverTokenRevoke, .serverTrustTokenIssue, .serverTrustTokenList,
-    .serverTrustTokenRevoke:
+    .serverTrustTokenRevoke, .serverLogs:
     // Local administration has no request deadline to bound.
     guard timeout == nil else {
       throw UsageError(message: "server commands do not accept --timeout")
@@ -644,6 +757,19 @@ private func execute(
     } else {
       presentation.runtime(try jsonObject(response.body), directory: directory)
     }
+  case .runtimeUpgrade(let action):
+    try await runRuntimeUpgrade(
+      action, directory: directory, timeout: timeout, json: json, environment: environment,
+      transport: transport, gateway: gateway, runner: runner, streams: streams,
+      overrides: overrides)
+  case .runtimeBackups:
+    try await listBackups(
+      directory: directory, timeout: timeout, json: json, gateway: gateway, streams: streams,
+      presentation: presentation)
+  case .runtimeBackupsPrune(let id, let confirm):
+    try await pruneBackup(
+      id: id, confirm: confirm, directory: directory, timeout: timeout, json: json,
+      gateway: gateway, streams: streams, presentation: presentation)
   case .clientSetup(let remote, let setDefault, let incus):
     let result = try await IncusClientService(
       runner: overrides.runner ?? runner, streams: streams, environment: environment
@@ -693,6 +819,10 @@ private func execute(
   case .serverTrustTokenRevoke(let id):
     try ServerAdministration.revokeTrustToken(
       id: id, directory: directory, json: json, streams: streams, presentation: presentation)
+  case .serverLogs(let lines, let follow):
+    try await ServerAdministration.logs(
+      lines: lines, follow: follow, json: json, directory: directory, streams: streams,
+      installSignals: overrides.installSignals)
   }
 }
 

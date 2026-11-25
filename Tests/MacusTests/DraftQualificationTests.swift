@@ -24,11 +24,77 @@ import Testing
   #expect(!((try SeedPreparation.userData()).contains("path: /etc/macus-appliance-expected")))
 }
 
+@Test func seedCarriesTheGuestRecordForHealth() throws {
+  let record =
+    "format=1\npayload_revision=\(EmbeddedGuestPayload.revision)\nappliance_id=\(ApplianceCatalogEntry.current.id)\n"
+  #expect(SeedPreparation.guestRecord(applianceID: ApplianceCatalogEntry.current.id) == record)
+  let yaml = try SeedPreparation.userData(entry: .current)
+  #expect(
+    yaml.contains(
+      "  - path: /etc/macus-guest\n    permissions: \"0600\"\n    content: |\n"
+        + record.split(separator: "\n").map { "      \($0)\n" }.joined()))
+  // Without a catalog entry the record still names the payload, but no appliance.
+  let bare = try SeedPreparation.userData()
+  #expect(bare.contains("      payload_revision=\(EmbeddedGuestPayload.revision)\n"))
+  #expect(!bare.contains("appliance_id="))
+}
+
+@Test func adoptionRecordIsRenderedOnlyForAnUpgradeSeed() throws {
+  let adoption = try StorageAdoption(poolGuid: "1234567890123456789", layout: "zfs-v1")
+  let block =
+    "  - path: /etc/tama-storage/adopt\n    permissions: \"0600\"\n    content: |\n"
+    + "      pool_guid=1234567890123456789\n      layout=zfs-v1\n"
+  let upgrade = try SeedPreparation.userData(entry: .current, adoption: adoption)
+  #expect(upgrade.contains(block))
+  // The rest of the upgrade seed is the creation seed.
+  #expect(
+    upgrade.replacingOccurrences(of: block, with: "")
+      == (try SeedPreparation.userData(entry: .current)))
+  for creation in [try SeedPreparation.userData(entry: .current), try SeedPreparation.userData()] {
+    #expect(!creation.contains("path: \(StorageAdoption.path)"))
+    #expect(!creation.contains("pool_guid="))
+  }
+  let record = StorageIdentityRecord(
+    backend: "zfs", poolGuid: "120", layout: "zfs-v1", source: StorageIdentityRecord.healthSource)
+  #expect(try StorageAdoption(record).record == "pool_guid=120\nlayout=zfs-v1\n")
+}
+
+@Test func adoptionRefusesMalformedIdentity() {
+  for guid in ["", "12a", "-1", " 120", String(repeating: "1", count: 21), "١٢٠"] {
+    #expect(throws: RuntimeError.self) { try StorageAdoption(poolGuid: guid, layout: "zfs-v1") }
+  }
+  for layout in ["", "zfs-v2", "zfs-v1\npool_guid=1"] {
+    #expect(throws: RuntimeError.self) { try StorageAdoption(poolGuid: "120", layout: layout) }
+  }
+  let ext4 = StorageIdentityRecord(
+    backend: "ext4", poolGuid: "120", layout: "zfs-v1", source: StorageIdentityRecord.healthSource)
+  #expect(throws: RuntimeError.self) { try StorageAdoption(ext4) }
+}
+
+@Test func creationSeedNeverCarriesAnAdoptionRecord() async throws {
+  let cache = URL(fileURLWithPath: "/tmp/macus-adopt-\(UUID().uuidString.prefix(8))")
+  try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: cache) }
+  _ = try await SeedPreparation.prepare(
+    entry: .current, cache: cache, runner: ProcessCommandRunner(), timeout: 30, environment: [:])
+  // The ISO stores user data uncompressed, so the rendered paths are visible in its bytes.
+  let iso = try Data(contentsOf: cache.appendingPathComponent("seed.iso"))
+  #expect(iso.range(of: Data("path: /etc/macus-guest".utf8)) != nil)
+  #expect(iso.range(of: Data("path: \(StorageAdoption.path)".utf8)) == nil)
+}
+
 @Test func prebuiltObservationIsRecognized() {
   let observed = GuestObservationParser.parse(
     line: "MACUS_OBSERVATION v1 stage=image state=verified")
   #expect(observed?.stage == "image")
   #expect(observed?.state == "verified")
+}
+
+@Test func refusedAdoptionObservationKeepsItsCode() {
+  let observed = GuestObservationParser.parse(
+    line: "MACUS_OBSERVATION v1 stage=failed code=storage_adoption_refused")
+  #expect(observed?.stage == "failed")
+  #expect(observed?.code == "storage_adoption_refused")
 }
 
 #if DEBUG

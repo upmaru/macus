@@ -1,0 +1,155 @@
+{
+  "schema_version": 1,
+  "change": "add-runtime-upgrade",
+  "task": "5.3",
+  "status": "passed",
+  "recorded_at": "2026-11-24T19:05:00+00:00",
+  "scenario": "Reversible upgrade of a state created by the develop package, with kept workload markers, then explicit rollback and boot of the restored root",
+  "packages": {
+    "source": {
+      "commit": "ac86fe90f4fd54cadedd569d3ade170b2152ddee",
+      "branch": "develop",
+      "macus_binary_sha256": "d6841ab1915240003769d6b1df859d0e935f463472baa967b361d6ffd6154cd4",
+      "guest_payload_revision": "c69896287898a5145a62e203e19fc928ac3505bee0cfa435fd838e35f7a2feee"
+    },
+    "target": {
+      "commit": "56685b24c8ed82bc01e12fcf688c7fc0b584af0a",
+      "branch": "feature/upgrade-docs",
+      "macus_binary_sha256": "773f00f17830cc398a72870178b41be09e4b996da6ad8dab111de047554931b0",
+      "guest_payload_revision": "c4fb31504760104362c7d95b0868f5a93987cf2bdf40725a43a447c339f13d26"
+    },
+    "build": "release, Packaging/install-local.sh into one isolated prefix, ad hoc virtualization signing; opsmaru_incus 0.2.9 cassette downloaded and attestation-verified by the installer",
+    "package_change": "runtime stop, launchctl bootout of the server job then the runtime job, removal of the server plist only, install-local.sh of the target into the same prefix, then macus start (Packaging/homebrew/README.md sequence without Homebrew)"
+  },
+  "host": {
+    "model": "Mac16,5",
+    "chip": "Apple M4 Max",
+    "memory_gib": 64,
+    "architecture": "arm64",
+    "macos": "27.0.1 (26A434)",
+    "virtualization": "Apple Virtualization.framework",
+    "incus_client": "7.5.1",
+    "state_volume_free_before_upgrade_gib": 22.1
+  },
+  "isolation": {
+    "state_dir": "/tmp/macus-r53",
+    "prefix": "/tmp/mcx-r53",
+    "incus_conf": "temporary directory created by Integration/scripts/start-acceptance.py (develop revision); every hand-run incus and macus start command exported it",
+    "remote": "macus-r53",
+    "service_label": "com.upmaru.macus.228c94a474c5",
+    "server_label": "com.upmaru.macus.server.228c94a474c5",
+    "default_jobs_and_client_config_touched": false,
+    "other_acceptance_state_touched": false,
+    "services_unloaded_after_run": true,
+    "state_dir_retained": true
+  },
+  "appliance": {
+    "catalog_id": "alpine-3.24.2-lts-1",
+    "incus_package": "7.0.1-r2",
+    "pool": "zfs",
+    "pool_guid": "3952008500462468296"
+  },
+  "workload_markers": {
+    "default_project": "container r53-marker with a random token in /root/marker, custom volume r53-vol attached at /mnt/vol with the same token, profile r53-profile with user.r53=marker",
+    "project_r53": "container r53-proj-c with the token in /root/marker",
+    "after_upgrade": "a second random token written to /mnt/vol/marker2 after the upgrade, before the rollback",
+    "boot_autostart": "unset (Incus restores the last state)"
+  },
+  "steps": [
+    {
+      "name": "create_on_source",
+      "result": "ready",
+      "runner": "Integration/scripts/start-acceptance.py --opt-in --hardware (develop revision)",
+      "checks": {
+        "start_acceptance_success": true,
+        "serial_identity_line_after_first_boot": false
+      },
+      "note": "The develop seed copies /var/log/tama-storage.log to the console 20 s after boot. On the provisioning boot tama-storage was still starting then, so the first boot wrote no TAMA_STORAGE_ZFS_READY line."
+    },
+    {
+      "name": "start_on_target",
+      "result": "ready",
+      "seconds": 41,
+      "checks": {
+        "upgrade_available_reported": true,
+        "guest_record_written": true,
+        "guest_record_incus_package_source": "catalog",
+        "guest_record_has_contract": false,
+        "serial_identity_line_after_second_boot": true,
+        "instances_running": true
+      },
+      "note": "The develop guest serves the flow relay but reports no guest identity, so it was booted, probed and served; the Incus package came from the catalog entry."
+    },
+    {
+      "name": "dry_run",
+      "result": "planned",
+      "checks": {
+        "class": "reversible",
+        "incus_packages": "7.0.1-r2 to 7.0.1-r2",
+        "from_payload": "unknown",
+        "pool_identity_source": "serial",
+        "data_copy": "none",
+        "space_needed_gib": 12.0,
+        "state_directory_entries_unchanged": true,
+        "runtime_still_ready": true
+      }
+    },
+    {
+      "name": "upgrade",
+      "result": "upgraded",
+      "seconds": 49,
+      "backup_id": "20261124T185356Z-00d1c8c3",
+      "checks": {
+        "plan_printed_before_stop": true,
+        "guest_adopted_pool": "TAMA_STORAGE_ADOPTED 3952008500462468296",
+        "inventory_compared": true,
+        "inventory": "default: 1 instance, 2 volumes, 1 network, 2 profiles; r53: 1 instance, 1 volume, 1 network, 2 profiles",
+        "old_root_efi_seed_moved_into_backup_by_inode": true,
+        "data_disk_inode_unchanged": true,
+        "no_data_copy": true,
+        "guest_record_from_health": "contract 1, payload c4fb3150…, incus 7.0.1-r2",
+        "storage_identity_recorded_from_health": true,
+        "no_staging_or_intent_left": true,
+        "instances_running": true,
+        "all_markers_intact": true,
+        "upgrade_available_cleared": true,
+        "second_dry_run_reports_current": true
+      }
+    },
+    {
+      "name": "rollback",
+      "result": "restored",
+      "seconds": 7,
+      "safety_backup_id": "20261124T185511Z-dac49b91",
+      "checks": {
+        "rule": "root only; data disk kept (backup Incus package equals the current data's)",
+        "discard_flag_required": false,
+        "original_root_efi_seed_inodes_restored": true,
+        "data_disk_inode_unchanged": true,
+        "guest_record_restored_from_backup": true,
+        "runtime_left_stopped": true,
+        "replaced_state_kept_as_backup": true,
+        "backups_listing": "20261124T185356Z-00d1c8c3 restored (not restorable); 20261124T185511Z-dac49b91 restorable, root only"
+      }
+    },
+    {
+      "name": "start_restored_root",
+      "result": "ready",
+      "seconds": 39,
+      "checks": {
+        "upgrade_available_reported": true,
+        "instances_running": true,
+        "pre_upgrade_markers_intact": true,
+        "post_upgrade_marker_intact": true
+      }
+    }
+  ],
+  "findings": [
+    "A state created by the develop package has no pool identity source until it has booted at least twice: the console copy of the storage log on the provisioning boot runs before storage is ready. Upgrading such a state while it is stopped after its only boot would be refused (no storage-identity.json, no serial line). Here the first start on the new package was the second boot and wrote the line, which is what made the upgrade possible; a develop guest's health never reports the identity itself.",
+    "For a reversible upgrade the plan prints 'keeping the backup can grow to 0 bytes'. The old root it keeps already occupies about 4 GiB, which the backup listing shows; the wording undersells that."
+  ],
+  "not_covered": [
+    "Package rollback to the develop build after the state rollback (the state rollback and boot were run on the target package).",
+    "Migrating, failed and pre-relay upgrades (tasks 5.4 to 5.7)."
+  ]
+}

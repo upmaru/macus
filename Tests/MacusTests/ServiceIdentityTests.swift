@@ -479,13 +479,14 @@ final class PairFixture: @unchecked Sendable {
   let downloader = RecordingDownloader()
 
   /// `existing: false` leaves the state without a runtime, so start would acquire an appliance.
-  init(existing: Bool = true) throws {
+  /// `state` uses a state another fixture prepared, as it is.
+  init(existing: Bool = true, state given: URL? = nil) throws {
     tools = try StartTools()
-    state = URL(fileURLWithPath: "/tmp/macus-pair-\(UUID().uuidString.prefix(8))")
+    state = given ?? URL(fileURLWithPath: "/tmp/macus-pair-\(UUID().uuidString.prefix(8))")
     try FileManager.default.createDirectory(
       at: state, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     chmod(state.path, 0o700)
-    if existing {
+    if existing && given == nil {
       try FileManager.default.createDirectory(
         at: state.appendingPathComponent("runtime"), withIntermediateDirectories: true)
       try Data("root".utf8).write(to: state.appendingPathComponent("runtime/root.raw"))
@@ -566,6 +567,25 @@ final class PairFixture: @unchecked Sendable {
       overrides: overrides)
   }
 
+  /// Any command, with this pair's launchd, gateway and build in place of the host's.
+  func run(
+    _ arguments: [String], capture: StartCapture = StartCapture(),
+    catalog: ApplianceCatalogEntry? = nil
+  ) async -> Int32 {
+    var overrides = tools.overrides(
+      downloader: downloader, launchControl: launch, agents: agents)
+    overrides.server = probe
+    overrides.gateway = probe
+    overrides.build = build
+    overrides.catalog = catalog
+    let executable = self.executable
+    overrides.executablePath = { executable }
+    return await MacusCLI.run(
+      arguments: ["--state-dir", state.path] + arguments,
+      environment: tools.environment.merging(environment) { $1 }, gateway: probe,
+      streams: capture.streams, overrides: overrides)
+  }
+
   func remove() {
     launch.stop()
     tools.remove()
@@ -596,6 +616,14 @@ final class PairLaunch: LaunchControl, @unchecked Sendable {
   /// The private runtime's answers; a ready runtime unless a test scripts another.
   var responder: (@Sendable (String, String, Data) -> Data)?
 
+  /// Replaces the scripted runtime: activating the runtime job runs this instead, so a test
+  /// can serve a real runtime service.
+  var runtimeActivation: (@Sendable () async throws -> Void)? {
+    get { lock.withLock { activation } }
+    set { lock.withLock { activation = newValue } }
+  }
+  private var activation: (@Sendable () async throws -> Void)?
+
   func openRuntime() throws -> ScriptedSocket {
     if let runtime = lock.withLock({ runtime }) { return runtime }
     let state = self.state
@@ -619,12 +647,12 @@ final class PairLaunch: LaunchControl, @unchecked Sendable {
 
   func bootstrap(plist: URL, timeout: Int) async throws {
     lock.withLock { bootstraps.append(plist) }
-    try activate(label: (plist.lastPathComponent as NSString).deletingPathExtension)
+    try await activate(label: (plist.lastPathComponent as NSString).deletingPathExtension)
   }
 
   func kickstart(label: String, timeout: Int) async throws {
     lock.withLock { kickstarts.append(label) }
-    try activate(label: label)
+    try await activate(label: label)
   }
 
   /// A foreground server outside launchd that serves only while the Swift runtime is up.
@@ -634,9 +662,12 @@ final class PairLaunch: LaunchControl, @unchecked Sendable {
   }
   private var foregroundServer = false
 
-  private func activate(label: String) throws {
+  private func activate(label: String) async throws {
     if label.hasPrefix(LaunchAgentPlan.serverLabel) {
       probe.serving = true
+    } else if let runtimeActivation {
+      try await runtimeActivation()
+      if servesWithRuntime { probe.serving = true }
     } else {
       _ = try openRuntime()
       if servesWithRuntime { probe.serving = true }

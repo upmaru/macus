@@ -25,6 +25,8 @@ defmodule MacusWeb.RuntimeTest do
     "shutdown_timeout_seconds" => 60
   }
 
+  @id "20261124T120000Z-0a1b2c3d"
+
   setup do
     root = DexFixtures.private_root!()
     on_exit(fn -> File.rm_rf!(root) end)
@@ -98,7 +100,24 @@ defmodule MacusWeb.RuntimeTest do
            "/v1/runtime/stop", ~s({"force":true})},
           {:post, "/runtime/restart", write, "", "POST", "/v1/runtime/restart", ""},
           {:delete, "/runtime", admin, ~s({"confirm":"delete-runtime"}), "DELETE", "/v1/runtime",
-           ~s({"confirm":true})}
+           ~s({"confirm":true})},
+          {:post, "/runtime/upgrade/plan", read, "", "POST", "/v1/runtime/upgrade/plan", ""},
+          {:post, "/runtime/upgrade", write, ~s({"staging_id":"#{@id}"}), "POST",
+           "/v1/runtime/upgrade", ~s({"staging_id":"#{@id}"})},
+          {:post, "/runtime/upgrade/rollback", write, "", "POST", "/v1/runtime/upgrade/rollback",
+           ~s({"discard_data_since_upgrade":false})},
+          {:post, "/runtime/upgrade/rollback", write, ~s({"backup_id":"#{@id}"}), "POST",
+           "/v1/runtime/upgrade/rollback",
+           ~s({"backup_id":"#{@id}","discard_data_since_upgrade":false})},
+          {:post, "/runtime/upgrade/rollback", admin,
+           ~s({"discard_data_since_upgrade":true,"confirm":"discard-data"}), "POST",
+           "/v1/runtime/upgrade/rollback", ~s({"discard_data_since_upgrade":true})},
+          {:get, "/runtime/backups", read, "", "GET", "/v1/runtime/backups", ""},
+          {:post, "/runtime/backups/prune", admin, ~s({"backup_id":"#{@id}"}), "POST",
+           "/v1/runtime/backups/prune", ~s({"backup_id":"#{@id}","confirm":false})},
+          {:post, "/runtime/backups/prune", admin,
+           ~s({"backup_id":"#{@id}","confirm":"prune-backup"}), "POST",
+           "/v1/runtime/backups/prune", ~s({"backup_id":"#{@id}","confirm":true})}
         ] do
       assert {200, _, _} = call(method, path, token, body)
       assert_receive {:swift, ^private_method, ^private_path, ^private_body}
@@ -257,6 +276,91 @@ defmodule MacusWeb.RuntimeTest do
     refute_received {:swift, _, _, _}
   end
 
+  test "upgrade and backup bodies, IDs and confirmations are checked before dispatch", context do
+    swift!(context, ok())
+    %{read: read, write: write, admin: admin} = context.tokens
+
+    for {path, token, body} <- [
+          {"/runtime/upgrade/plan", read, "{}"},
+          {"/runtime/upgrade", write, ""},
+          {"/runtime/upgrade", write, ~s({"staging_id":"../runtime"})},
+          {"/runtime/upgrade", write, ~s({"staging_id":"#{@id}","force":true})},
+          {"/runtime/upgrade", write, ~s({"staging_id":7})},
+          {"/runtime/upgrade/rollback", write, ~s({"backup_id":"latest"})},
+          {"/runtime/upgrade/rollback", write, ~s({"backup_id":null,"extra":1})},
+          {"/runtime/upgrade/rollback", write, ~s({"discard_data_since_upgrade":"yes"})},
+          {"/runtime/upgrade/rollback", write, ~s({"confirm":"discard-data"})},
+          {"/runtime/upgrade/rollback", write, "[]"},
+          {"/runtime/backups/prune", admin, ""},
+          {"/runtime/backups/prune", admin, ~s({"backup_id":"20261124T120000Z-0A1B2C3D"})},
+          {"/runtime/backups/prune", admin, ~s({"backup_id":"#{@id}","x":1,"confirm":true})}
+        ] do
+      assert {400, %{"error" => %{"code" => "invalid_request"}}, _} =
+               call(:post, path, token, body),
+             "#{path} #{body}"
+    end
+
+    # Discarding data needs its own confirmation and the delete scope.
+    assert {400, %{"error" => %{"code" => "confirmation_required"}}, _} =
+             call(
+               :post,
+               "/runtime/upgrade/rollback",
+               admin,
+               ~s({"discard_data_since_upgrade":true})
+             )
+
+    assert {403, _, _} =
+             call(
+               :post,
+               "/runtime/upgrade/rollback",
+               write,
+               ~s({"discard_data_since_upgrade":true,"confirm":"discard-data"})
+             )
+
+    for confirm <- [true, "yes"] do
+      assert {400, %{"error" => %{"code" => "confirmation_required"}}, _} =
+               call(
+                 :post,
+                 "/runtime/backups/prune",
+                 admin,
+                 Jason.encode!(%{"backup_id" => @id, "confirm" => confirm})
+               )
+    end
+
+    # Pruning is a delete even when it would only warn.
+    assert {403, _, _} = call(:post, "/runtime/backups/prune", write, ~s({"backup_id":"#{@id}"}))
+    assert {400, _, _} = call(:get, "/runtime/backups", read, "{}")
+
+    for {method, path, allow} <- [
+          {:get, "/runtime/upgrade", "POST"},
+          {:get, "/runtime/upgrade/plan", "POST"},
+          {:delete, "/runtime/upgrade/rollback", "POST"},
+          {:post, "/runtime/backups", "GET"},
+          {:get, "/runtime/backups/prune", "POST"}
+        ] do
+      assert {405, _, conn} = call(method, path, read)
+      assert Plug.Conn.get_resp_header(conn, "allow") == [allow]
+    end
+
+    assert {404, _, _} = call(:delete, "/runtime/backups/#{@id}", admin)
+    refute_received {:swift, _, _, _}
+  end
+
+  test "an upgrade or rollback result's runtime status is projected", context do
+    swift!(
+      context,
+      ok(%{"backup_id" => @id, "upgrade_class" => "reversible", "status" => @status})
+    )
+
+    body = ~s({"staging_id":"#{@id}"})
+    assert {200, result, _} = call(:post, "/runtime/upgrade", context.tokens.write, body)
+    assert result["backup_id"] == @id
+    refute Map.has_key?(result["status"], "incus_socket")
+    refute inspect(result) =~ "incus.sock"
+    assert result["status"]["server_ready"] == true
+    assert result["status"]["runtime_ready"] == false
+  end
+
   test "Swift errors, conflicts and budgets pass through unchanged", context do
     conflict =
       ~s({"error":{"code":"conflict","message":"A runtime mutation is already in progress"}})
@@ -396,7 +500,7 @@ defmodule MacusWeb.RuntimeTest do
           {method, path, private, scope, body}
         end
 
-      assert length(rows) == 12
+      assert length(rows) == 18
 
       token = %{
         "runtime.read" => context.tokens.read,

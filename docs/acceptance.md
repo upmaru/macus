@@ -225,6 +225,64 @@ All 14 checks passed. The isolated runtime was then stopped, both of its jobs we
 - `start` refused the earlier direct-socket `macus` remote as a conflict. With the user's approval, that remote was removed.
 - `start` then booted the existing VM and stopped with `unavailable`, because its guest bridge predates the flow-controlled relay. The disks were kept.
 
-With the user's approval, the old state was moved aside intact and a fresh default state was started on the package. [The candidate documentation](../Packaging/homebrew/README.md#upgrade) now describes this path; only a pre-relay guest needs the fresh state, while a guest that serves the flow-controlled relay keeps its appliance once the old remote is replaced.
+With the user's approval, the old state was moved aside intact and a fresh default state was started on the package. The [pre-relay observation](#pre-relay-state-on-a-later-package--2026-11-23-utc) below records that state in detail; `macus runtime upgrade` from the add-runtime-upgrade change now handles such a guest, and [the candidate documentation](../Packaging/homebrew/README.md#upgrade) describes the remote step.
 
-Task 4.3 is still open: upgrading between two server-era revisions with marker persistence, then removal. A supported migration for pre-relay guests is not part of this change.
+Task 4.3 is still open: upgrading between two server-era revisions with marker persistence, then removal.
+
+## Pre-relay state on a later package — 2026-11-23 UTC
+
+This is an observation, not acceptance. It motivated the [add-runtime-upgrade change](../openspec/changes/add-runtime-upgrade/proposal.md).
+
+The default state (`~/.tama/incus-mac`) was created on 2026-11-04 by an earlier package, with ZFS storage. On 2026-11-23 it was started with `macus start` on the current package. Start activated both launchd jobs and booted the VM. After about 33 s at the Provisioning Linux stage it failed with `unavailable`: the guest bridge predates the flow-controlled Incus relay. The message offered only recreating the appliance. Start left both services registered and deleted no runtime data. The workloads stayed on disks that only the earlier package could serve.
+
+What the state shows:
+
+- The guest bridge answers health but not the flow relay, so the current host cannot reach that guest's Incus API. Its inventory cannot be read before an upgrade.
+- The guest reports no storage identity, guest contract, payload revision or Incus package in health. At the time the state had no `guest-record.json` or `storage-identity.json`, so its Incus package is unknown, and any upgrade of it is migrating.
+- `serial.log` is append-only, and the seed's `bootcmd` copies `/var/log/tama-storage.log` to the console on every boot. Each boot of the state therefore wrote a `TAMA_STORAGE_ZFS_READY <guid>` line, which is the only host-readable source of its pool GUID.
+
+The change answers this with `macus runtime upgrade`: start now records such a guest as contract 0 and names the upgrade command, and the upgrade reads the pool GUID from `serial.log`, skips the inventory comparison (it says why) and clones the data disk before booting a new root. The original state is retained untouched. Hardware acceptance (task 5.7 of that change) must run on an isolated copy of a state with this shape, never on the original, and has not run yet.
+
+## Reversible runtime upgrade and rollback — 2026-11-24 UTC
+
+Task 5.3 of `add-runtime-upgrade` passed [opt-in hardware acceptance](testing/runtime-upgrade-reversible-acceptance.json) on an isolated state (`/tmp/macus-r53`) on a Mac16,5 with macOS 27.0.1. The source package was `develop` (`ac86fe9`), which predates guest identity reporting. The target was `56685b2`. Both were release builds installed in turn into one isolated prefix. The package change followed the Homebrew upgrade sequence without Homebrew: stop, unload both jobs, remove the server plist, install, start.
+
+- **Source state:** created by `start-acceptance.py` on the develop package, with a container, an attached custom volume and a profile in the default project, a container in a second project, and a random marker in each container and on the volume.
+- **Start on the new package:** ready in 41 s. It reported an upgrade as available, recorded the Incus package `7.0.1-r2` from the catalog, and the workloads ran.
+- **Dry run:** reversible (`7.0.1-r2` to `7.0.1-r2`), pool `3952008500462468296` from `serial.log`, no data copy. Nothing in the state directory changed and the runtime stayed ready.
+- **Upgrade:** 49 s. The new root adopted the pool (`TAMA_STORAGE_ADOPTED`), and Incus listed every earlier instance, volume, network and profile in both projects. The old root, firmware store and seed moved into the backup with the same inodes, and the data disk kept its inode. The guest record and storage identity now come from health. Every marker was intact and a second dry run reported the state current.
+- **Rollback:** a marker was written after the upgrade, then `runtime upgrade --rollback` ran in 7 s. It restored the original root, firmware store and seed by inode, kept the data disk without `--discard-data-since-upgrade`, restored the earlier guest record, left the runtime stopped and kept the replaced state as a new backup.
+- **Restored root:** `start` was ready in 39 s on the develop root and reported an upgrade available. The original markers and the one written after the upgrade were all intact.
+
+**Finding:** the develop seed copies the storage log to the console 20 s after boot. On the provisioning boot storage was still starting, so the first boot wrote no `TAMA_STORAGE_ZFS_READY` line; the second boot did. A develop-era state that has booted only once has no pool identity source, and its upgrade would be refused. A package rollback to the develop build after the state rollback was not run. Tasks 5.4 to 5.7 are not covered by this run. The state directory is retained and both of its jobs are unloaded.
+
+## Failed upgrade by adoption refusal — 2026-11-24 UTC
+
+Task 5.5 of `add-runtime-upgrade` passed [opt-in hardware acceptance](testing/runtime-upgrade-adoption-refusal-acceptance.json) on the retained isolated state from task 5.3 (`/tmp/macus-r53`). That state was on the develop root, with its workload markers, and `56685b2` was installed.
+
+- **Forced refusal:** with the runtime ready, one digit of the pool GUID in `runtime/storage-identity.json` was changed, so the plan, the staged seed and the adoption record all named a pool that does not exist. The dry run showed the forged GUID.
+- **Upgrade:** failed after 39 s with exit 1. The guest logged `stage=failed code=storage_adoption_refused`: the named pool could not be imported from `/dev/vdb1` without force, and the disk was preserved. The error named the code and said the previous root and configuration were restored. Root, firmware store and seed were back on their original inodes, and the data disk kept its inode. The guest record and `config.json` matched the copies taken before the stop. No intent or staging directory remained, and the runtime was stopped. The rejected root, firmware store and seed were kept under the backup's `failed/`, and the backup lists as not restorable (incomplete).
+- **Earlier package:** the real record was restored. The develop package was reinstalled into the same prefix (same binary SHA-256 as in 5.3) after unloading both jobs and removing the server plist. `macus start` was ready in 42 s with the server job registered for the develop revision. Both containers ran and every marker was intact. The develop package ignores the guest record, storage identity and `backups/` that this change adds.
+
+**Finding:** the failure message ended with the generic boot-failure remedy (`macus runtime stop --force`, then `macus start`), although automatic rollback had already stopped the runtime. After this run the message was changed to drop that remedy, say the runtime is stopped and end with `Run macus start to boot the previous root.`; `refusedAdoptionRollsBackAndNamesOnlyStart` covers it. The hardware run used the earlier wording and was not repeated. The new root never imported the pool in this run, so a forced stop with the pool imported remains task 5.6. The state directory is retained, the develop package is installed in its prefix, and both of its jobs are unloaded.
+
+## Migrating runtime upgrade — 2026-11-25 UTC
+
+Task 5.4 of `add-runtime-upgrade` is [blocked](testing/runtime-upgrade-migrating-acceptance.json): no second appliance with a different Incus package exists. The catalog's only qualified entry is `alpine-3.24.2-lts-1` (Incus `7.0.1-r2`). The draft `alpine-3.24.2-stable-1`, which is unqualified, ships the same `incus-7.0.1-r2` and changes only the kernel and ZFS module, which the design classifies as reversible. The task stays open until an appliance with another Incus package is qualified.
+
+A substitute run on the retained isolated state (`/tmp/macus-r53`) exercised the migrating path with `56a2513` installed. That state was on the develop root with its workload markers.
+
+- **Forced class:** with the runtime ready, the recorded Incus package in `runtime/guest-record.json` was changed to `7.0.0-r2`. The dry run then planned a migrating upgrade (`7.0.0-r2` to `7.0.1-r2`) that named the data clone, and it changed nothing.
+- **Upgrade:** upgraded in 50 s, with the inventory compared. The live `data.raw` kept its inode, and the backup holds a clonefile copy with a new inode. `data_copied_at` (08:28:23Z) precedes the backup's `created_at` (08:28:55Z). The old root, firmware store and seed moved into the backup by inode. The guest record came from health (`7.0.1-r2`, payload `50670a7d…`). Every marker was intact.
+- **Rollback:** a token written to the custom volume after the upgrade, plus a new volume, stood for later writes. Without `--discard-data-since-upgrade`, rollback was refused with `conflict`: the error named the copy time, nothing changed, and the runtime stayed ready. With the flag, it was restored in 7 s. The data disk is the clone's inode, the original root, firmware store and seed inodes are back, and the migrated data and new root were kept as safety backup `20261125T082933Z-63eb2a91`.
+- **Restored state:** `macus start` was ready. Both containers ran. The pre-upgrade markers, including a token written just before the upgrade, were intact, and the post-upgrade token and volume were gone. The host went into clamshell sleep for 295 s during this start; the boot resumed after wake, and without the sleep the start took about 34 s.
+
+**Not covered:** an Incus database migration, since both roots ran `7.0.1-r2`.
+
+**Findings:**
+- On a refused rollback, the client printed `Stopping the runtime to restore the latest backup…` before the request, although nothing is stopped.
+- When the copy is the backup's own, the refusal named that backup twice.
+
+Both were fixed after this run. The client now prints `Checking the latest backup; the runtime is stopped only if it can be restored…`, and the refusal names a second backup only when the copy comes from a later one (`copy from backup Y taken at …`). `migratingUpgradeShowsWhatHappensBeforeTheStopAndRollbackNeedsTheDiscardFlag`, `discardWarningNamesWhenTheDataCopyWasTaken` and `rollbackAcrossALaterMigrationUsesTheLaterDataCopy` cover the fixes. The hardware run used the earlier wording and was not repeated.
+
+The state directory is retained, `56a2513` is installed in its prefix, and both jobs are unloaded.

@@ -25,6 +25,11 @@ class BootstrapContinuationTests(unittest.TestCase):
         for name in ('rc-service', 'dhcpcd', 'update-ca-certificates', 'sysctl',
                      'modprobe', 'incus', 'incusd', 'poweroff'):
             write_stub(bin_dir, name, f'printf "%s %s\\n" "{name}" "$*" >> "{calls}"\n')
+        # A storage-fails file makes the storage service refuse to start.
+        write_stub(bin_dir, 'rc-service', f'''
+printf "rc-service %s\\n" "$*" >> "{calls}"
+if [ "$1 $2" = "tama-storage start" ] && [ -e "{root}/storage-fails" ]; then exit 1; fi
+''')
         write_stub(bin_dir, 'ip', f'printf "ip %s\\n" "$*" >> "{calls}"\nprintf "%s\\n" "default via 192.168.64.1"\n')
         write_stub(bin_dir, 'uname', f'if [ "$1" = -r ]; then printf "%s\\n" "{kernel}"; fi\n')
         write_stub(bin_dir, 'rc-update', f'printf "rc-update %s\\n" "$*" >> "{calls}"\n')
@@ -180,7 +185,8 @@ class PrebuiltBootstrapTests(unittest.TestCase):
 
     def test_image_mismatch_stops_before_storage(self):
         kernel = '6.18.62-0-lts'
-        for case in ('format', 'id', 'channel', 'order', 'kernel', 'manifest', 'missing_seed'):
+        for case in ('format', 'id', 'channel', 'order', 'kernel', 'manifest', 'missing_seed',
+                     'hostid', 'hostid_link'):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 packages = self.prepare_image(root, 'lts', kernel)
@@ -198,6 +204,10 @@ class PrebuiltBootstrapTests(unittest.TestCase):
                     booted = '6.18.60-0-lts'
                 elif case == 'manifest':
                     packages += '\nextra-1.0-r0'
+                elif case == 'hostid':
+                    (root / 'etc/hostid').write_bytes(b'\x12\x34\x56\x78')
+                elif case == 'hostid_link':
+                    (root / 'etc/hostid').symlink_to(root / 'absent')
                 else:
                     (root / 'etc/macus-appliance-expected').unlink()
                 result, calls = self.run_boot(root, booted, packages)
@@ -207,3 +217,60 @@ class PrebuiltBootstrapTests(unittest.TestCase):
                 self.assertNotIn('stage=storage', result.stdout)
                 self.assertEqual(calls.read_text() if calls.exists() else '',
                                  'apk info -v\n' if case == 'manifest' else '')
+                if case.startswith('hostid'):
+                    self.assertIn('own ZFS host identity', result.stderr)
+
+
+class AdoptedPoolBootstrapTests(unittest.TestCase):
+    prepare = BootstrapContinuationTests.prepare
+    run_boot = BootstrapContinuationTests.run_boot
+    prepare_image = PrebuiltBootstrapTests.prepare_image
+    kernel = '6.18.62-0-lts'
+
+    def adopted_root(self, root):
+        # What storage leaves after adopting: phase ready and no preseed marker.
+        packages = self.prepare_image(root, 'lts', self.kernel)
+        (root / 'var/lib/incus/.tama-preseed-pending').unlink()
+        identity = root / 'etc/tama-storage'
+        identity.mkdir(parents=True)
+        (identity / 'phase').write_text('ready\n')
+        (identity / 'layout').write_text('zfs-v1\n')
+        (identity / 'pool-guid').write_text('120\n')
+        return packages
+
+    def test_adopted_pool_completes_without_preseed_or_mark_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            packages = self.adopted_root(root)
+            result, calls = self.run_boot(root, self.kernel, packages)
+            output = result.stdout + result.stderr
+            recorded = calls.read_text()
+            self.assertEqual(result.returncode, 0, output + recorded)
+            self.assertNotIn('incus admin init', recorded)
+            self.assertNotIn('storage mark-ready', recorded)
+            self.assertLess(recorded.index('rc-service tama-storage start'), recorded.index('guard ensure'))
+            self.assertLess(recorded.index('guard ensure'), recorded.index('storage ready'))
+            self.assertFalse((root / 'var/lib/incus/.tama-preseed-started').exists())
+            self.assertIn('TAMA_BOOTSTRAP_READY', output)
+            self.assertTrue((root / 'var/lib/tama-bootstrap-complete').is_file())
+
+    def test_refused_adoption_reports_its_own_code(self):
+        for failure, code in (('storage_adoption_refused\n', 'storage_adoption_refused'),
+                              (None, 'storage_refused'),
+                              ('something_else\n', 'storage_refused')):
+            with self.subTest(code=code, failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                packages = self.adopted_root(root)
+                (root / 'storage-fails').write_text('')
+                (root / 'var/log/tama-storage.log').write_text('TAMA_STORAGE_REFUSED: adoption: test\n')
+                if failure is not None:
+                    (root / 'run/tama-storage-failure').write_text(failure)
+                result, calls = self.run_boot(root, self.kernel, packages)
+                recorded = calls.read_text()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f'MACUS_OBSERVATION v1 stage=failed code={code}\n', result.stderr)
+                self.assertIn('TAMA_STORAGE_REFUSED: adoption: test', result.stdout)
+                self.assertNotIn('guard ensure', recorded)
+                self.assertNotIn('incus ', recorded)
+                self.assertNotIn('TAMA_BOOTSTRAP_READY', result.stdout)
+                self.assertFalse((root / 'var/lib/tama-bootstrap-complete').exists())
