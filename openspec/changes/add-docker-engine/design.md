@@ -20,7 +20,7 @@
 
 Two issues remain open: an intermittent stdin write stall that can leave a partial upload, and BuildKit teardown reporting `:stream_failed` after a successful build.
 
-**Unreleased upstream work.** `opsmaru-containers` change `add-cowboy-gateway-embedding` (merged to its `develop` in upmaru/opsmaru-containers#6, not yet released) adds what decisions 4 and 5 need: the split raw entry `Raw.open/3` and `Raw.run/4`, `Docker.CowboyHandler`, `Transport.CowboyStream`, the packaged `Transport.ExecBridge` with its helper source under `priv/exec_bridge`, and exchange telemetry. Two of its findings shape this design:
+**Upstream release 0.2.0.** `opsmaru-containers` change `add-cowboy-gateway-embedding` (upmaru/opsmaru-containers#6, released as `opsmaru_containers` 0.2.0 on 2026-11-26) adds what decisions 4 and 5 need: the split raw entry `Raw.open/3` and `Raw.run/4`, `Docker.CowboyHandler`, `Transport.CowboyStream`, the packaged `Transport.ExecBridge` with its helper source under `priv/exec_bridge`, and exchange telemetry. Two of its findings shape this design:
 
 - The packaged `ExecBridge` is covered by scripted-session fixtures only. The live exec qualification used the acceptance copy, so Macus hardware acceptance is the first live run of the packaged dialer.
 - Under OTP `:ssl`, once a TLS client sends `close_notify`, later server writes on that connection are not delivered. The library's TLS frontend therefore writes nothing after client EOF, and engine output sent after it is lost (decision 8).
@@ -181,7 +181,7 @@ The Docker dispatch, engine lifecycle and readiness refresh run under their own 
 
 - **[Intermittent stdin write stall]** → It is open in the library. Large uploads can fail with `502` and leave partial destinations. Acceptance records every upload trial with fresh destinations, and `docs/docker.md` states the limitation until the library closes it.
 - **[Shared listener load]** → Long BuildKit and log streams share the gateway listener's acceptor pool and connection limits with Incus. Acceptance runs Docker streams concurrently with Incus exec, and records connection limits and latency.
-- **[Library API dependency]** → Decisions 4 and 5 need an `opsmaru_containers` release. The code is on the library's `develop` but unreleased. Macus work after the spike waits for the release rather than carrying a fork.
+- **[Library API dependency]** → Decisions 4 and 5 need `opsmaru_containers` 0.2.0, which is released. Its half-close measurement and real-Incus bridge rerun were still open at release, so a fix found by the spike may need a later library release. Macus takes that release rather than carrying a fork.
 - **[TLS half-close]** → Upstream evidence points to lost output after client stdin EOF over TLS (decision 8). This is the most likely reason the change returns to planning.
 - **[Revoking raw streams]** → After takeover, a raw relay runs in a library-owned process that holds the socket. Revocation must still close it within the revocation interval. Task 1.2 confirms how Macus ends a relay it did not start. If there is no supported way, that is a library request before task 3.2.
 - **[CLI version drift]** → Homebrew's `docker` formula moves faster than the pins. Negotiation keeps it working within the API range, and status reports the drift. Acceptance remains pin-specific.
