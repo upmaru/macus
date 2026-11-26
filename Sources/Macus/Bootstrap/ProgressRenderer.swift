@@ -14,6 +14,13 @@ extension StartupStage {
     case .provisioning: "Provisioning Linux"
     case .readiness: "Waiting for Incus"
     case .clientSetup: "Connecting client"
+    case .upgradePlan: "Planning upgrade"
+    case .upgradeStaging: "Staging new root and seed"
+    case .runtimeStop: "Stopping runtime"
+    case .upgradeBoot: "Booting new appliance"
+    case .upgradeVerification: "Verifying pool and inventory"
+    case .backupCheck: "Checking backup"
+    case .backupRestore: "Restoring backup"
     }
   }
 }
@@ -28,13 +35,29 @@ enum ProgressRenderer {
   }
 }
 
+/// What a progress display reports on: start's nine stages, or another command's, with the
+/// title of its final resolved-stage line. A confirmation stage counts as resolved only once
+/// the command confirms overall success.
+struct ProgressOperation: Sendable, Equatable {
+  var title: String
+  var stages: Int
+  var confirmation: StartupStage?
+
+  static let startup = ProgressOperation(title: "Startup", stages: 9, confirmation: .clientSetup)
+}
+
 struct ProgressLedger: Sendable {
   private(set) var stages: [StartupStage: StartupStageState] = [:]
   private var operationID: String?
   private var confirmedReady = false
+  var operation: ProgressOperation
+
+  init(operation: ProgressOperation = .startup) { self.operation = operation }
+
   var resolvedStages: Int {
     stages.filter {
-      ($0.value == .complete || $0.value == .skipped) && ($0.key != .clientSetup || confirmedReady)
+      ($0.value == .complete || $0.value == .skipped)
+        && ($0.key != operation.confirmation || confirmedReady)
     }.count
   }
   mutating func observe(_ event: StartupProgressEvent) -> Bool {
@@ -49,10 +72,11 @@ struct ProgressLedger: Sendable {
     return true
   }
   mutating func confirm(ready: Bool, connected: Bool) { confirmedReady = ready && connected }
-  var count: String { "\(resolvedStages)/9 stages" }
+  var count: String { "\(resolvedStages)/\(operation.stages) stages" }
   var bar: String {
-    "[" + String(repeating: "#", count: resolvedStages)
-      + String(repeating: "-", count: 9 - resolvedStages) + "]"
+    let resolved = min(resolvedStages, operation.stages)
+    return "[" + String(repeating: "#", count: resolved)
+      + String(repeating: "-", count: operation.stages - resolved) + "]"
   }
 }
 
@@ -68,6 +92,13 @@ extension StartupStage {
     case .provisioning: "Linux provisioned"
     case .readiness: "Incus is ready"
     case .clientSetup: "Client connected"
+    case .upgradePlan: "Upgrade planned"
+    case .upgradeStaging: "New root and seed staged"
+    case .runtimeStop: "Runtime stopped"
+    case .upgradeBoot: "New appliance booted"
+    case .upgradeVerification: "Pool and inventory verified"
+    case .backupCheck: "Backup checked"
+    case .backupRestore: "Backup restored"
     }
   }
   var skippedLabel: String {
@@ -77,6 +108,7 @@ extension StartupStage {
     case .preparation: "Skipped preparation (using existing appliance)"
     case .runtimeCreation: "Skipped creation (using existing runtime)"
     case .provisioning: "Skipped provisioning (Linux already ready)"
+    case .runtimeStop: "Skipped stop (runtime was not running)"
     default: label + " (skipped)"
     }
   }
@@ -98,6 +130,9 @@ func readableDetail(_ detail: String) -> String {
   case "image": "Verifying installed appliance image"
   case "kernel_transition": "Waiting for kernel restart"
   case "incus_recovery": "Restarting the guest after an Incus crash"
+  case "reading_inventory": "Reading the Incus inventory"
+  case "copying_data": "Copying the data disk"
+  case "rolling_back": "Restoring the previous state"
   default: terminalSafe(detail)
   }
 }

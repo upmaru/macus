@@ -141,7 +141,7 @@ public enum MacusCLI {
       serve [--state-dir ABSOLUTE_PATH]    Own the daemon in this terminal.
 
     Appliance upgrade:
-      runtime upgrade [--dry-run]
+      runtime upgrade [--dry-run] [--progress auto|plain|none]
         Replace the appliance root with the one this macus installs, keeping the data disk.
       runtime upgrade --rollback [ID] [--discard-data-since-upgrade]
         Restore the latest or named backup and leave the runtime stopped.
@@ -192,7 +192,7 @@ public enum MacusCLI {
 
     Options:
       --json            Machine results on stdout, errors on stderr.
-      --progress auto|plain|none    Startup progress on stderr.
+      --progress auto|plain|none    Start and upgrade progress on stderr.
       --state-dir ABSOLUTE_PATH    Select existing or isolated state.
       --timeout SECONDS           Set a bounded deadline.
       --lines N                   Records server logs prints (1...100000, default 50).
@@ -245,8 +245,9 @@ public enum MacusCLI {
     revoke its macus-local-cli record to rotate it at the next start. The gateway never
     binds 0.0.0.0 or ::, and a non-loopback --bind-address needs --advertised-url and a
     certificate naming that host.
-    --progress auto animates only on an interactive terminal; plain and JSON avoid cursor
-    escapes. --progress none suppresses progress. Exit status is 0 on success, 1 on
+    --progress, on start and runtime upgrade (including --dry-run and --rollback), auto
+    animates only on an interactive terminal; plain and JSON avoid cursor escapes.
+    --progress none suppresses progress. Exit status is 0 on success, 1 on
     operational failure, 2 on invalid arguments and 130 when start or server logs --follow
     is interrupted.
 
@@ -266,7 +267,7 @@ private enum Command {
   case runtimeStart
   case runtimeStop(force: Bool)
   case runtimeRestart
-  case runtimeUpgrade(RuntimeUpgradeAction)
+  case runtimeUpgrade(RuntimeUpgradeAction, progress: ProgressSelection)
   case runtimeBackups
   case runtimeBackupsPrune(id: String, confirm: Bool)
   case doctor
@@ -320,7 +321,7 @@ private func defaultTimeout(_ command: Command) -> Int {
   switch command {
   case .runtimeStart, .runtimeStop, .runtimeRestart, .clientSetup, .runtimeBackupsPrune:
     MacusCLI.lifecycleTimeout
-  case .runtimeUpgrade(.upgrade(dryRun: false)), .start: MacusCLI.startTimeout
+  case .runtimeUpgrade(.upgrade(dryRun: false), _), .start: MacusCLI.startTimeout
   case .runtimeUpgrade: MacusCLI.lifecycleTimeout
   case .runtimeBackups: MacusCLI.readOnlyTimeout
   case .capabilities, .runtimeStatus, .doctor, .serverConfigShow, .serverConfigSet,
@@ -527,9 +528,13 @@ private func parse(_ arguments: [String]) throws -> Invocation {
   } else if positionals == ["runtime", "upgrade"] {
     if rollback {
       guard !dryRun else { throw UsageError(message: "--dry-run is not valid with --rollback") }
-      command = .runtimeUpgrade(.rollback(id: rollbackID, discardData: discardData))
+      command = .runtimeUpgrade(
+        .rollback(id: rollbackID, discardData: discardData),
+        progress: ProgressSelection(rawValue: progress ?? "auto") ?? .auto)
     } else {
-      command = .runtimeUpgrade(.upgrade(dryRun: dryRun))
+      command = .runtimeUpgrade(
+        .upgrade(dryRun: dryRun), progress: ProgressSelection(rawValue: progress ?? "auto") ?? .auto
+      )
     }
   } else if positionals == ["runtime", "backups"] {
     command = .runtimeBackups
@@ -625,7 +630,7 @@ private func parse(_ arguments: [String]) throws -> Invocation {
   } else if dryRun || rollback {
     throw UsageError(message: "--dry-run and --rollback are only valid with runtime upgrade")
   }
-  if discardData, case .runtimeUpgrade(.rollback) = command {
+  if discardData, case .runtimeUpgrade(.rollback, _) = command {
   } else if discardData {
     throw UsageError(
       message: "--discard-data-since-upgrade is only valid with runtime upgrade --rollback")
@@ -643,9 +648,9 @@ private func parse(_ arguments: [String]) throws -> Invocation {
     }
   }
   if progress != nil {
-    if case .start = command {
-    } else {
-      throw UsageError(message: "--progress is only valid with start")
+    switch command {
+    case .start, .runtimeUpgrade: break
+    default: throw UsageError(message: "--progress is only valid with start and runtime upgrade")
     }
   }
   if principal != nil || !scopes.isEmpty {
@@ -757,9 +762,10 @@ private func execute(
     } else {
       presentation.runtime(try jsonObject(response.body), directory: directory)
     }
-  case .runtimeUpgrade(let action):
+  case .runtimeUpgrade(let action, let progress):
     try await runRuntimeUpgrade(
-      action, directory: directory, timeout: timeout, json: json, environment: environment,
+      action, progress: progress, directory: directory, timeout: timeout, json: json,
+      environment: environment,
       transport: transport, gateway: gateway, runner: runner, streams: streams,
       overrides: overrides)
   case .runtimeBackups:

@@ -10,6 +10,14 @@ enum StartupStage: String, Codable, Sendable {
   case provisioning
   case readiness
   case clientSetup = "client_setup"
+  // runtime upgrade and rollback; start never emits these.
+  case upgradePlan = "upgrade_plan"
+  case upgradeStaging = "upgrade_staging"
+  case runtimeStop = "runtime_stop"
+  case upgradeBoot = "upgrade_boot"
+  case upgradeVerification = "upgrade_verification"
+  case backupCheck = "backup_check"
+  case backupRestore = "backup_restore"
 }
 
 enum StartupStageState: String, Codable, Sendable {

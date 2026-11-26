@@ -25,6 +25,7 @@ struct ApplianceAcquisition {
   func materialize(
     entry: ApplianceCatalogEntry, directory: URL, budget: StartupBudget,
     now: @escaping @Sendable () -> ContinuousClock.Instant,
+    onVerifying: @escaping @Sendable () -> Void = {},
     onBytes: @escaping @Sendable (Int64, Int64?) -> Void
   ) async throws -> URL {
     let cache = directory.appendingPathComponent("appliance-cache", isDirectory: true)
@@ -46,6 +47,7 @@ struct ApplianceAcquisition {
       try await downloader.download(
         url: entry.archiveURL, to: archive, maximumBytes: entry.archiveBytes, deadline: deadline,
         onBytes: onBytes)
+      onVerifying()
       guard try fileSize(archive) == entry.archiveBytes else {
         throw RuntimeError(
           .invalidConfiguration, "Appliance archive size does not match the catalog")

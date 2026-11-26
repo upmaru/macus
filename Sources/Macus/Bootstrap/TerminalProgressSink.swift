@@ -6,7 +6,7 @@ import Noora
 final class TerminalProgressSink: StartupProgressSink, @unchecked Sendable {
   private let lock = NSLock()
   private var rendering: ProgressRendering
-  private var ledger = ProgressLedger()
+  private var ledger: ProgressLedger
   private var events: [StartupStage: StartupProgressEvent] = [:]
   private var received: [StartupStage: ContinuousClock.Instant] = [:]
   private var order: [StartupStage] = []
@@ -35,7 +35,8 @@ final class TerminalProgressSink: StartupProgressSink, @unchecked Sendable {
   private let now: @Sendable () -> ContinuousClock.Instant
 
   init(
-    rendering: ProgressRendering, environment: [String: String] = [:],
+    rendering: ProgressRendering, operation: ProgressOperation = .startup,
+    environment: [String: String] = [:],
     stderrIsTTY: Bool? = nil, now: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
     width: @escaping @Sendable () -> Int? = {
       var size = winsize()
@@ -44,6 +45,7 @@ final class TerminalProgressSink: StartupProgressSink, @unchecked Sendable {
     }, write: @escaping @Sendable (String) -> Void
   ) {
     self.rendering = rendering
+    ledger = ProgressLedger(operation: operation)
     self.width = width
     self.write = write
     self.environment = environment
@@ -91,6 +93,25 @@ final class TerminalProgressSink: StartupProgressSink, @unchecked Sendable {
       resolutionOrder.append(event.stage)
       workers[event.stage]?.resolve(event.state)
     }
+  }
+
+  /// Ends the operation after fewer stages than it declared, as an upgrade does when its
+  /// plan finds nothing to do; the final count then names only the stages that ran.
+  func narrow(to stages: Int) {
+    lock.lock()
+    defer { lock.unlock() }
+    ledger.operation.stages = stages
+  }
+
+  /// Waits until every resolved stage's row has been written, so a command can write between
+  /// stages without a row landing inside its output. Call it while no stage is active.
+  func settle() async {
+    let tasks: [Task<Void, Never>] = lock.withLock {
+      workers.filter { stage, _ in
+        [.complete, .skipped, .failed].contains(ledger.stages[stage])
+      }.map(\.value.task)
+    }
+    for task in tasks { await task.value }
   }
 
   func diagnostic(_ text: String) {
@@ -305,7 +326,9 @@ final class TerminalProgressSink: StartupProgressSink, @unchecked Sendable {
     clearLine()
     showCursor()
     ledger.confirm(ready: ready, connected: connected)
-    if rendering != .none, ready && connected { output("Startup: \(ledger.count) resolved\n") }
+    if rendering != .none, ready && connected {
+      output("\(ledger.operation.title): \(ledger.count) resolved\n")
+    }
   }
   func cleanup() {
     lock.lock()

@@ -85,6 +85,18 @@ import Testing
       environment: [:], streams: capture.streams)
     #expect(status == 2, "\(arguments): \(capture.error)")
   }
+  for arguments in [
+    ["runtime", "status", "--progress", "none"], ["runtime", "backups", "--progress", "plain"],
+    ["runtime", "upgrade", "--progress", "fancy"],
+    ["runtime", "upgrade", "--progress", "none", "--progress", "none"],
+  ] {
+    let capture = StartCapture()
+    let status = await MacusCLI.run(
+      arguments: ["--state-dir", "/private/tmp/macus-never-\(UUID())"] + arguments,
+      environment: [:], streams: capture.streams)
+    #expect(status == 2, "\(arguments): \(capture.error)")
+  }
+  #expect(MacusCLI.helpText.contains("runtime upgrade [--dry-run] [--progress auto|plain|none]"))
   #expect(MacusCLI.helpText.contains("runtime upgrade --rollback [ID]"))
   #expect(MacusCLI.helpText.contains("runtime backups prune ID [--confirm]"))
 }
@@ -162,6 +174,9 @@ private func refusedState(_ fixture: UpgradeFixture) async throws -> (UpgradeVM,
   let object = try #require(
     try JSONSerialization.jsonObject(with: Data(capture.output.utf8)) as? [String: Any])
   #expect(object["upgraded"] as? Bool == true)
+  #expect(Set(object.keys) == ["upgraded", "plan", "result"])
+  #expect(capture.error.contains("Upgrade: 9/9 stages resolved"))
+  #expect(!capture.error.contains("\u{1B}"))
   let plan = try #require(object["plan"] as? [String: Any])
   #expect(plan["upgrade_class"] as? String == "reversible")
   let result = try #require(object["result"] as? [String: Any])
@@ -188,6 +203,7 @@ private func refusedState(_ fixture: UpgradeFixture) async throws -> (UpgradeVM,
   let rollback = try #require(
     try JSONSerialization.jsonObject(with: Data(rolled.output.utf8)) as? [String: Any])
   #expect(rollback["restored_backup_id"] as? String == backupID)
+  #expect(rolled.error.contains("Rollback: 5/5 stages resolved"))
   #expect(rollback["restore_data"] as? String == "kept")
   #expect((rollback["status"] as? [String: Any])?["state"] as? String == "stopped")
   let safety = try #require(rollback["safety_backup_id"] as? String)
@@ -251,6 +267,11 @@ private func refusedState(_ fixture: UpgradeFixture) async throws -> (UpgradeVM,
   #expect(capture.output.contains("The data disk stays in place."))
   #expect(capture.output.contains("every workload restarts"))
   #expect(capture.output.contains("Dry run: nothing was downloaded, staged or stopped."))
+  // The dry run's steps end with the plan; stdout holds only the plan.
+  #expect(capture.error.contains("✔︎ Upgrade planned"))
+  #expect(capture.error.contains("Upgrade dry run: 3/3 stages resolved"))
+  #expect(!capture.error.contains("Downloading appliance"))
+  #expect(!capture.output.contains("✔︎"))
   // Activation keeps its lock and credential files; nothing else appears.
   let before = try FileManager.default.contentsOfDirectory(atPath: state)
   #expect(!before.contains { $0.hasPrefix("upgrade-") || $0.hasPrefix("appliance-staging-") })
@@ -264,6 +285,36 @@ private func refusedState(_ fixture: UpgradeFixture) async throws -> (UpgradeVM,
     try JSONSerialization.jsonObject(with: Data(json.output.utf8)) as? [String: Any])
   #expect(object["dry_run"] as? Bool == true)
   #expect((object["plan"] as? [String: Any])?["data_copy"] as? String == "none")
+  // Unchanged JSON: one object with the same keys; progress stays on stderr, unanimated.
+  #expect(Set(object.keys) == ["dry_run", "upgraded", "plan"])
+  #expect(json.output.hasPrefix("{") && !json.output.contains("✔︎"))
+  #expect(json.error.contains("✔︎ Upgrade planned") && !json.error.contains("\u{1B}"))
+
+  // --progress none writes nothing to stderr and keeps the result.
+  let quiet = StartCapture()
+  #expect(
+    await pair.run(
+      ["runtime", "upgrade", "--dry-run", "--progress", "none"], capture: quiet,
+      catalog: fixture.entry) == 0, "\(quiet.error)")
+  #expect(quiet.error.isEmpty)
+  #expect(quiet.output == capture.output)
+
+  // On an interactive terminal the same steps are native animated Noora steps, and the
+  // cursor is back before the plan is written.
+  let animated = StartCapture()
+  #expect(
+    await pair.run(
+      ["runtime", "upgrade", "--dry-run"], capture: animated, catalog: fixture.entry,
+      configure: {
+        $0.stderrIsTTY = true
+        $0.term = "xterm"
+        $0.terminalWidth = { 120 }
+      }) == 0, "\(animated.error)")
+  #expect(animated.error.contains("\u{1B}[?25l") && animated.error.contains("\u{1B}[?25h"))
+  let rows = withoutStyling(animated.error)
+  #expect(rows.contains("✔︎ Host checked") && rows.contains("✔︎ Upgrade planned"))
+  #expect(rows.contains("Upgrade dry run: 3/3 stages resolved"))
+  #expect(animated.output == capture.output)
 
   #expect(pair.downloader.calls == 0)
   #expect(try FileManager.default.contentsOfDirectory(atPath: state).sorted() == before.sorted())
@@ -307,9 +358,22 @@ private func refusedState(_ fixture: UpgradeFixture) async throws -> (UpgradeVM,
   #expect(output.contains("Class: Migrating (Incus 7.0.1-r2 to 7.0.1-r3)"))
   #expect(output.contains("The data disk is cloned into it first"))
   let notice = try #require(output.range(of: "every workload restarts"))
-  let stopping = try #require(output.range(of: "Stopping the runtime"))
   let upgraded = try #require(output.range(of: "Upgraded to \(fixture.entry.id)"))
-  #expect(notice.lowerBound < stopping.lowerBound && stopping.lowerBound < upgraded.lowerBound)
+  #expect(notice.lowerBound < upgraded.lowerBound)
+  // Progress is on stderr, one step per stage in order, and never in the result on stdout.
+  let steps = capture.error
+  var previous = steps.startIndex
+  for row in [
+    "✔︎ Host checked", "✔︎ Service activated", "✔︎ Upgrade planned",
+    "✔︎ Skipped download (using existing appliance)", "✔︎ Appliance verified",
+    "✔︎ New root and seed staged", "✔︎ Runtime stopped", "✔︎ New appliance booted",
+    "✔︎ Pool and inventory verified", "Upgrade: 9/9 stages resolved",
+  ] {
+    let found = try #require(steps.range(of: row, range: previous..<steps.endIndex), "\(row)")
+    previous = found.upperBound
+  }
+  #expect(!steps.contains("\u{1B}"))
+  #expect(!output.contains("✔︎") && !output.contains("stages resolved"))
   #expect(output.contains("Verification: Ready, pool imported, and Incus lists everything"))
   let backupID = try #require(try BackupCatalog.load(paths: fixture.paths).last?.id)
   #expect(output.contains("Backup: \(backupID)"))
@@ -321,18 +385,31 @@ private func refusedState(_ fixture: UpgradeFixture) async throws -> (UpgradeVM,
   #expect(await pair.run(["runtime", "upgrade", "--rollback", backupID], capture: refused) == 1)
   #expect(refused.error.contains("--discard-data-since-upgrade"))
   #expect(try Data(contentsOf: fixture.paths.rootDisk) != oldRootBytes)
-  // The refusal stops nothing, and the progress line never claimed it would.
+  // The refusal stops nothing, and the progress never claimed it would: the backup check
+  // failed before any stop step, and the error follows it.
   #expect(await service.status().state == .ready)
-  #expect(!refused.output.contains("Stopping"))
-  #expect(
-    refused.output.contains(
-      "Checking backup \(backupID); the runtime is stopped only if it can be restored"))
+  #expect(!refused.error.contains("Stopping runtime") && !refused.error.contains("Runtime stopped"))
+  #expect(refused.error.contains("| backup \(backupID)"))
+  let failedCheck = try #require(refused.error.range(of: "⨯ Checking backup failed"))
+  let alert = try #require(refused.error.range(of: "Macus failed (conflict)"))
+  #expect(failedCheck.upperBound < alert.lowerBound)
+  #expect(!refused.error.contains("stages resolved"))
+  #expect(refused.output.isEmpty)
   let restored = StartCapture()
   #expect(
     await pair.run(
       ["runtime", "upgrade", "--rollback", backupID, "--discard-data-since-upgrade"],
       capture: restored) == 0, "\(restored.error)")
   #expect(restored.output.contains("Restored backup \(backupID)"))
+  var rollbackSteps = restored.error.startIndex
+  for row in [
+    "✔︎ Backup checked", "✔︎ Runtime stopped", "✔︎ Backup restored",
+    "Rollback: 5/5 stages resolved",
+  ] {
+    let found = try #require(
+      restored.error.range(of: row, range: rollbackSteps..<restored.error.endIndex), "\(row)")
+    rollbackSteps = found.upperBound
+  }
   #expect(restored.output.contains("Data disk: Restored from this backup's copy of"))
   #expect(try Data(contentsOf: fixture.paths.rootDisk) == oldRootBytes)
   await MainActor.run { served.stop() }
@@ -406,6 +483,14 @@ private func stagingEntries(_ fixture: UpgradeFixture) throws -> [String] {
   let capture = StartCapture()
   #expect(await pair.run(["runtime", "upgrade"], capture: capture, catalog: fixture.entry) == 1)
   #expect(capture.error.contains("Cannot connect"), "\(capture.error)")
+  // The stage the request failed in is marked, before the error, and nothing after it ran.
+  let failed = try #require(capture.error.range(of: "⨯ Stopping runtime failed"))
+  let alert = try #require(capture.error.range(of: "Macus failed"))
+  #expect(failed.upperBound < alert.lowerBound)
+  #expect(capture.error.contains("✔︎ New root and seed staged"))
+  for later in ["Booting new appliance", "New appliance booted", "stages resolved"] {
+    #expect(!capture.error.contains(later), "\(later)")
+  }
   #expect(try stagingEntries(fixture).isEmpty)
   #expect(await driver.startCount == 1)
   #expect(await service.status().state == .ready)
