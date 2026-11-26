@@ -13,7 +13,7 @@
 
 The default context name SHALL be `macus`. A context with the same endpoint and an enrolled certificate SHALL be reused. A context with the same endpoint and a certificate that is not enrolled SHALL have its TLS material replaced. A context with a different endpoint SHALL fail with conflict and MUST NOT be modified. The default context SHALL change only with `--docker-set-default`. Setup MUST NOT edit `config.json`.
 
-When Compose or Buildx is missing and Homebrew exists, setup SHALL install the official formula and link the plugin into `$DOCKER_CONFIG/cli-plugins`, only where no plugin of that name exists. Staged key material SHALL be removed once the context holds it. Setup SHALL verify by running `docker --context NAME version` against the engine. `macus docker status` SHALL report:
+When Compose or Buildx is missing, Homebrew exists and no explicit `--docker-cli` was given, setup SHALL install the official formula and link the plugin into `$DOCKER_CONFIG/cli-plugins`, only where no plugin of that name exists. With an explicit `--docker-cli`, setup MUST NOT run Homebrew for the CLI or its plugins; it SHALL report missing plugins without failing. Staged key material SHALL be removed once the context holds it. Setup SHALL verify by running `docker --context NAME version` against the engine. `macus docker status` SHALL report:
 
 - engine state and image currency
 - the negotiated API range
@@ -33,7 +33,7 @@ When Compose or Buildx is missing and Homebrew exists, setup SHALL install the o
 #### Scenario: Isolated Docker configuration
 
 - **WHEN** setup runs with `DOCKER_CONFIG` set to a test directory and an explicit `--docker-cli`
-- **THEN** only that directory is changed and Homebrew is not run
+- **THEN** only that directory is changed, Homebrew is not run even when Compose or Buildx is missing, and any missing plugin is reported
 
 #### Scenario: Stopped runtime
 

@@ -131,6 +131,14 @@ The server keeps one `Docker.Capabilities` snapshot per target with a 10 s monot
 
 An unready engine, a guest that is not ready, or a missing engine produces a Docker-shaped `503` with a message naming the state (`engine stopped`, `runtime not ready`, `docker not set up`). Admission never reaches the backend without a fresh snapshot.
 
+A fresh snapshot can still be stale if the engine stops outside Macus (for example `incus stop macus-docker/engine`). Three rules bound that window to one request:
+
+- Macus's own lifecycle calls clear the snapshot.
+- A dial failure, or an engine failure before any response byte reaches the client, invalidates the snapshot and triggers the single-flight refresh.
+- The failing request gets the Docker-shaped 503 for the state the refresh observes, and is never replayed.
+
+Later requests are refused by admission, without dialing, until a refresh sees a running engine. The relay's existing "honest upstream failure before commitment" behaviour makes this safe: nothing was sent to the client yet.
+
 ### 8. TLS half-close is a qualification gate
 
 Docker clients half-close hijacked streams. `docker exec -i … < file` and `docker cp` depend on the client's write EOF reaching dockerd while output keeps flowing back. Over TLS, Go's `tls.Conn.CloseWrite` sends `close_notify`. The server's frontend stream adapter must treat that as read EOF while keeping the write side open, and must shut down only its own write side on backend EOF.
@@ -149,7 +157,7 @@ This depends on Erlang `:ssl` behaviour under TLS 1.3, so task 1.2 qualifies it 
 6. Verify with `docker --context NAME version --format '{{.Server.APIVersion}}'`.
 
 - **Context rules:** the default name is `macus` (`--docker-context NAME`). An existing context with the same endpoint and a still-enrolled certificate is reused. With the same endpoint and a non-enrolled certificate, the TLS material is replaced with `docker context update`. A different endpoint is a conflict, and the existing context is preserved. `docker context use` runs only with `--docker-set-default`. `DOCKER_CONFIG` selects the configuration directory, and macus never edits `config.json`.
-- **Compose and Buildx:** setup reports whether the CLI finds `compose` and `buildx`. When either is missing and Homebrew exists, setup installs the `docker-compose` or `docker-buildx` formula and links its plugin binary into `$DOCKER_CONFIG/cli-plugins`, only when no plugin of that name exists there. A link is plugin installation, not configuration. An existing plugin is never replaced.
+- **Compose and Buildx:** setup reports whether the CLI finds `compose` and `buildx`. When either is missing, Homebrew exists and no explicit `--docker-cli` was given, setup installs the `docker-compose` or `docker-buildx` formula and links its plugin binary into `$DOCKER_CONFIG/cli-plugins`, only when no plugin of that name exists there. A link is plugin installation, not configuration. An existing plugin is never replaced. An explicit `--docker-cli` marks an isolated or caller-managed client, as `--incus` does for Incus: setup then never runs Homebrew for the CLI or its plugins, and only reports missing plugins.
 - **Versions:** the gateway does not refuse other CLI versions. Admission negotiates within the engine's API range. Status and doctor report the CLI, Compose and Buildx versions and say when they differ from the qualified pins. Acceptance covers only the pinned versions.
 - **Environment:** doctor warns when `DOCKER_HOST` or `DOCKER_CONTEXT` is set to something other than the Macus context, because either one bypasses it.
 

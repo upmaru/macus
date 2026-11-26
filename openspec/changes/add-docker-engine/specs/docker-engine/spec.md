@@ -65,12 +65,17 @@ The server SHALL ensure one Docker engine per state in Incus project `macus-dock
 
 ### Requirement: Engine readiness
 
-Admission SHALL use a `Docker.Capabilities` snapshot for the engine target with a monotonic expiry of at most 10 seconds. When the snapshot is absent or expired, a single refresh per target SHALL observe readiness within a bounded deadline. Concurrent requests SHALL wait on that refresh. A missing, stopped or unready engine, or a runtime that is not ready, SHALL produce a Docker-shaped 503 naming the state. No request SHALL reach the backend without a fresh snapshot.
+Admission SHALL use a `Docker.Capabilities` snapshot for the engine target with a monotonic expiry of at most 10 seconds. When the snapshot is absent or expired, a single refresh per target SHALL observe readiness within a bounded deadline. Concurrent requests SHALL wait on that refresh. A missing, stopped or unready engine, or a runtime that is not ready, SHALL produce a Docker-shaped 503 naming the state. No request SHALL reach the backend without a fresh snapshot. A Macus engine lifecycle change SHALL clear the snapshot for that target. A transport dial failure, or an engine failure before any response byte reaches the client, SHALL invalidate the snapshot and trigger the single refresh. That request SHALL then receive a Docker-shaped 503 naming the observed state, and MUST NOT be replayed.
 
-#### Scenario: Engine stopped
+#### Scenario: Engine stopped with no fresh snapshot
 
-- **WHEN** the engine instance is stopped and a client runs `docker ps`
-- **THEN** the client receives a 503 naming the stopped engine and no exec operation is created
+- **WHEN** the engine instance is stopped, the snapshot is absent or expired, and a client runs `docker ps`
+- **THEN** the refresh observes the stopped engine, the client receives a 503 naming it, and no exec operation is created
+
+#### Scenario: Engine stops while the snapshot is fresh
+
+- **WHEN** the engine stops outside Macus less than 10 seconds after a successful refresh, and a client runs `docker ps`
+- **THEN** the dial fails before any response is committed, the snapshot is invalidated, the client receives a 503 naming the stopped engine, the request is not replayed, and later requests are refused by admission without dialing until a refresh observes a running engine
 
 ### Requirement: Exec transport
 
