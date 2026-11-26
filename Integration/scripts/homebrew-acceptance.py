@@ -17,6 +17,10 @@ MODULE = Path(__file__).resolve().parents[2] / "Packaging/homebrew/candidate.py"
 SPEC = importlib.util.spec_from_file_location("homebrew_candidate", MODULE)
 candidate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(candidate)
+START = Path(__file__).resolve().parent / "start-acceptance.py"
+START_SPEC = importlib.util.spec_from_file_location("start_acceptance", START)
+start_acceptance = importlib.util.module_from_spec(START_SPEC)
+START_SPEC.loader.exec_module(start_acceptance)
 
 
 def fixture_paths(root, first=False):
@@ -57,6 +61,15 @@ def service_labels(state):
     """(runtime, server): the two jobs macus start owns for an isolated state, one hash on both."""
     runtime = service_label(state)
     return runtime, runtime.replace("com.upmaru.macus.", "com.upmaru.macus.server.", 1)
+
+
+def isolated_gateway_port(state):
+    """This state's own gateway port in STATE/server/gateway.json, never the default 8443.
+
+    Without it the isolated server would bind the default port, which an ordinary runtime on the
+    same host already holds, and crash-loop on eaddrinuse instead of serving the isolated state.
+    """
+    return start_acceptance.gateway_port(state, None)
 
 
 def owned_plist(state, label):
@@ -193,8 +206,11 @@ def execute(arguments, env, report, timeout=1800):
 def ensure_marker(incus, instance, env, report, state):
     token = hashlib.sha256(str(state).encode()).hexdigest()
     key = "user.macus.homebrew-acceptance"
-    instances = json.loads(execute([incus, "list", instance, "--format=json"], env, report))
-    matches = [value for value in instances if value.get("name") == "macus-brew-marker"]
+    # `incus list` takes the remote alone ("remote:"), then filters; "remote:name" is read as a
+    # filter on the default remote, which an isolated client configuration does not have.
+    remote, _, name = instance.partition(":")
+    instances = json.loads(execute([incus, "list", remote + ":", "--format=json"], env, report))
+    matches = [value for value in instances if value.get("name") == name]
     if matches:
         if len(matches) != 1 or matches[0].get("config", {}).get(key) != token:
             raise ValueError("Refusing an unrelated existing marker instance")
@@ -228,11 +244,14 @@ def main():
         client.mkdir(mode=0o700)
         report = {"schema_version": 2, "hardware_ran": True, "state": str(state),
                   "incus_conf": str(client), "service_label": label, "server_label": labels[1], "checks": {}}
+        report["gateway_port"] = isolated_gateway_port(state)
     else:
         report = json.loads((root / "hardware.json").read_text())
         identity = (report.get("state"), report.get("incus_conf"), report.get("service_label"), report.get("server_label"))
         if identity != (str(state), str(client), label, labels[1]):
             raise ValueError("Hardware report does not match isolated fixture identity")
+        if report.get("gateway_port") != isolated_gateway_port(state):
+            raise ValueError("Hardware report does not match the isolated gateway port")
     if args.phase == "resume":
         require_upgrade(report, manifest)
     env = dict(os.environ, INCUS_CONF=str(client), MACUS_STATE_DIR=str(state), HOMEBREW_NO_AUTO_UPDATE="1")
@@ -264,6 +283,10 @@ def main():
                     if (result.get("ready") is not True or result.get("connected") is not True
                             or result.get("service_label") != label or result.get("server_label") != labels[1]):
                         raise ValueError("Installed startup did not reach isolated live readiness")
+                    endpoint = (result.get("server_endpoint") or {}).get("url", "")
+                    if not endpoint.rstrip("/").endswith(f":{report['gateway_port']}"):
+                        raise ValueError("Installed startup did not serve the isolated gateway port")
+                report["checks"]["isolated_gateway_port"] = True
                 execute([incus, "list", remote + ":", "--format=json"], env, report)
                 if args.phase in ("start", "retry-start") and not report["checks"].get("first_and_repeated_start"):
                     ensure_marker(incus, instance, env, report, state)
@@ -280,6 +303,8 @@ def main():
                 stop_and_unload(binary, state, client, labels, args.transition, env, report)
                 report["stopped_version"] = manifest["version"]
         report["last_phase_success"] = True
+        # A retried phase that now succeeds must not carry the earlier attempt's failure.
+        report.pop("failure", None)
     except Exception as error:
         report["last_phase_success"] = False
         report["failure"] = str(error)

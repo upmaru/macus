@@ -1,0 +1,81 @@
+{
+  "schema_version": 2,
+  "task": "add-homebrew-tap 4.3",
+  "recorded_at": "2026-11-25T18:41:30Z",
+  "scope": "Opt-in two-job stop/unload, Homebrew package upgrade between two verified candidates, start with a standard Incus marker, then removal stop/unload and brew uninstall, on an isolated state with its own INCUS_CONF, gateway port and hashed labels",
+  "host": {"macos": "27.0.1", "architecture": "arm64"},
+  "candidates": {
+    "old": {
+      "source_commit": "ac86fe90f4fd54cadedd569d3ade170b2152ddee",
+      "version": "0.0.0-dev.20261123073709.ac86fe90f4fd",
+      "macus_version": "0.1.0",
+      "opsmaru_incus": "0.2.9",
+      "bottle_sha256": "00f64875c1f1726fcbdb89c2c8421b092698352d46762ab4b35fdcc74803bafa"
+    },
+    "new": {
+      "source_commit": "d92f1368d0fffa5dc0b49bc33f1bc7090577bc3f",
+      "version": "0.0.0-dev.20261125125425.d92f1368d0ff",
+      "macus_version": "0.1.0",
+      "source_sha256": "3293262158ddbb0ed4fa9e59ef0e28d603b9a315dee5d3a8aa1b4fe0a1784b74",
+      "server_release_sha256": "974f6c62648cdb86c58426ab6695b851f6034c046f0424b021d483ad48e70110",
+      "opsmaru_incus": {
+        "version": "0.2.10",
+        "checksum": "2552f4e078db2c4cd931ca49d20cd0169c93604ccf70701aa005f9f156e8b13f",
+        "cassette_sha256": "620b66dadc4838969259fbaf72b2becfba4429529b9522d9966ed25341bb37c3"
+      },
+      "bottle": {"tag": "arm64_golden_gate", "sha256": "919cc0712c4ad059c294295823f0ed915f5f8e2a9f11dcb1558c8f4b6c229994"},
+      "package": {
+        "source_build_succeeded": true,
+        "evidence_kind": "poured-bottle",
+        "poured_from_bottle": true,
+        "passive_installation": true,
+        "signature_verified": true,
+        "virtualization_entitlement": true,
+        "system_linked_only": true,
+        "runtime_dependencies": [],
+        "homebrew_service": false
+      }
+    },
+    "formula": "upmaru/macus-local/macus (local tap)"
+  },
+  "sequence": [
+    {"phase": "start", "candidate": "old", "result": "both starts ready on the isolated gateway port; marker step failed in the runner (incus list remote:name), state retained"},
+    {"phase": "retry-start", "candidate": "old", "result": "both starts reused the ready runtime; marker instance launched and marker written and read"},
+    {"phase": "stop", "candidate": "old", "transition": "upgrade", "result": "runtime stopped; server job then runtime job unloaded; only the server plist removed; retained data recorded"},
+    {"phase": "package change", "result": "brew uninstall old, untap, candidate build new (source build, bottle), uninstall test keg, candidate install new (poured)"},
+    {"phase": "resume", "candidate": "new", "result": "ready on the same gateway port; marker read back; disks by identity, settings, server credentials, gateway certificate and client configuration unchanged; server plist re-registered for the new revision; upgrade_available reported and not applied"},
+    {"phase": "stop", "candidate": "new", "transition": "removal", "result": "runtime stopped; both jobs unloaded; both owned plists removed"},
+    {"phase": "package change", "result": "brew uninstall new"},
+    {"phase": "removed", "result": "no job loaded, no owned plist, macus not installed; disks, settings, credentials and client configuration unchanged"}
+  ],
+  "isolation": {
+    "state_dir": "short fresh isolated directory under /tmp",
+    "incus_conf": "isolated client directory beside the state",
+    "remote": "macus-brew",
+    "service_label": "com.upmaru.macus.<hash>",
+    "server_label": "com.upmaru.macus.server.<hash>",
+    "gateway_port": "own free port in STATE/server/gateway.json"
+  },
+  "marker": {
+    "instance": "macus-brew-marker",
+    "image": "images:alpine/3.24",
+    "content_survived_upgrade": true
+  },
+  "guest_image_upgraded": false,
+  "disks_reset": false,
+  "checks": {
+    "isolated_gateway_port": true,
+    "first_and_repeated_start": true,
+    "marker_retry-start": true,
+    "stopped_and_unloaded": true,
+    "marker_resume": true,
+    "retained_disks_and_credentials": true,
+    "uninstall_preserves_data": true
+  },
+  "runner_fixes_during_run": [
+    "the isolated state now gets its own gateway port; the first attempt's server crash-looped on eaddrinuse against the default runtime's 8443 and was unloaded with its files kept",
+    "the marker is listed as `incus list remote:` and matched by name"
+  ],
+  "default_state_after_run": "the machine's default state, created on the old candidate, was upgraded through the same documented sequence and started on the new candidate: ready, server job registered for the new revision, same gateway certificate, its container running, appliance upgrade reported and not applied",
+  "success": true
+}

@@ -17,6 +17,18 @@ SPEC.loader.exec_module(acceptance)
 
 
 class HomebrewAcceptanceTests(unittest.TestCase):
+    def test_isolated_state_gets_its_own_gateway_port(self):
+        with tempfile.TemporaryDirectory() as root:
+            state = Path(root) / 'state'
+            port = acceptance.isolated_gateway_port(state)
+            self.assertNotEqual(port, 8443)
+            config = json.loads((state / 'server/gateway.json').read_text())
+            self.assertEqual(config, {'schema_version': 1, 'port': port})
+            self.assertEqual(acceptance.isolated_gateway_port(state), port)
+            (state / 'server/gateway.json').write_text(json.dumps({'schema_version': 1, 'port': 8443}))
+            with self.assertRaises(SystemExit):
+                acceptance.isolated_gateway_port(state)
+
     def test_retry_completes_owned_marker_without_duplicate_launch(self):
         state = Path('/tmp/owned-test/state')
         value = {'name': 'macus-brew-marker', 'status': 'Running',
@@ -24,6 +36,7 @@ class HomebrewAcceptanceTests(unittest.TestCase):
         with patch.object(acceptance, 'execute', side_effect=[json.dumps([value]), '']) as command:
             acceptance.ensure_marker('/incus', 'macus-brew:macus-brew-marker', {}, {}, state)
             calls = [args.args[0] for args in command.call_args_list]
+            self.assertEqual(calls[0], ['/incus', 'list', 'macus-brew:', '--format=json'])
             self.assertFalse(any('launch' in call for call in calls))
             self.assertEqual(calls[-1][1], 'exec')
         value['config'] = {}
