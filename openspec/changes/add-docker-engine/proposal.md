@@ -29,7 +29,7 @@ Many developer tools only speak the Docker Engine API: `docker`, `docker compose
 
 ## Impact
 
-- **Upstream prerequisite:** an `opsmaru_containers` release that packages the exec bridge dialer and the helper source, and adds a same-listener Cowboy handler for Docker raw upgrades (see design decision 4). It is released as `opsmaru_containers` 0.2.0 (Hex, 2026-11-26). It does not vendor acceptance scripts.
+- **Upstream prerequisite:** an `opsmaru_containers` release that packages the exec bridge dialer and the helper source, and adds a same-listener Cowboy handler for Docker raw upgrades (see design decision 4). It is released as `opsmaru_containers` 0.2.0 (Hex, 2026-11-26). Macus does not vendor acceptance scripts.
 - **Open gate:** the library reports that OTP drops server writes after a TLS client's `close_notify`. If the pinned CLI half-closes that way, stdin EOF over the TLS gateway loses output and the change returns to planning (design decision 8).
 - **Server:** `server/mix.exs` (add `opsmaru_containers`), the gateway router (Docker route dispatch before unknown paths), certificate scopes in gateway trust and enrollment, a `Macus.Docker` host module (context, authorize, bind mapping), engine lifecycle and readiness cache, and the `/docker/engine` owner route.
 - **Appliance image pipeline:** a new pinned engine image artifact with a recorded Incus fingerprint, Docker and helper versions, and attestation, beside the existing appliance catalog.
