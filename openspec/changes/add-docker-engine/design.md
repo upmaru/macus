@@ -20,6 +20,11 @@
 
 Two issues remain open: an intermittent stdin write stall that can leave a partial upload, and BuildKit teardown reporting `:stream_failed` after a successful build.
 
+**Unreleased upstream work.** `opsmaru-containers` change `add-cowboy-gateway-embedding` (merged to its `develop` in upmaru/opsmaru-containers#6, not yet released) adds what decisions 4 and 5 need: the split raw entry `Raw.open/3` and `Raw.run/4`, `Docker.CowboyHandler`, `Transport.CowboyStream`, the packaged `Transport.ExecBridge` with its helper source under `priv/exec_bridge`, and exchange telemetry. Two of its findings shape this design:
+
+- The packaged `ExecBridge` is covered by scripted-session fixtures only. The live exec qualification used the acceptance copy, so Macus hardware acceptance is the first live run of the packaged dialer.
+- Under OTP `:ssl`, once a TLS client sends `close_notify`, later server writes on that connection are not delivered. The library's TLS frontend therefore writes nothing after client EOF, and engine output sent after it is lost (decision 8).
+
 **Macus today.** The server runs one Cowboy TLS 1.3 listener (default `127.0.0.1:8443`). Its certificate is ECDSA P-384 for `localhost`, `127.0.0.1` and `::1` (`Macus.Gateway.Certificate`). It serves `/runtime`, native `/1.0` and `/mcp`. Native Incus requires an enrolled TLS client certificate, and runtime and MCP require scoped bearer credentials. Incus upgrades are relayed by opsmaru_incus's Cowboy handler: it completes the upstream handshake, then casts `{:switch_protocol, headers, RawTunnel, relay}`, and `RawTunnel.takeover/7` receives the client socket and buffered bytes. The server reaches Incus through `Opsmaru.Incus.Connection.unix!` on the Swift `incus.sock`, which the flow-controlled vsock relay carries. Shares are explicit VirtioFS directories (tag `tama-shares`), read-only by default. Workload service forwarding is documented future scope.
 
 ## Goals / Non-Goals
@@ -88,12 +93,13 @@ The Swift client generates the Docker key pair (ECDSA P-384, owner-private) and 
 
 The gateway already composes Cowboy handlers. Every request enters `Opsmaru.Incus.Gateway.CowboyHandler`. It takes only native SFTP and NBD raw upgrades and passes everything else to its `fallback` handler, which today is `Plug.Cowboy.Handler` running the Phoenix router. A Docker raw upgrade (`Upgrade: tcp` on `/v1.57/…/attach`, `h2c` on `/grpc`) is not a native path, so it would fall through to Plug, which cannot take over the socket.
 
-The library will gain a narrow Cowboy adapter, `Opsmaru.Containers.Docker.CowboyHandler`. It is compiled only when `:cowboy_req` is loaded; `cowboy` is already an optional dependency. It is modelled on opsmaru_incus's handler:
+The library provides a narrow Cowboy adapter, `Opsmaru.Containers.Docker.CowboyHandler`, compiled only when `:cowboy_req` is loaded. It is modelled on opsmaru_incus's handler:
 
-- It opens no listener.
-- It takes only Docker raw upgrades on the dispatched paths.
-- It sends everything else to its own `fallback`.
-- It rests on a split relay entry. `Raw.open/4` admits the request, dials, completes the upstream handshake, and returns either `{:upgrade, status_headers, backend, tail}` or `{:http, status, headers, body}`. `Raw.run/4` relays both streams from `takeover/7`, using a frontend stream over the Cowboy transport that includes Cowboy's buffered bytes.
+- It opens no listener and starts no process before a request.
+- It takes a request only when the path, with any `/vX.Y` prefix stripped, matches a pinned route whose takeover is a Docker stream, an `h2c` upgrade or a WebSocket. Everything else, including ordinary Docker HTTP and detached exec start (`POST /exec/{id}/start` without `Upgrade`), goes to its required `fallback` with the body unread.
+- A matched raw route without an `Upgrade` header, or sent over HTTP/2, gets a Docker-shaped 400 with no admission or dial. Cowboy cannot write Docker's hijacked `200`, and `switch_protocol` exists only on HTTP/1.1.
+- It rests on a split relay entry. In one unlinked, monitored relay process, `Raw.open/3` runs host policy and admission, dials, completes the upstream handshake, and returns `{:upgrade, response, backend, tail}` or `{:http, status, headers, body}`. The handler casts `switch_protocol` with the engine's headers, and the relay calls `Raw.run/4` after `takeover/7` hands it the socket and Cowboy's buffered bytes. Cowboy writes `101 Switching Protocols` where dockerd writes `101 UPGRADED`; the headers are identical, and clients check only the status code.
+- If the handler dies before the cast, or takeover misses `:handoff_timeout`, the relay closes the backend and nothing is retried.
 
 The listener chain becomes:
 
@@ -103,18 +109,22 @@ The listener chain becomes:
 
 Ordinary Docker HTTP reaches `Docker.Plug` through the router's dispatched paths.
 
+**Per-connection identity.** The handler passes its `:host_peer` option to the host callbacks as `request.host_peer`. That option comes from the handler configuration, while the client certificate belongs to the connection. Macus therefore mounts a thin wrapper, `Macus.Gateway.DockerHandler`, in position 2. For each request it reads the TLS-verified certificate with `:cowboy_req.cert/1`, resolves its trust record, and calls `Docker.CowboyHandler.init/2` with `host_peer` set to that record. It delegates `upgrade` and `terminate` the same way the Incus handler delegates to its fallback. On the Plug path the router puts the same record in `conn.private[:opsmaru_containers_peer]`, so `Macus.Docker.context/1` and `authorize/2` see identical identity on both paths. A request without a resolvable Docker-scoped record never reaches `Docker.CowboyHandler`.
+
 - **Why in the library, not Macus:** the takeover glue (buffer handoff, response ordering, close semantics) is the subtle part. Central Opsmaru also hosts on Cowboy. opsmaru_incus set the precedent of shipping the same-listener handler with the relay.
 - **Not a full gateway module:** opsmaru_incus's `Gateway` also carries admission, policy, identity, leases and exchange telemetry for Incus. opsmaru_containers already has its own equivalents (`Admission`, `Host`, `Context`, `Plug`, `Raw`, `RawTunnel`). TLS, the listener, trust and enrollment stay in the Macus gateway. The library needs only this handler, plus telemetry events that the gateway access log can consume.
 
-- Requests that need a raw stream but carry no `Upgrade` header (Docker's legacy raw `200` attach) get a Docker-shaped 400 that names the missing upgrade. The pinned CLI sends `Upgrade: tcp` for attach and exec start. Task 1.2 confirms that against the CLI's actual requests.
+- Requests that need a raw stream but carry no `Upgrade` header (Docker's legacy raw `200` attach) get the library's Docker-shaped 400. The pinned CLI sends `Upgrade: tcp` for attach and attached exec start. Task 1.2 confirms that against the CLI's actual requests.
 - **Rejected: a separate Ranch listener with its own HTTP/1.1 parser.** That is a second public HTTP implementation, outside the gateway's existing bounds and access log.
 
 ### 5. Exec transport moves into the library
 
-The qualified bridge becomes a packaged module, `Opsmaru.Containers.Transport.ExecBridge`, in an `opsmaru_containers` release. Its helper source and reproducible build instructions also move into the library. The Macus engine image installs the helper. The dialer receives the server's `Opsmaru.Incus` connection for the target, a bounded `RequestContext`, the helper's path, and Incus stream limits.
+The qualified bridge becomes a packaged module, `Opsmaru.Containers.Transport.ExecBridge`, in an `opsmaru_containers` release. Its helper source and build instructions live in the library under `priv/exec_bridge`. The Macus engine image installs the helper. `Macus.Docker.context/1` returns `dialer: {ExecBridge, options}` with the helper's guest path, dockerd's socket path, per-connection `limits` within the Incus connection's `max_stream_bytes`, and a keepalive interval. It passes no `request_context`: one built inside `context/1` would be owned by that callback's short-lived process, so the relay's stream deadline bounds the stream instead.
 
 - **Why:** central Opsmaru needs the same transport. The library already owns the qualification evidence. Macus's rules keep shared Incus mechanics in libraries, not duplicated in the host.
 - **Each Docker client connection is one Incus exec operation** with its own WebSockets, each on its own `incus.sock` connection through the flow-controlled relay. There is no pooling or multiplexing. Acceptance measures whether a stalled stream delays others (task 5.4).
+- **Limits fail, never truncate.** A stream that exceeds its input or output limit fails with a Docker-shaped error. Large image pulls, `docker cp` and build contexts must fit the configured limits, and acceptance records the values used.
+- **Evidence:** the packaged module has fixture coverage only (Context). Macus hardware acceptance (task 5.3) is its first live run, and it is reported to the library as consumer acceptance.
 
 ### 6. Bind mounts map through explicit shares
 
@@ -145,6 +155,8 @@ Docker clients half-close hijacked streams. `docker exec -i … < file` and `doc
 
 This depends on Erlang `:ssl` behaviour under TLS 1.3, so task 1.2 qualifies it before any other server work. If it cannot be met, decision 1's fallback does not help, because the fallback also uses TLS. The change then returns to planning instead of shipping a Docker endpoint without stdin EOF.
 
+**Upstream evidence.** The library found that OTP does not deliver server writes after a client's `close_notify`, so its TLS frontend sends nothing after client EOF and engine output after that point is lost (the exchange ends with `caller_closed`, never as a silent success). Engine EOF toward the client works: it is sent as `close_notify` and the client can keep writing. Whether the pinned CLI half-closes a hijacked TLS connection with `close_notify` or with a TCP write shutdown beneath TLS is still being measured upstream (its task 2.5). Go's `tls.Conn.CloseWrite` sends `close_notify`, so `docker exec -i … < file` and `docker attach` with redirected stdin are expected to lose output after stdin EOF over this gateway. Task 1.2 waits for that measurement and repeats it against the pinned CLI. If it confirms the loss, the gate fails and this change returns to planning.
+
 ### 9. Client setup mirrors Incus client setup
 
 `macus docker setup` runs these steps in order, and `macus start --docker` runs them as its last stage:
@@ -169,7 +181,9 @@ The Docker dispatch, engine lifecycle and readiness refresh run under their own 
 
 - **[Intermittent stdin write stall]** → It is open in the library. Large uploads can fail with `502` and leave partial destinations. Acceptance records every upload trial with fresh destinations, and `docs/docker.md` states the limitation until the library closes it.
 - **[Shared listener load]** → Long BuildKit and log streams share the gateway listener's acceptor pool and connection limits with Incus. Acceptance runs Docker streams concurrently with Incus exec, and records connection limits and latency.
-- **[Library API dependency]** → Decisions 4 and 5 need an `opsmaru_containers` release. Macus work after the spike waits for it rather than carrying a fork.
+- **[Library API dependency]** → Decisions 4 and 5 need an `opsmaru_containers` release. The code is on the library's `develop` but unreleased. Macus work after the spike waits for the release rather than carrying a fork.
+- **[TLS half-close]** → Upstream evidence points to lost output after client stdin EOF over TLS (decision 8). This is the most likely reason the change returns to planning.
+- **[Revoking raw streams]** → After takeover, a raw relay runs in a library-owned process that holds the socket. Revocation must still close it within the revocation interval. Task 1.2 confirms how Macus ends a relay it did not start. If there is no supported way, that is a library request before task 3.2.
 - **[CLI version drift]** → Homebrew's `docker` formula moves faster than the pins. Negotiation keeps it working within the API range, and status reports the drift. Acceptance remains pin-specific.
 - **[No port forwarding]** → `-p` publishes inside the engine only. Documentation says so prominently, and service exposure stays future scope.
 

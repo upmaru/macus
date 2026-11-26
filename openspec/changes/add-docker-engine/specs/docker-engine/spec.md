@@ -102,12 +102,22 @@ The bind source callback SHALL accept only absolute, normalized macOS paths insi
 
 ### Requirement: Raw streams and half-close
 
-Attach, attached exec, BuildKit `h2c` and WebSocket upgrades SHALL be relayed only after the engine's upstream handshake succeeds. The client SHALL receive the engine's upgrade response headers. A raw-stream request without an `Upgrade` header SHALL be refused with a Docker-shaped 400. A TLS `close_notify` from the client SHALL deliver write EOF to the engine while output continues to reach the client. Engine EOF SHALL shut down only the client's read side.
+Attach, attached exec, BuildKit `h2c` and WebSocket upgrades SHALL be relayed only after the engine's upstream handshake succeeds. The client SHALL receive the engine's upgrade response headers. A raw-stream request without an `Upgrade` header, or sent over HTTP/2, SHALL be refused with a Docker-shaped 400 before admission or dial, except a detached exec start, which SHALL be served as ordinary HTTP. Host policy SHALL see the identity of the connection's verified client certificate on raw streams exactly as on ordinary HTTP. A TLS `close_notify` from the client SHALL deliver write EOF to the engine while output continues to reach the client. Engine EOF SHALL shut down only the client's read side.
 
 #### Scenario: Stdin EOF over TLS
 
 - **WHEN** `docker exec -i CONTAINER sh -c 'cat; echo done'` reads a file from stdin through the gateway
 - **THEN** the full input reaches the container, `done` is printed after input ends, and the command exits 0
+
+#### Scenario: Detached exec
+
+- **WHEN** `docker exec -d CONTAINER touch /tmp/x` runs through the gateway
+- **THEN** the exec start is served as ordinary HTTP without an upgrade and the command runs
+
+#### Scenario: Raw stream without an upgrade
+
+- **WHEN** a client sends `POST /v1.57/containers/ID/attach` without an `Upgrade` header
+- **THEN** it receives a Docker-shaped 400 and no exec operation is created
 
 #### Scenario: BuildKit session
 
