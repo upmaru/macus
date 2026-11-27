@@ -325,9 +325,12 @@ defmodule Macus.TestSupport.IncusBackend do
 
     # WebSockets: /1.0/events sends native events; any other path is an
     # operation channel that echoes, bursts or closes on request.
-    # A subscription to the `overflow` type gets 256 events at once.
+    # A subscription to the `overflow` type gets 256 events at once. One to
+    # the `keepalive` type is then pinged every 100 ms, as incusd pings every
+    # events listener (every 10 s), and each pong is reported.
     def websocket_init(%{path: "/1.0/events"} = state) do
       count = if state.events_qs =~ "type=overflow", do: 256, else: 1
+      if state.events_qs =~ "type=keepalive", do: Process.send_after(self(), :keepalive, 100)
 
       frames =
         for i <- 1..count do
@@ -411,7 +414,17 @@ defmodule Macus.TestSupport.IncusBackend do
     def websocket_handle({kind, data}, state) when kind in [:text, :binary],
       do: {[{kind, data}], state}
 
+    def websocket_handle({:pong, data}, state) do
+      send(state.observer, {:incus_pong, data})
+      {[], state}
+    end
+
     def websocket_handle(_frame, state), do: {[], state}
+
+    def websocket_info(:keepalive, state) do
+      Process.send_after(self(), :keepalive, 100)
+      {[{:ping, "keepalive"}], state}
+    end
 
     def websocket_info({:burst, i, count}, state) when i > count do
       send(state.observer, {:incus_burst_sent, System.monotonic_time(:millisecond)})

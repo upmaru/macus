@@ -510,6 +510,29 @@ defmodule Macus.Proxy.NativeRelayTest do
       assert_receive {:incus_ws_closed, _}, 1_000
       wait_for_count(context.baseline)
     end
+
+    # Reproduction of the 2026-11-27 spike's fault 2
+    # (docs/gateway-incident-2026-11-27.md). incusd pings every events
+    # listener every 10 s; the Incus >= 7.5 client treats 30 s without a frame
+    # or ping as a dead connection ("read tcp ...: i/o timeout"), so a quiet
+    # events stream through the gateway ends after 30 s. Pins opsmaru_incus
+    # 0.2.10: the `# Defect:` assertion is what a fix must invert.
+    test "backend keepalive pings stop at the gateway; a quiet events stream carries none",
+         context do
+      IncusBackend.start!(context.sock, self(), context.guest.pem)
+      ws = ws!(context, "/1.0/events?type=keepalive")
+      {ws, [{:text, _event}]} = frames(ws, 1)
+
+      # The backend pings every 100 ms and the gateway answers each one.
+      {_ws, received} = frames_for(ws, 1_000)
+      assert_received {:incus_pong, "keepalive"}
+      assert_received {:incus_pong, "keepalive"}
+      assert_received {:incus_pong, "keepalive"}
+
+      # Defect: over the same second the client receives nothing at all — no
+      # forwarded ping and no gateway ping of its own.
+      assert received == []
+    end
   end
 
   describe "admission and stream budgets (5.3)" do
@@ -1057,6 +1080,29 @@ defmodule Macus.Proxy.NativeRelayTest do
 
         {:error, _conn, error, _} ->
           flunk("WebSocket ended before #{count} frames: #{inspect(error)}")
+      end
+    end
+  end
+
+  # Every frame received during `ms`, server pings included.
+  defp frames_for(ws, ms) do
+    deadline = System.monotonic_time(:millisecond) + ms
+    collect_frames(ws, deadline)
+  end
+
+  defp collect_frames(ws, deadline) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if remaining <= 0 do
+      {%{ws | frames: []}, ws.frames}
+    else
+      case Mint.WebSocket.recv(ws.conn, 0, remaining) do
+        {:ok, conn, responses} ->
+          data = for {:data, _, data} <- responses, into: "", do: data
+          collect_frames(decode(%{ws | conn: conn}, data), deadline)
+
+        {:error, conn, reason, _} when reason in [:timeout, @timeout] ->
+          {%{ws | conn: conn, frames: []}, ws.frames}
       end
     end
   end
