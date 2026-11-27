@@ -2,57 +2,66 @@
 
 ## Purpose
 
-Lets unmodified Docker clients on the Mac use Macus through an owner-private Unix socket, with a nested Docker engine that Incus hosts, without a second VM runtime and without changing Incus behaviour.
+Lets unmodified Docker clients use Macus through its authenticated gateway, with a nested Docker engine that Incus hosts, without a second VM runtime and without changing Incus behaviour.
 
 ## ADDED Requirements
 
-### Requirement: Docker socket
+### Requirement: Gateway transport
 
-When Docker is enabled for the state, the server SHALL serve the Docker Engine API on a Unix socket at `STATE/server/docker.sock`, over plain HTTP/1.1. The socket SHALL serve only the Docker relay, with Docker paths neither prefixed nor rewritten, and MUST NOT serve Incus, runtime, MCP or other server routes. The relay SHALL use `opsmaru_containers` and reach Incus only through the server's `opsmaru_incus` connection. The TLS gateway MUST NOT serve Docker routes, and its handling of every path SHALL be unchanged. When the socket path exceeds 103 bytes, the server SHALL refuse to enable Docker with an error naming the limit and the path, and MUST NOT place the socket elsewhere. When Docker is not enabled, the socket SHALL NOT exist.
+The gateway SHALL offer a `transport` setting of `ssl` or `teals`, read at server start and defaulting to `ssl`. Both SHALL use the same port, certificate and key files, trust store, ALPN and TLS 1.3, and present a client's certificate to gateway policy alike. Changing it MUST NOT change trust or workload data. On `teals`, Incus, runtime and MCP behaviour SHALL be unchanged, WebSockets SHALL still end on the client's `close_notify`, and revocation SHALL end streams within the same interval. On `ssl`, Docker routes MUST NOT be served.
+
+#### Scenario: Incus client across a switch
+
+- **WHEN** the gateway restarts from `ssl` to `teals`
+- **THEN** an enrolled Incus client connects without re-enrollment and runs exec, console, events and file transfer
+
+#### Scenario: Docker path on ssl
+
+- **WHEN** the gateway runs on `ssl` and a client requests `/v1.57/containers/json`
+- **THEN** it returns its unknown-path failure and no request reaches the engine
+
+#### Scenario: Rollback
+
+- **WHEN** the setting returns to `ssl` and the server restarts
+- **THEN** Incus clients keep working and Docker routes are gone
+
+### Requirement: Docker routes on the gateway
+
+The server SHALL serve the Docker Engine API on its authenticated HTTPS gateway listener, using the gateway's address, port and TLS identity. It SHALL dispatch to the Docker relay exactly `GET` and `HEAD` `/_ping`, any method on paths beginning `/v<digits>.<digits>/`, and `POST /grpc` and `POST /session` carrying `Upgrade: h2c`. Dispatch SHALL run before the unknown-path fallback, and only while the gateway runs on `teals`. It MUST NOT change the handling of `/`, `/1.0`, `/runtime`, `/mcp` or any other path. The relay SHALL use `opsmaru_containers` and reach Incus only through the server's `opsmaru_incus` connection. Docker paths MUST NOT be prefixed or rewritten.
 
 #### Scenario: Unmodified Docker client
 
-- **WHEN** a Docker context with host `unix://STATE/server/docker.sock` runs `docker version`
-- **THEN** the client negotiates through `/_ping`, sends versioned requests, and reports the engine's server version
+- **WHEN** a Docker context with host `tcp://127.0.0.1:8443`, the gateway certificate as `ca`, and an enrolled Docker-scoped certificate and key runs `docker version`
+- **THEN** the client negotiates through `/_ping`, sends versioned requests, and reports the engine's server version through the gateway
 
 #### Scenario: Incus routes unchanged
 
-- **WHEN** Docker is enabled and a standard Incus client uses the gateway
+- **WHEN** Docker is enabled and a standard Incus client uses the same gateway
 - **THEN** discovery, REST and WebSocket requests on `/` and `/1.0` behave exactly as before
 
-#### Scenario: Docker path on the gateway
+#### Scenario: Unversioned Docker path
 
-- **WHEN** a client requests `/v1.57/containers/json` on the TLS gateway with an enrolled Incus certificate
-- **THEN** the gateway returns its unknown-path failure and no request reaches the engine
+- **WHEN** a client requests `/containers/json` without a version
+- **THEN** the gateway returns its bounded unknown-path failure and no request reaches the engine
 
-#### Scenario: Server route on the socket
+### Requirement: Docker credential scope
 
-- **WHEN** a client sends `GET /1.0` or `GET /runtime/status` to the Docker socket
-- **THEN** no Incus, runtime or MCP handler runs and no guest stream opens
+Docker routes SHALL require an enrolled gateway client certificate whose trust record includes the `docker` scope. Native Incus routes SHALL require the `incus` scope, and existing enrollments SHALL be treated as `incus`. A certificate without the required scope SHALL be refused before dispatch or upgrade. Docker routes SHALL refuse with a Docker-shaped 403. Runtime and MCP routes SHALL keep their bearer credentials. Docker certificates SHALL be enrolled through single-use enrollment with proof of the private key. Revoking a Docker certificate SHALL close its active Docker streams within the gateway's revocation interval.
 
-#### Scenario: Socket path too long
+#### Scenario: Incus certificate on a Docker route
 
-- **WHEN** Docker is enabled for a state directory whose `server/docker.sock` path is longer than 103 bytes
-- **THEN** enabling fails with an error naming the limit and the path, and no socket is created
+- **WHEN** a client presents an enrolled Incus certificate without the `docker` scope to `/v1.57/containers/json`
+- **THEN** the request is refused with a Docker-shaped 403 before the engine is dialed
 
-### Requirement: Docker access boundary
+#### Scenario: Docker certificate on an Incus route
 
-Before binding the Docker socket, the server SHALL verify that `STATE/server` is a directory owned by the server's account with mode 0700. It SHALL set the socket to mode 0600. An existing file at the socket path SHALL be removed only when it is a socket owned by the server's account. Any other file type, a symlink, or another owner SHALL be refused, and the socket SHALL NOT be opened. Every connection on the socket SHALL be treated as the state's owner, and host policy SHALL see that one principal on ordinary HTTP and raw streams alike. Docker access MUST NOT grant Incus, runtime or MCP access, and gateway certificates and bearer credentials MUST NOT grant Docker access. Docker setup MUST NOT enroll a gateway certificate or change gateway trust.
+- **WHEN** a client presents a Docker-scoped certificate to `/1.0/instances`
+- **THEN** the request is refused before any guest stream opens
 
-#### Scenario: Socket permissions
+#### Scenario: Revoked during a stream
 
-- **WHEN** the server opens the Docker socket
-- **THEN** the socket has mode 0600 inside an owner-only `STATE/server` directory
-
-#### Scenario: Unsafe file at the socket path
-
-- **WHEN** a regular file or a symlink exists at `STATE/server/docker.sock` as the server opens the socket
-- **THEN** the file is left in place, the socket is not opened, and Docker status reports the path as unsafe
-
-#### Scenario: Setup leaves gateway trust alone
-
-- **WHEN** `macus docker setup` succeeds
-- **THEN** no gateway client certificate or enrollment token has been added
+- **WHEN** the owner revokes a Docker certificate while `docker logs -f` is streaming through it
+- **THEN** new requests with that certificate fail and the stream closes within the revocation interval
 
 ### Requirement: Nested engine lifecycle
 
@@ -116,17 +125,17 @@ Attach, attached exec, BuildKit `h2c` and WebSocket upgrades SHALL be relayed on
 
 #### Scenario: Stdin EOF
 
-- **WHEN** `docker exec -i CONTAINER sh -c 'cat; echo done'` reads a file from stdin through the socket
+- **WHEN** `docker exec -i CONTAINER sh -c 'cat; echo done'` reads a file from stdin through the gateway
 - **THEN** the full input reaches the container, `done` is printed after input ends, and the command exits 0
 
 #### Scenario: Attached run without stdin
 
-- **WHEN** `docker run --rm IMAGE sh -c 'echo hello'` runs through the socket
+- **WHEN** `docker run --rm IMAGE sh -c 'echo hello'` runs through the gateway
 - **THEN** `hello` is printed and the command exits 0
 
 #### Scenario: Detached exec
 
-- **WHEN** `docker exec -d CONTAINER touch /tmp/x` runs through the socket
+- **WHEN** `docker exec -d CONTAINER touch /tmp/x` runs through the gateway
 - **THEN** the exec start is served as ordinary HTTP without an upgrade and the command runs
 
 #### Scenario: Raw stream without an upgrade
@@ -136,12 +145,12 @@ Attach, attached exec, BuildKit `h2c` and WebSocket upgrades SHALL be relayed on
 
 #### Scenario: BuildKit session
 
-- **WHEN** `docker buildx build` uses the Docker driver through the socket
+- **WHEN** `docker buildx build` uses the Docker driver through the gateway
 - **THEN** `/grpc` and `/session` upgrade with `h2c`, each `X-Docker-Expose-Session-Grpc-Method` value reaches the engine as its own header, and the build completes
 
 ### Requirement: Docker failure isolation
 
-The Docker socket listener, engine lifecycle and readiness SHALL run under their own supervision. Their failures, a missing catalog entry, an unusable socket path, or invalid Docker state SHALL produce only Docker-shaped failures or a missing socket, and MUST NOT make the gateway or its Incus, runtime or MCP routes unavailable.
+The Docker dispatch, engine lifecycle and readiness SHALL run under their own supervision. Their failures, a missing catalog entry, or invalid Docker state SHALL produce only Docker-shaped failures, and MUST NOT make the gateway's Incus, runtime or MCP routes unavailable.
 
 #### Scenario: Docker supervisor crash
 
@@ -150,7 +159,7 @@ The Docker socket listener, engine lifecycle and readiness SHALL run under their
 
 ### Requirement: Docker acceptance
 
-Unit, protocol and fixture tests SHALL run without a VM and MUST NOT be reported as engine acceptance. Hardware acceptance SHALL require explicit opt-in, an isolated state directory, an isolated `DOCKER_CONFIG` and `INCUS_CONF`, and the library's pinned Docker CLI, Compose and Buildx versions. It SHALL cover these, through the installed server's Docker socket:
+Unit, protocol and fixture tests SHALL run without a VM and MUST NOT be reported as engine acceptance. Hardware acceptance SHALL require explicit opt-in, an isolated state directory, an isolated `DOCKER_CONFIG` and `INCUS_CONF`, and the library's pinned Docker CLI, Compose and Buildx versions. It SHALL cover these, through the installed server's gateway on `teals`:
 
 - version
 - pull
@@ -162,7 +171,8 @@ Unit, protocol and fixture tests SHALL run without a VM and MUST NOT be reported
 - Compose up and down
 - a bind mount inside a share
 - refusal outside a share
-- the socket's mode and owner-only directory, and no Docker route on the gateway
+- scope refusal in both directions, and certificate revocation ending an active stream
+- Incus, runtime and MCP behaviour on `teals`
 - engine survival across a runtime restart
 - concurrent Docker and Incus streams
 

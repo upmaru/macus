@@ -4,19 +4,20 @@
 
 ### Requirement: Docker client setup
 
-`macus docker setup` SHALL read the runtime status and SHALL refuse when the runtime is not ready, without booting it. It SHALL then:
+`macus docker setup` SHALL read the runtime status and SHALL refuse when the runtime is not ready, without booting it. It SHALL also refuse when the gateway does not run on `teals`, naming the setting, without changing Docker configuration. It SHALL then:
 
 - ensure the engine through the server's owner route
 - reuse `docker` from `PATH` or `--docker-cli`, or install the official Homebrew `docker` formula only when Docker is missing and Homebrew exists
-- create a Docker context whose host is `unix://` followed by the socket path the owner route returned, using only standard `docker context` commands, under `DOCKER_CONFIG` when set
+- generate an owner-private Docker key pair and enroll its certificate with the `docker` scope
+- create or update a Docker context, using only standard `docker context` commands, under `DOCKER_CONFIG` when set
 
-The default context name SHALL be `macus`. A context with the same endpoint SHALL be reused. A context with a different endpoint SHALL fail with conflict and MUST NOT be modified. Setup MUST NOT generate key material or enroll a gateway certificate. The default context SHALL change only with `--docker-set-default`. Setup MUST NOT edit `config.json`.
+The default context name SHALL be `macus`. A context with the same endpoint and an enrolled certificate SHALL be reused. A context with the same endpoint and a certificate that is not enrolled SHALL have its TLS material replaced. A context with a different endpoint SHALL fail with conflict and MUST NOT be modified. The default context SHALL change only with `--docker-set-default`. Setup MUST NOT edit `config.json`.
 
-When Compose or Buildx is missing, Homebrew exists and no explicit `--docker-cli` was given, setup SHALL install the official formula and link the plugin into `$DOCKER_CONFIG/cli-plugins`, only where no plugin of that name exists. With an explicit `--docker-cli`, setup MUST NOT run Homebrew for the CLI or its plugins; it SHALL report missing plugins without failing. Setup SHALL verify by running `docker --context NAME version` against the engine. `macus docker status` SHALL report:
+When Compose or Buildx is missing, Homebrew exists and no explicit `--docker-cli` was given, setup SHALL install the official formula and link the plugin into `$DOCKER_CONFIG/cli-plugins`, only where no plugin of that name exists. With an explicit `--docker-cli`, setup MUST NOT run Homebrew for the CLI or its plugins; it SHALL report missing plugins without failing. Staged key material SHALL be removed once the context holds it. Setup SHALL verify by running `docker --context NAME version` against the engine. `macus docker status` SHALL report:
 
 - engine state and image currency
 - the negotiated API range
-- the socket path, and the context and its endpoint
+- the context and its endpoint
 - the CLI, Compose and Buildx versions, and any drift from the qualified pins
 
 #### Scenario: Ready runtime setup
@@ -41,7 +42,7 @@ When Compose or Buildx is missing, Homebrew exists and no explicit `--docker-cli
 
 ### Requirement: Docker diagnostics
 
-`doctor` SHALL remain read-only. When Docker is enabled for the state, it SHALL report engine state, readiness, image currency, the socket's presence and permissions, and context reachability. It SHALL warn when `DOCKER_HOST` or `DOCKER_CONTEXT` is set to something other than the Macus context. When Docker is not enabled, doctor SHALL report Docker as not set up, without failing.
+`doctor` SHALL remain read-only. When Docker is enabled for the state, it SHALL report engine state, readiness, image currency and context reachability. It SHALL warn when `DOCKER_HOST` or `DOCKER_CONTEXT` is set to something other than the Macus context. When Docker is not enabled, doctor SHALL report Docker as not set up, without failing.
 
 #### Scenario: Environment override
 
