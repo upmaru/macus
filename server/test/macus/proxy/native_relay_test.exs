@@ -695,11 +695,14 @@ defmodule Macus.Proxy.NativeRelayTest do
       assert_receive {:backend_eof, ^received}, 2_000
       assert_receive {:backend_reply, _}
       assert result["reply"] in [nil, ""]
+      # A clean end of stream: the gateway closed the tunnel. A read timeout
+      # would mean the driver's own close later gave the backend its EOF.
+      refute result["read_error"]
       wait_for_count(context.baseline)
     end
 
     @tag protocol: "nbd"
-    test "after a backend half-close the client can still send and finish", context do
+    test "after a backend half-close the client can still send", context do
       native!(context, half_close: true, session: drain(self()))
       payload = :binary.copy(<<0, 255, 2, 128>>, 1_048_576)
 
