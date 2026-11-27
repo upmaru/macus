@@ -27,6 +27,9 @@ type Input struct {
 	Payload     []byte         `json:"payload"`
 	ReadInitial int            `json:"read_initial"`
 	HalfClose   bool           `json:"half_close"`
+	CloseWrite  bool           `json:"close_write"`
+	Repeat      int            `json:"repeat"`
+	IntervalMS  int            `json:"interval_ms"`
 	Method      string         `json:"method"`
 	Path        string         `json:"path"`
 	Body        map[string]any `json:"body"`
@@ -113,7 +116,8 @@ func rawConnection(client incus.InstanceServer, input Input) {
 		os.Exit(1)
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+	interval := time.Duration(input.IntervalMS) * time.Millisecond
+	_ = conn.SetDeadline(time.Now().Add(3*time.Second + time.Duration(input.Repeat)*interval))
 	initial := make([]byte, input.ReadInitial)
 	if _, err = io.ReadFull(conn, initial); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -135,7 +139,31 @@ func rawConnection(client incus.InstanceServer, input Input) {
 		os.Exit(1)
 	}
 	result["write_count"] = n
-	if !input.HalfClose {
+	// Further writes on a schedule. A write may still succeed locally after
+	// the peer stopped reading, so the fixture backend counts what arrived.
+	for i := 1; i < input.Repeat; i++ {
+		time.Sleep(interval)
+		if _, err = conn.Write(input.Payload); err != nil {
+			break
+		}
+	}
+	if input.CloseWrite {
+		// close_notify over TLS (shutdown over a Unix socket), then keep reading.
+		closer, ok := conn.(interface{ CloseWrite() error })
+		if !ok {
+			fmt.Fprintf(os.Stderr, "%T cannot half-close\n", conn)
+			os.Exit(1)
+		}
+		if err = closer.CloseWrite(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		reply, readErr := io.ReadAll(conn)
+		result["reply"] = reply
+		if readErr != nil {
+			result["read_error"] = readErr.Error()
+		}
+	} else if !input.HalfClose {
 		echo := make([]byte, len(input.Payload))
 		if _, err = io.ReadFull(conn, echo); err != nil {
 			fmt.Fprintln(os.Stderr, err)

@@ -343,7 +343,11 @@ defmodule Macus.TestSupport.NativeBackend do
       ])
 
     if Map.get(opts, :half_close, false), do: :gen_tcp.shutdown(socket, :write)
-    echo(socket, body, opts)
+
+    case Map.get(opts, :session) do
+      nil -> echo(socket, body, opts)
+      session -> session.(socket, body)
+    end
   end
 
   defp read_head(socket, bytes) do

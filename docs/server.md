@@ -154,7 +154,18 @@ are not passed on.
 | --- | --- |
 | HTTP requests under `/1.0` | Relayed and streamed, including binary uploads and chunked downloads |
 | WebSockets (`/1.0/events`, operation channels) | Data and Incus JSON control frames relayed both ways; ping/pong answered locally on each side; close codes and reasons preserved |
-| `GET /1.0/instances/NAME/sftp` and `/nbd`, `GET /1.0/storage-pools/POOL/volumes/TYPE/NAME/sftp` and `/nbd` | HTTP/1.1 `Upgrade` switched to a byte tunnel only after the guest itself accepts it; bytes sent along with the handshake, binary traffic and half-close are preserved |
+| `GET /1.0/instances/NAME/sftp` and `/nbd`, `GET /1.0/storage-pools/POOL/volumes/TYPE/NAME/sftp` and `/nbd` | HTTP/1.1 `Upgrade` switched to a byte tunnel only after the guest itself accepts it; bytes sent along with the handshake and binary traffic are preserved; half-close is limited, as below |
+
+Half-close on SFTP and NBD tunnels is only partly preserved:
+
+- **Client first:** TLS `close_notify` from the client ends the whole tunnel,
+  because the gateway's TLS stack (OTP `:ssl`) closes the connection. Bytes sent
+  before it still reach the guest, followed by end of stream, but nothing the
+  guest writes afterwards reaches the client. A client that expects more data
+  must keep its write side open.
+- **Guest first:** the client receives `close_notify` and can still send, but
+  only for 5 seconds from the guest's shutdown, however busy the stream is. The
+  tunnel then closes, and later bytes don't reach the guest.
 
 The gateway's identity differs from the guest's in four places:
 

@@ -671,6 +671,73 @@ defmodule Macus.Proxy.NativeRelayTest do
       assert_receive {:backend_bytes, ^remaining}, 1_000
     end
 
+    # TLS close_notify from the client ends both directions at the gateway
+    # (OTP :ssl, erlang/otp#12296). The same client and backend over the
+    # Unix socket alone show that the reply is the gateway's to lose.
+    @tag protocol: "nbd"
+    test "a client close_notify delivers what preceded it and loses the reply", context do
+      native!(context, session: reply_after_eof(self()))
+      payload = :binary.copy(<<0, 255, 2, 128>>, 1_048_576)
+
+      fields = %{
+        "protocol" => "nbd",
+        "payload" => Base.encode64(payload),
+        "close_write" => true
+      }
+
+      direct = driver!(context, Map.put(fields, "socket", context.sock))
+      assert_receive {:backend_eof, received}, 2_000
+      assert received == byte_size(payload)
+      assert_receive {:backend_reply, :ok}
+      assert Base.decode64!(direct["reply"]) == "after-eof"
+
+      result = driver!(context, fields)
+      assert_receive {:backend_eof, ^received}, 2_000
+      assert_receive {:backend_reply, _}
+      assert result["reply"] in [nil, ""]
+      # A clean end of stream: the gateway closed the tunnel. A read timeout
+      # would mean the driver's own close later gave the backend its EOF.
+      refute result["read_error"]
+      wait_for_count(context.baseline)
+    end
+
+    @tag protocol: "nbd"
+    test "after a backend half-close the client can still send", context do
+      native!(context, half_close: true, session: drain(self()))
+      payload = :binary.copy(<<0, 255, 2, 128>>, 1_048_576)
+
+      driver!(context, %{
+        "protocol" => "nbd",
+        "payload" => Base.encode64(payload),
+        "half_close" => true,
+        "close_write" => true
+      })
+
+      assert_receive {:backend_drained, received, _elapsed}, 2_000
+      assert received == byte_size(payload)
+      wait_for_count(context.baseline)
+    end
+
+    # The drain window is the connection's 5 s timeout, counted from the first
+    # EOF; traffic in the open direction does not extend it.
+    @tag protocol: "nbd"
+    test "a backend half-close leaves the client direction open for only 5 s", context do
+      native!(context, half_close: true, session: drain(self()))
+
+      driver!(context, %{
+        "protocol" => "nbd",
+        "payload" => Base.encode64("x"),
+        "half_close" => true,
+        "repeat" => 16,
+        "interval_ms" => 500
+      })
+
+      assert_receive {:backend_drained, received, elapsed}, 2_000
+      assert elapsed >= 4_500 and elapsed < 7_000, "drained after #{elapsed} ms"
+      assert received in 8..13, "#{received} of 16 writes arrived"
+      wait_for_count(context.baseline)
+    end
+
     @tag protocol: "sftp"
     test "revocation closes an open raw tunnel within the bound", context do
       put_proxy(recheck_interval: @bound)
@@ -800,6 +867,32 @@ defmodule Macus.Proxy.NativeRelayTest do
        )}
     )
   end
+
+  # Backend session: read to EOF, then answer.
+  defp reply_after_eof(observer) do
+    fn socket, body ->
+      {received, _elapsed} = read_to_eof(socket, byte_size(body), now_ms())
+      send(observer, {:backend_eof, received})
+      send(observer, {:backend_reply, :gen_tcp.send(socket, "after-eof")})
+    end
+  end
+
+  # Backend session: count what arrives and how long the direction stays open.
+  defp drain(observer) do
+    fn socket, body ->
+      {received, elapsed} = read_to_eof(socket, byte_size(body), now_ms())
+      send(observer, {:backend_drained, received, elapsed})
+    end
+  end
+
+  defp read_to_eof(socket, received, started) do
+    case :gen_tcp.recv(socket, 0, 10_000) do
+      {:ok, bytes} -> read_to_eof(socket, received + byte_size(bytes), started)
+      {:error, :closed} -> {received, now_ms() - started}
+    end
+  end
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
 
   defp driver!(context, fields) do
     input =
